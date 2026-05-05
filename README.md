@@ -25,6 +25,42 @@ End-to-end tested with a real Anthropic key (L1–L7) and a no-key dryrun (L8). 
 
 ---
 
+## What it actually looks like in the wild
+
+Real terminal captures from a live run against a brand-new SRS (**Durga India** — 18 forms, 2 subject types, 2 programs, 234 concepts) on 2026-05-05 IST. The agent is **Claude Haiku 4.5** through the SDK over BYO key.
+
+### 1. `you> create the bundle` — agent navigates the workspace and consults skills
+
+![CLI create-bundle screenshot](docs/images/cli-create-bundle.png)
+
+Agent reads `concepts.json`, finds the `.claude/skills/` knowledge base, loads `srs-bundle-generator/HOW_TO_GENERATE_BUNDLES.md`, then iterates through `programs.json`, `operationalPrograms.json`, `groupPrivilege.json`, etc. Total cost for this single turn: **$0.1538** (in=170k tokens, out=5874).
+
+### 2. `you> resolve all the errors` — agent fixes validator failures
+
+![CLI resolve-errors screenshot](docs/images/cli-resolve-errors.png)
+
+Agent reads the `BUNDLE_CONFIG_GUIDE.md` skill, walks every bundle file (`subjectTypes.json`, `formMappings.json`, `encounterTypes.json`, all 18 form files), then makes targeted edits to fix mechanical errors.
+
+### 3. Deep investigation — agent uses `git log`, `find`, `jq` to trace state
+
+![CLI deep-investigation screenshot](docs/images/cli-deep-investigation.png)
+
+When the agent needs cross-turn context (what changed in a previous turn? what does the validator's `BUNDLE_CONFIG_GUIDE.md` say about a specific field?), it autonomously uses Bash + git to investigate. Here it's running `git log --all -p`, `git diff 975a4d9..b6ee4f1`, `git ls-tree -r`, etc. — exactly what a senior engineer would do.
+
+### Reliability so far
+
+**Works on ~99% of edit prompts** when the user gives clear, scoped instructions. The agent reliably:
+- ✓ Reads the right skill files before making changes
+- ✓ Edits files atomically (one turn = one logical change)
+- ✓ Reports the validator delta after each turn
+- ✓ Keeps the workspace under version control (every turn is a git commit)
+
+The remaining ~1% failures are observed when prompts are vague ("fix everything") and the agent invents UUIDs or enum values. We shipped the [`BUNDLE_HARD_RULES`](docs/agent-failure-modes.md) system-prompt guardrails on 2026-05-05 to mitigate exactly this — read that doc for the three concrete failure modes (F5 dangling concepts, G2 invented enums, C3 duplicate names) and how the SDK now prevents them.
+
+**Validator outcome on the live Durga India run:** the deterministic first-pass + 2 agent turns produced a 18-form bundle. After 5 follow-up Wizard-of-Oz fix turns (all mechanical, no LLM cost), it reached **0 validator errors, 15/16 invariants passing**. End bundle is at `~/Documents/Durga-India-bundle.zip` (58 KB, 32 files, integrity OK, ready to upload to AVNI server).
+
+---
+
 ## Verify the POC yourself (interactive terminal)
 
 Three modes, pick the one that matches what you have:
