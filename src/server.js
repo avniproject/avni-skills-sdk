@@ -34,7 +34,7 @@ import path from "node:path";
 import os from "node:os";
 import { listSkills, readSkill, avniSkillsPath } from "./skills.js";
 import { generateBundle, validateBundle, zipBundle } from "./bundle.js";
-import { runAgent } from "./agent.js";
+import { runAgent, BUNDLE_HARD_RULES } from "./agent.js";
 import * as sessions from "./sessions.js";
 
 const app = express();
@@ -365,16 +365,13 @@ Workspace layout (your cwd):
   ./                  — bundle files you can read + edit (concepts.json, forms/*.json, formMappings.json, ...)
   ./.claude/skills/   — the AVNI knowledge base (16 skills). Read SKILL.md files here for guidance.
 
-The current bundle was produced by the deterministic generator. The user wants you to refine it. After you finish, the server will:
-  1. Run \`git status\` against the bundle dir
-  2. Commit whatever you changed as a new turn
-  3. Re-run the validator and report the delta
+Workflow:
+  - Edit files in cwd directly via Edit/Write. DO NOT run \`git\` yourself — the server commits whatever you changed as a new turn after your run ends, then re-runs the validator and reports the delta.
+  - Keep changes minimal and surgical. Each turn should fix one specific issue or address one specific user request.
+  - For semantic decisions (e.g. F2 cross-group concept reuse), explain your reasoning before applying.
+  - When stuck, READ the skill files (\`.claude/skills/<name>/SKILL.md\`) — that's the canonical AVNI knowledge base. Don't guess at AVNI conventions.
 
-Rules:
-  - Edit files in cwd directly via Edit/Write. DO NOT run \`git\` yourself — the server commits.
-  - You can run the validator any time: \`node -e "import('./src/bundle.js')"\` IS NOT available; instead read the JSON yourself or rely on the post-turn validator delta you'll get back.
-  - Keep changes minimal and surgical. Each turn should fix one issue.
-  - If a fix needs human judgement (e.g. F2 cross-group concept reuse), explain your decision and apply it.
+${BUNDLE_HARD_RULES}
 
 User instruction:
 ${prompt}`;
@@ -392,7 +389,7 @@ ${prompt}`;
       apiKey,
       model,
       workspace: bundleCwd,
-      systemPrompt: "You are an AVNI bundle editor. Use the skills in .claude/skills/ for guidance. Make minimal, correct edits.",
+      systemPrompt: `You are an AVNI bundle editor inside a session workspace. Make minimal, correct edits to the JSON files in cwd. The server commits the diff as a new turn after your run ends and reports the validator delta.\n\n${BUNDLE_HARD_RULES}`,
       abortController: ac,
     })) {
       agentEvents++;
