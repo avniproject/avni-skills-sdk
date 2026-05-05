@@ -1,8 +1,8 @@
 # avni-skills-sdk
 
-Test framework, validation harness, and SDK scaffolding for the AVNI bundle generator. Wraps [avniproject/avni-skills](https://github.com/avniproject/avni-skills) as the canonical knowledge base.
+Test framework, validation harness, and SDK scaffolding for the Avni bundle generator. Wraps [avniproject/avni-skills](https://github.com/avniproject/avni-skills) as the canonical knowledge base.
 
-> **Goal:** turn the deterministic SRS-to-Bundle pipeline into a reliable, agent-driven workflow that takes an Excel SRS and produces a valid AVNI bundle ZIP iteratively, with every step rigidly tested.
+> **Goal:** turn the deterministic SRS-to-Bundle pipeline into a reliable, agent-driven workflow that takes an Excel SRS and produces a valid Avni bundle ZIP iteratively, with every step rigidly tested using claude code Sdk wrapped into API.
 
 ---
 
