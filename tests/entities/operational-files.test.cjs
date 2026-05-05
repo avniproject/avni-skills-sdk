@@ -3,7 +3,7 @@ const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { generate } = require("./lib/fixture");
+const { generate } = require("./lib/fixture.cjs");
 
 // These tests verify the AVNI server-contract: operational files MUST be
 // wrapped objects ({ "operationalSubjectTypes": [...] }) — not bare arrays.

@@ -1,7 +1,7 @@
 "use strict";
 const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
-const { generate } = require("./lib/fixture");
+const { generate } = require("./lib/fixture.cjs");
 
 const minimalForm = (sheet = "Foo Form") => ({
   [sheet]: [

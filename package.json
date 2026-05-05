@@ -6,8 +6,8 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "test:entities": "node --test tests/entities/*.test.js",
-    "test:bundle": "node tests/bundle-harness.js",
+    "test:entities": "node --test tests/entities/*.test.cjs",
+    "test:bundle": "node tests/bundle-harness.cjs",
     "test:multi-org": "node scripts/multi-org-run.js",
     "test": "npm run test:entities",
     "start": "node src/server.js",

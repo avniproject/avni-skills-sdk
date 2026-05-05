@@ -1,7 +1,7 @@
 "use strict";
 const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
-const { generate } = require("./lib/fixture");
+const { generate } = require("./lib/fixture.cjs");
 
 const STD_YES = "e1018fd6-6a74-45e5-9191-6dec7647d817";
 const STD_NO  = "cca1df60-04c2-497c-a5ad-47438ae9fb7c";
