@@ -11,7 +11,10 @@
     "test:multi-org": "node scripts/multi-org-run.js",
     "test": "npm run test:entities",
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --watch src/server.js",
+    "cli": "node scripts/sdk-cli.mjs",
+    "verify": "node scripts/sdk-cli.mjs --demo",
+    "verify:dryrun": "bash -c 'node scripts/dryrun-phase-4.mjs --forms \"$0\" --modelling \"$1\" --org \"${2:-Demo}\"'"
   },
   "engines": { "node": ">=22" },
   "license": "MIT",

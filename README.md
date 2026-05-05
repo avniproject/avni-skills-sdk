@@ -23,24 +23,129 @@ End-to-end tested with a real Anthropic key (L1–L7) and a no-key dryrun (L8). 
 
 **Latest push:** `70c0889 — feat(phase-4): agent-driven session edits via /v1/sessions/:id/messages` — 2026-05-05 16:20 IST.
 
-Reproduce in your shell:
+---
+
+## Verify the POC yourself (interactive terminal)
+
+Three modes, pick the one that matches what you have:
+
+### A. Zero-arg demo (fastest)
+
+A built-in synthetic SRS with a deliberate F2 duplicate ships with the CLI. No SRS file needed.
 
 ```bash
 git clone https://github.com/avniproject/avni-skills.git ~/code/avni-skills
 git clone https://github.com/avniproject/avni-skills-sdk.git ~/code/avni-skills-sdk
-
 cd ~/code/avni-skills && npm install
 cd ~/code/avni-skills-sdk && npm install
 
-# L1-L5 (no API key)
-AVNI_SKILLS_PATH=~/code/avni-skills bash scripts/verify.sh
-
-# All 6 levels including a real Claude run (BYO key)
 export ANTHROPIC_API_KEY='sk-ant-...'
-AVNI_SKILLS_PATH=~/code/avni-skills bash scripts/verify.sh
+AVNI_SKILLS_PATH=~/code/avni-skills npm run verify
 ```
 
-L6 writes the full SSE stream to `/tmp/avni-sdk-l6-stream.log` and prints a structured summary (event counts, tool calls, final text, cost).
+This boots the API server, builds a synthetic SRS in `/tmp/`, creates a session (turn 0 = deterministic first-pass with **4 F2 errors** by construction), and drops you into a chat-style REPL:
+
+```
+╭───────────────────────────────────────────╮
+│ avni-skills-sdk CLI                       │
+│ server:  http://localhost:3030  ✓ healthy │
+│ model:   claude-haiku-4-5-20251001        │
+│ org:     DemoOrg                          │
+╰───────────────────────────────────────────╯
+
+✓ session sess_15191ea739071f9f
+  turn 0 (deterministic first-pass): errors=4 warnings=1  F2:4
+
+you> Look at the F2 errors. Pick one duplicate concept reference inside any form, remove it, save the file. Explain what you did.
+
+agent>
+  ⚙ Read  forms/Beneficiary Registration.json
+  ⚙ Edit  forms/Beneficiary Registration.json
+  I removed the duplicate `Gender` formElement from the `Demographics` group...
+
+  ── turn 1 committed (633c118f6b90) ──
+     changedFiles: forms/Beneficiary Registration.json
+     validator: errors=3 warnings=1  F2:3
+  [done] events=12  tokens in=3421 out=287  cost=$0.0086
+```
+
+### B. Use your own SRS
+
+```bash
+export ANTHROPIC_API_KEY='sk-ant-...'
+AVNI_SKILLS_PATH=~/code/avni-skills npm run cli -- \
+  --forms /path/to/MyOrg-Forms.xlsx \
+  --modelling /path/to/MyOrg-Modelling.xlsx \
+  --org MyOrg
+```
+
+### C. No API key, just verify the machinery
+
+If you don't want to spend tokens, you can still prove every layer below the agent SDK works:
+
+```bash
+# 45 entity invariants (org-agnostic)
+AVNI_SKILLS_PATH=~/code/avni-skills npm test
+
+# L1–L5 (server, generator, validator, ZIP) end-to-end
+AVNI_SKILLS_PATH=~/code/avni-skills bash scripts/verify.sh
+
+# L8 — Phase 4 staging + commit machinery against a real SRS, no key
+AVNI_SKILLS_PATH=~/code/avni-skills node scripts/dryrun-phase-4.mjs \
+  --forms /path/to/Forms.xlsx \
+  --modelling /path/to/Modelling.xlsx
+```
+
+### REPL commands
+
+Inside `npm run verify` / `npm run cli` you can mix free text (sent to the agent — costs tokens) with `:`-prefixed commands (local — no token cost):
+
+| Command | What it does |
+|---|---|
+| Free text | Send a natural-language instruction to Claude. Agent edits files; server commits the diff as the next turn. Validator delta is shown when the turn lands. |
+| `:turns` | List all turns (`turn N  sha  summary`) |
+| `:diff [N]` | Unified diff for turn N (default: current turn). Coloured. |
+| `:files` | List files in the bundle |
+| `:read <path>` | Print a file (JSON pretty-printed) |
+| `:revert <N>` | Hard-reset to turn N |
+| `:zip [path]` | Download the bundle ZIP |
+| `:state` | Re-fetch session metadata + validator |
+| `:help` | Show this list |
+| `:quit` | Exit (the session is preserved on disk) |
+
+A typical "verify it works" session: send a fix-an-error prompt → agent edits → see error count drop → `:diff` to inspect → `:revert 0` → resend a different prompt → `:zip` to grab the final bundle.
+
+---
+
+## How to reproduce L1–L8 (paper-trail)
+
+```bash
+cd ~/code/avni-skills-sdk
+
+# L1: 45 org-agnostic entity tests
+AVNI_SKILLS_PATH=~/code/avni-skills npm test
+
+# L2-L5: server/health/skills/generator/validator (no key)
+AVNI_SKILLS_PATH=~/code/avni-skills bash scripts/verify.sh
+
+# L6: full Claude agent run (BYO key)
+export ANTHROPIC_API_KEY='sk-ant-...'
+AVNI_SKILLS_PATH=~/code/avni-skills bash scripts/verify.sh
+
+# L7: Phase 3 sessions end-to-end (no key — uses Wizard-of-Oz edit)
+AVNI_SKILLS_PATH=~/code/avni-skills bash scripts/demo-phase-3.sh \
+  --forms /path/to/Forms.xlsx [--modelling /path/to/Modelling.xlsx]
+
+# L8: Phase 4 staging + commit machinery (no key)
+AVNI_SKILLS_PATH=~/code/avni-skills node scripts/dryrun-phase-4.mjs \
+  --forms /path/to/Forms.xlsx [--modelling /path/to/Modelling.xlsx]
+
+# Live Phase 4 demo (BYO key) — non-interactive scripted run
+AVNI_SKILLS_PATH=~/code/avni-skills bash scripts/demo-phase-4.sh \
+  --forms /path/to/Forms.xlsx [--modelling /path/to/Modelling.xlsx]
+```
+
+L6 writes the full SSE stream to `/tmp/avni-sdk-l6-stream.log` and prints a structured summary (event counts, tool calls, final text, cost). L7 and the Phase 4 dryrun produce their own structured records under `docs/`.
 
 ---
 
