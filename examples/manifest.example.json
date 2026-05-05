@@ -1,0 +1,11 @@
+[
+  {
+    "org": "MyOrg",
+    "forms": "/absolute/path/to/MyOrg-Forms.xlsx",
+    "modelling": "/absolute/path/to/MyOrg-Modelling.xlsx"
+  },
+  {
+    "org": "AnotherOrg-no-modelling",
+    "forms": "/absolute/path/to/AnotherOrg-Forms.xlsx"
+  }
+]

@@ -1,0 +1,20 @@
+{
+  "name": "avni-skills-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Test framework, generator validation harness, and SDK scaffolding for the AVNI bundle generator. Wraps avniproject/avni-skills as the canonical knowledge base.",
+  "scripts": {
+    "test:entities": "node --test tests/entities/*.test.js",
+    "test:bundle": "node tests/bundle-harness.js",
+    "test:multi-org": "node scripts/multi-org-run.js",
+    "test": "npm run test:entities"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/avniproject/avni-skills-sdk.git"
+  }
+}

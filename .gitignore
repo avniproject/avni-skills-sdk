@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+*.log
+.DS_Store
+
+# Generated bundles (ALL of them — these are output, not source)
+multi-org-out/
+out/
+output/
+**/bundle-*/
+**/bundle-*.zip
+**/concepts.json
+**/formMappings.json
+**/operationalSubjectTypes.json
+**/operationalPrograms.json
+**/operationalEncounterTypes.json
+# Allow our actual config + lib files
+!package.json
+!**/package-lock.json
+!**/lib/**
+
+# PROPRIETARY DATA — never commit these
+# Real org SRS files, production bundles, and server logs are NGO/client data.
+# This SDK ships only synthetic in-memory fixtures (see tests/entities/lib/fixture.js).
+*.xlsx
+*.xls
+*.xlsm
+fixtures/
+**/prod-*/
+**/*-prod-*
+*-errors.csv
+**/training_data/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Local IDE state
+.idea/
+.vscode/
+.cursor/
+
+# Temp
+*.tmp
+/tmp/
+.cache/
