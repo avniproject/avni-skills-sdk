@@ -146,10 +146,14 @@ app.post("/v1/bundles/generate", async (req, res) => {
     res.setHeader("Content-Disposition", `attachment; filename="${org}.zip"`);
     res.setHeader("X-Bundle-Errors", String(validation.errors.length));
     res.setHeader("X-Bundle-Warnings", String(validation.warnings.length));
-    res.setHeader("X-Bundle-Validation", JSON.stringify({
+    // HTTP headers can't contain CR/LF or bytes outside printable ASCII —
+    // strip them defensively so a single funky validator message can't 500
+    // the whole response (real Astitva errors hit this in practice).
+    const headerSafe = (s) => s.replace(/[^\x20-\x7E]/g, " ");
+    res.setHeader("X-Bundle-Validation", headerSafe(JSON.stringify({
       errors: validation.errors.slice(0, 50),
       warnings: validation.warnings.slice(0, 20),
-    }).slice(0, 4000));
+    })).slice(0, 4000));
     fs.createReadStream(zipPath).pipe(res).on("close", () => {
       fs.rm(tmpDir, { recursive: true, force: true }, () => {});
     });
