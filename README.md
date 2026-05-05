@@ -6,20 +6,22 @@ HTTP API + Claude-Agent-SDK runtime that wraps [avniproject/avni-skills](https:/
 
 ---
 
-## Verified working — 2026-05-05
+## Verified working — 2026-05-05 (IST)
 
-End-to-end tested with a real Anthropic key (L1–L7) and a no-key dryrun (L8):
+End-to-end tested with a real Anthropic key (L1–L7) and a no-key dryrun (L8). All times below are **Asia/Kolkata (IST, UTC+5:30)**.
 
-| Level | What it proves | State |
-|---|---|---|
-| L1 | 45 entity invariants pass (org-agnostic) | ✅ |
-| L2 | server starts, `/health` responds | ✅ |
-| L3 | `/v1/skills` returns the 16 avni-skills skills | ✅ |
-| L4 | `/v1/skills/:slug` returns SKILL.md body + supporting files | ✅ |
-| L5 | `/v1/bundles/generate` accepts a synthetic Excel and returns a valid ZIP with **0 validator errors** | ✅ |
-| L6 | `/v1/agent/query` runs a real Claude session that consults the actual avni-skills via tool calls (Glob → Read on `.claude/skills/<name>/SKILL.md`), streams SSE, returns end_turn with 0 errors | ✅ |
-| L7 | Phase 3 sessions: create from real SRS → first-pass at turn 0 → real edit reduces validator errors → diff → revert → ZIP. Org-agnostic invariant harness 16/16 on the post-edit bundle. | ✅ |
-| L8 | Phase 4 machinery (no key needed): `scripts/dryrun-phase-4.mjs` proves per-session skill staging + `commitWorkspaceChanges` against a real SRS — `.gitignore` excludes `.claude/`, idempotent re-staging, no-op detection, simulated agent edit drops validator errors **6 → 5**, `.claude/` never enters git history. | ✅ |
+| Level | What it proves | Verified | State |
+|---|---|---|---|
+| L1 | 45 entity invariants pass (org-agnostic) | 2026-05-05 12:55 IST | ✅ |
+| L2 | server starts, `/health` responds | 2026-05-05 13:17 IST | ✅ |
+| L3 | `/v1/skills` returns the 16 avni-skills skills | 2026-05-05 13:24 IST | ✅ |
+| L4 | `/v1/skills/:slug` returns SKILL.md body + supporting files | 2026-05-05 13:30 IST | ✅ |
+| L5 | `/v1/bundles/generate` accepts a synthetic Excel and returns a valid ZIP with **0 validator errors** | 2026-05-05 13:44 IST | ✅ |
+| L6 | `/v1/agent/query` runs a real Claude session that consults the actual avni-skills via tool calls (Glob → Read on `.claude/skills/<name>/SKILL.md`), streams SSE, returns end_turn with 0 errors | 2026-05-05 13:56 IST | ✅ |
+| L7 | Phase 3 sessions: create from real SRS → first-pass at turn 0 → real edit reduces validator errors → diff → revert → ZIP. Org-agnostic invariant harness 16/16 on the post-edit bundle. | 2026-05-05 15:17 IST | ✅ |
+| L8 | Phase 4 machinery (no key needed): `scripts/dryrun-phase-4.mjs` proves per-session skill staging + `commitWorkspaceChanges` against a real SRS — `.gitignore` excludes `.claude/`, idempotent re-staging, no-op detection, simulated agent edit drops validator errors **6 → 5**, `.claude/` never enters git history. | 2026-05-05 16:20 IST | ✅ |
+
+**Latest push:** `70c0889 — feat(phase-4): agent-driven session edits via /v1/sessions/:id/messages` — 2026-05-05 16:20 IST.
 
 Reproduce in your shell:
 
@@ -299,17 +301,17 @@ If neither exists, the SDK throws at startup with a helpful error.
 
 ## Roadmap (phased delivery)
 
-| Phase | Scope | Status |
-|---|---|---|
-| 0 | Deterministic generator hardened, 45 entity tests green, multi-org empirical pass | ✅ |
-| 1 | `IndividualEncounterCancellation` encounterTypeUUID bug + regression test | ✅ |
-| 2 | HTTP API + Claude Agent SDK runtime, BYO key, verified L1–L6 | ✅ |
-| 3 | Workspace persistence — sessions, git-per-turn, diff, revert, ZIP, org-agnostic invariants harness | ✅ |
-| 4 | Real Claude integration on `/v1/sessions/:id/messages` — agent computes edits, server commits as turn. Per-session skill staging + `.gitignore` for `.claude/` + `commitWorkspaceChanges`. Dryrun (L8) proven against real Astitva SRS. | ✅ |
-| 5 | Token-cost wallet (pay-per-use, per-org) | next |
-| 6 | Avni admin upload integration via MCP (`/implementation/uploadBundle`) | TODO |
-| 7 | UI inside Avni SaaS (chat + artifact split-pane), Avni SSO | TODO |
-| 8 | Skill eval harness — golden SRS → expected bundle, regression-block PRs | TODO |
+| Phase | Scope | Status | Completed (IST) |
+|---|---|---|---|
+| 0 | Deterministic generator hardened, 45 entity tests green, multi-org empirical pass | ✅ | 2026-05-04 |
+| 1 | `IndividualEncounterCancellation` encounterTypeUUID bug + regression test | ✅ | 2026-05-04 |
+| 2 | HTTP API + Claude Agent SDK runtime, BYO key, verified L1–L6 | ✅ | 2026-05-05 13:56 IST |
+| 3 | Workspace persistence — sessions, git-per-turn, diff, revert, ZIP, org-agnostic invariants harness | ✅ | 2026-05-05 15:17 IST |
+| 4 | Real Claude integration on `/v1/sessions/:id/messages` — agent computes edits, server commits as turn. Per-session skill staging + `.gitignore` for `.claude/` + `commitWorkspaceChanges`. Dryrun (L8) proven against real Astitva SRS. | ✅ | 2026-05-05 16:20 IST |
+| 5 | Token-cost wallet (pay-per-use, per-org) | next | — |
+| 6 | Avni admin upload integration via MCP (`/implementation/uploadBundle`) | TODO | — |
+| 7 | UI inside Avni SaaS (chat + artifact split-pane), Avni SSO | TODO | — |
+| 8 | Skill eval harness — golden SRS → expected bundle, regression-block PRs | TODO | — |
 
 ### Phase 4 — how the agent loop is wired
 

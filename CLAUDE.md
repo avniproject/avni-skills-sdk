@@ -29,18 +29,18 @@ The SDK locates `avni-skills` via env var `AVNI_SKILLS_PATH` or sibling clone `.
 
 ## Verified state (do not re-discover)
 
-End-to-end tested 2026-05-05 with a real Anthropic key. All six levels of `bash scripts/verify.sh` pass:
+End-to-end tested 2026-05-05 IST with a real Anthropic key. All times below are **Asia/Kolkata (UTC+5:30)**. All eight levels green:
 
-| Level | What it proves |
-|---|---|
-| L1 | 45 entity tests pass |
-| L2 | server starts, `/health` ok |
-| L3 | `/v1/skills` returns the 16 skills |
-| L4 | `/v1/skills/:slug` returns SKILL.md body |
-| L5 | `/v1/bundles/generate` produces a valid ZIP, validator-errors=0 |
-| L6 | `/v1/agent/query` runs Claude session, agent reads `.claude/skills/<name>/SKILL.md`, returns end_turn, 0 errors |
-| L7 | Phase 3 session lifecycle: create → first-pass turn 0 → real edit drops validator errors → diff → revert → ZIP. Org-agnostic 16/16 invariants harness passes on the post-edit bundle. Demo: `bash scripts/demo-phase-3.sh` |
-| L8 | Phase 4 machinery (no key): per-session skill staging + `commitWorkspaceChanges` proven via `node scripts/dryrun-phase-4.mjs` — `.gitignore` excludes `.claude/`, idempotent re-stage, no-op detection, simulated agent edit drops validator errors **6 → 5** on real Astitva SRS, `.claude/` never in git history. The live (`/v1/sessions/:id/messages`) path reuses the L6-verified `runAgent()`. |
+| Level | What it proves | Verified (IST) |
+|---|---|---|
+| L1 | 45 entity tests pass | 2026-05-05 12:55 |
+| L2 | server starts, `/health` ok | 2026-05-05 13:17 |
+| L3 | `/v1/skills` returns the 16 skills | 2026-05-05 13:24 |
+| L4 | `/v1/skills/:slug` returns SKILL.md body | 2026-05-05 13:30 |
+| L5 | `/v1/bundles/generate` produces a valid ZIP, validator-errors=0 | 2026-05-05 13:44 |
+| L6 | `/v1/agent/query` runs Claude session, agent reads `.claude/skills/<name>/SKILL.md`, returns end_turn, 0 errors | 2026-05-05 13:56 |
+| L7 | Phase 3 session lifecycle: create → first-pass turn 0 → real edit drops validator errors → diff → revert → ZIP. Org-agnostic 16/16 invariants harness passes on the post-edit bundle. Demo: `bash scripts/demo-phase-3.sh` | 2026-05-05 15:17 |
+| L8 | Phase 4 machinery (no key): per-session skill staging + `commitWorkspaceChanges` proven via `node scripts/dryrun-phase-4.mjs` — `.gitignore` excludes `.claude/`, idempotent re-stage, no-op detection, simulated agent edit drops validator errors **6 → 5** on real Astitva SRS, `.claude/` never in git history. The live (`/v1/sessions/:id/messages`) path reuses the L6-verified `runAgent()`. | 2026-05-05 16:20 |
 
 If you change anything in `src/`, re-run `bash scripts/verify.sh` (L1–L5 minimum) before committing. For session-API changes also re-run `bash scripts/demo-phase-3.sh`. For changes to `src/sessions.js` or `/v1/sessions/:id/messages`, also re-run `node scripts/dryrun-phase-4.mjs`.
 
@@ -146,8 +146,8 @@ The manifest contains absolute paths to private SRS files. **Do not commit the m
 | 0 | Generator hardened, 45 entity tests, multi-org pass | ✅ |
 | 1 | `IndividualEncounterCancellation` encounterTypeUUID bug + regression test | ✅ |
 | 2 | HTTP API + Claude Agent SDK runtime, BYO key, verified L1–L6 | ✅ |
-| 3 | Workspace persistence — sessions, git-per-turn, diff, revert, ZIP, org-agnostic invariants harness | ✅ |
-| 4 | Real Claude integration on `/v1/sessions/:id/messages` — agent edits in `<session>/bundle/`, server `git add -A && git commit` after the SSE stream ends. Per-session skill staging + `.gitignore` for `.claude/`. Dryrun (L8) green. | ✅ |
+| 3 | Workspace persistence — sessions, git-per-turn, diff, revert, ZIP, org-agnostic invariants harness | ✅ 2026-05-05 15:17 IST |
+| 4 | Real Claude integration on `/v1/sessions/:id/messages` — agent edits in `<session>/bundle/`, server `git add -A && git commit` after the SSE stream ends. Per-session skill staging + `.gitignore` for `.claude/`. Dryrun (L8) green. | ✅ 2026-05-05 16:20 IST |
 | 5 | **Token-cost wallet (pay-per-use)** | next |
 | 6 | Avni admin upload integration via MCP | TODO |
 | 7 | UI inside Avni SaaS, Avni SSO | TODO |
