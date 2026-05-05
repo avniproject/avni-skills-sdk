@@ -86,13 +86,15 @@ curl -s -X POST "$BASE/v1/agent/query" \
 echo ""
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   echo ""
-  echo "  Live agent run (10s smoke):"
-  timeout 30 curl -sN -X POST "$BASE/v1/agent/query" \
+  echo "  Live agent run (60s timeout via curl --max-time):"
+  # curl --max-time is portable across macOS + Linux (GNU `timeout` isn't on macOS by default)
+  curl -sN --max-time 60 -X POST "$BASE/v1/agent/query" \
     -H "Authorization: Bearer $ANTHROPIC_API_KEY" \
     -H "Content-Type: application/json" \
     -d '{"prompt":"List the avni-skills you have access to. Reply concisely."}' \
-    | head -c 600
+    | head -c 1200
   echo ""
+  echo "  (truncated to 1200 bytes; full SSE stream is what the server actually emitted)"
 else
   echo "  (set ANTHROPIC_API_KEY to run a real agent query)"
 fi
