@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 
+# Lockfile — keep committed for reproducible installs
+# (intentionally NOT in .gitignore)
+
 # Build artifacts
 dist/
 *.log

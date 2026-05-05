@@ -1,14 +1,62 @@
 # avni-skills-sdk
 
-Test framework, validation harness, and SDK scaffolding for the Avni bundle generator. Wraps [avniproject/avni-skills](https://github.com/avniproject/avni-skills) as the canonical knowledge base.
+HTTP API + Claude-Agent-SDK runtime that wraps [avniproject/avni-skills](https://github.com/avniproject/avni-skills) as agent-callable endpoints. **Bring your own Anthropic API key** and you can drive the entire AVNI knowledge base from any language.
 
 > **Goal:** turn the deterministic SRS-to-Bundle pipeline into a reliable, agent-driven workflow that takes an Excel SRS and produces a valid Avni bundle ZIP iteratively, with every step rigidly tested using claude code Sdk wrapped into API.
 
 ---
 
+## Quick start (60 seconds)
+
+```bash
+git clone https://github.com/avniproject/avni-skills.git ~/code/avni-skills
+git clone https://github.com/avniproject/avni-skills-sdk.git ~/code/avni-skills-sdk
+
+cd ~/code/avni-skills && npm install
+cd ~/code/avni-skills-sdk && npm install
+AVNI_SKILLS_PATH=~/code/avni-skills npm start
+```
+
+API listens on `:3030`. Drive it from any language:
+
+```bash
+# List skills (no API key needed)
+curl http://localhost:3030/v1/skills
+
+# Read a skill in full
+curl http://localhost:3030/v1/skills/srs-bundle-generator
+
+# Deterministic bundle generation (no LLM, no API key)
+curl -X POST http://localhost:3030/v1/bundles/generate \
+  -F "forms=@./MyOrg-Forms.xlsx" \
+  -F "modelling=@./MyOrg-Modelling.xlsx" \
+  -F "org=MyOrg" \
+  -o MyOrg.zip
+
+# Full Claude-agent loop with skills auto-loaded — BYO Anthropic key
+curl -N -X POST http://localhost:3030/v1/agent/query \
+  -H "Authorization: Bearer $ANTHROPIC_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"What does the data-migration skill cover?"}'
+```
+
+## API endpoints
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/health` | — | liveness + paths |
+| `GET` | `/v1/skills` | — | list all skills (slug, name, description, version) |
+| `GET` | `/v1/skills/:slug` | — | full SKILL.md body + supporting files |
+| `POST` | `/v1/bundles/generate` | — | deterministic SRS → bundle.zip (multipart upload). Returns the ZIP plus `X-Bundle-Errors` / `X-Bundle-Warnings` / `X-Bundle-Validation` headers from the AVNI server-contract validator. |
+| `POST` | `/v1/agent/query` | `Authorization: Bearer <ANTHROPIC_API_KEY>` | one-shot agent query. SSE stream of agent events. Skills auto-loaded from `cwd = avni-skills/`. |
+
+The agent endpoint is BYO-key — there is no platform key, no rate limiter, no quota. Anyone with their own Anthropic key can run it.
+
+---
+
 ## Status — May 2026
 
-The deterministic generator runs cleanly on **10 different orgs** (8 unseen during development). The framework that proves it has **44 entity-level tests** that pass without depending on any specific organisation.
+The deterministic generator runs cleanly on **10 different orgs** (8 unseen during development). The framework that proves it has **45 entity-level tests** that pass without depending on any specific organisation. The HTTP API is now live and exposes the entire skill set as Claude-Agent-SDK-driven endpoints.
 
 | Component | Status |
 |---|---|
@@ -20,13 +68,14 @@ The deterministic generator runs cleanly on **10 different orgs** (8 unseen duri
 | Yes/No use STANDARD_UUIDS | ✅ verified |
 | All hardcoded org-specific heuristics removed | ✅ Pregnancy/Child keyword guesser, Td Booster, hardcoded colours/labels — gone |
 | Programs auto-discover from SRS Modelling | ✅ proven on Astitva |
-| `IndividualEncounterCancellation` mappings carry encounterTypeUUID | ⚠ **known bug** — affects 4/10 orgs (~30 min fix) |
-| Cross-group concept reuse (`F2`) | ❌ semantic, NOT generator's job — **handled by the agent loop (Path B, not yet built)** |
+| `IndividualEncounterCancellation` mappings carry encounterTypeUUID | ✅ fixed + regression-pinned |
+| HTTP API server (deterministic + agent endpoints) | ✅ live (`npm start`) |
+| Cross-group concept reuse (`F2`) | ❌ semantic, NOT generator's job — **handled by the agent loop** |
 | Live AVNI server upload (Level 5) | ⏳ never run — needs server credentials |
 
-**On a canonical SRS (Forms.xlsx + proper Modelling.xlsx): ~99% of generator-side bugs are gone.** The remaining 1% is the cancellation-encounter UUID bug above.
+**On a canonical SRS (Forms.xlsx + proper Modelling.xlsx): ~99% of generator-side bugs are gone.** Remaining errors are F2 cross-group reuse — that's what the `/v1/agent/query` endpoint exists to handle.
 
-**On an SRS missing a Modelling file:** bundle generates, but `ProgramEnrolment` / `ProgramExit` form mappings dangle — fixable two ways: improve the SRS, or have the agent infer programs.
+**On an SRS missing a Modelling file:** bundle generates, but `ProgramEnrolment` / `ProgramExit` form mappings dangle — fixable two ways: improve the SRS, or have the agent infer programs from form-name analysis.
 
 ---
 
@@ -36,29 +85,35 @@ The deterministic generator runs cleanly on **10 different orgs** (8 unseen duri
 avni-skills-sdk/
 ├── README.md
 ├── package.json
+├── src/                            # SDK + HTTP API
+│   ├── server.js                   # Express server (the API endpoints)
+│   ├── agent.js                    # Claude Agent SDK wrapper
+│   ├── skills.js                   # Skill discovery from avni-skills/
+│   ├── bundle.js                   # Deterministic generator + validator + ZIP
+│   └── index.js                    # Programmatic exports
 ├── tests/
-│   ├── entities/                  # 44 org-agnostic invariant tests
-│   │   ├── lib/fixture.js         # synthetic-SRS workbook builder
-│   │   ├── subject-types.test.js  # 8 tests
-│   │   ├── programs.test.js       # 6 tests
-│   │   ├── encounter-types.test.js# 4 tests
-│   │   ├── forms.test.js          # 7 tests
-│   │   ├── concepts.test.js       # 8 tests
-│   │   ├── form-mappings.test.js  # 6 tests
+│   ├── entities/                   # 45 org-agnostic invariant tests
+│   │   ├── lib/fixture.js          # synthetic-SRS workbook builder
+│   │   ├── subject-types.test.js   # 8 tests
+│   │   ├── programs.test.js        # 6 tests
+│   │   ├── encounter-types.test.js # 4 tests
+│   │   ├── forms.test.js           # 7 tests
+│   │   ├── concepts.test.js        # 8 tests
+│   │   ├── form-mappings.test.js   # 7 tests (incl. cancellation regression)
 │   │   ├── operational-files.test.js  # 5 tests
 │   │   └── README.md
-│   └── bundle-harness.js          # 16-test bundle-level harness (per generated bundle)
+│   └── bundle-harness.js           # 16-test bundle-level harness (per generated bundle)
 ├── scripts/
-│   └── multi-org-run.js           # generate + classify errors across N orgs
+│   └── multi-org-run.js            # generate + classify errors across N orgs
 ├── examples/
-│   └── manifest.example.json      # input shape for multi-org-run
+│   └── manifest.example.json       # input shape for multi-org-run
 └── docs/
-    ├── summary.md                       # 5-step POC report
-    ├── audit.md                         # bundle audit (JK Laxmi)
-    ├── path-a-reconciliation.md         # generator fix #1 (junk-concept filter)
-    ├── astitva-reconciliation.md        # second-org reconciliation against prod UAT bundle
-    ├── bug-a-and-dehardcoding.md        # Bug A fix + removal of all hardcoded org assumptions
-    └── multi-org-empirical.md           # 10-org empirical run summary
+    ├── summary.md                  # 5-step POC report
+    ├── audit.md                    # bundle audit
+    ├── path-a-reconciliation.md    # generator fix #1 (junk-concept filter)
+    ├── astitva-reconciliation.md   # second-org reconciliation
+    ├── bug-a-and-dehardcoding.md   # Bug A fix + removal of all hardcoded org assumptions
+    └── multi-org-empirical.md      # 10-org empirical run summary
 ```
 
 **This repo intentionally ships ZERO proprietary data.** Tests build minimal SRS workbooks in memory at runtime via `tests/entities/lib/fixture.js`. Real org Excel files are never committed.
@@ -151,10 +206,10 @@ The deterministic generator is now reliable enough to be the first pass. The nex
 
 | Phase | Scope | Status |
 |---|---|---|
-| 0 | Deterministic generator hardened, entity tests green, multi-org empirical pass | ✅ done |
-| 1 | Fix `IndividualEncounterCancellation` encounterTypeUUID bug | TODO (~30 min) |
-| 2 | Wrap generator in `@anthropic-ai/claude-agent-sdk` chat loop with streaming | TODO |
-| 3 | Workspace persistence (per session, S3-backed, git-per-turn) | TODO |
+| 0 | Deterministic generator hardened, 45 entity tests green, multi-org empirical pass | ✅ done |
+| 1 | Fix `IndividualEncounterCancellation` encounterTypeUUID bug | ✅ done (regression test in `form-mappings.test.js`) |
+| 2 | HTTP API + `@anthropic-ai/claude-agent-sdk` runtime (BYO key) | ✅ done (`src/server.js`) |
+| 3 | Workspace persistence (per session, file storage, git-per-turn diff) | TODO |
 | 4 | Token-cost accounting + per-org wallet (pay-per-use) | TODO |
 | 5 | Avni admin upload integration (`/implementation/uploadBundle` MCP tool) | TODO |
 | 6 | UI inside Avni SaaS (chat + artifact split-pane), Avni SSO | TODO |

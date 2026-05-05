@@ -114,4 +114,28 @@ describe("FormMappings", () => {
     assert.equal(m.programUUID ?? null, null, "no programUUID for non-program encounter");
   });
 
+  test("IndividualEncounterCancellation from explicit sheet has encounterTypeUUID (regression)", () => {
+    // When a Forms.xlsx contains an explicit "<X> Cancellation" sheet for a
+    // non-program encounter, the addFormMapping path used to skip
+    // encounterTypeUUID assignment, leaving the formMapping dangling per
+    // server contract. Affected Atul, EKAM, MonkeySports, Gram-Seva.
+    // Regression-pinned 2026-05-05.
+    const b = generate({
+      formsSheets: {
+        "Field Visit": [["Field Name", "Data Type"], ["N", "Text"]],
+        "Field Visit Cancellation": [["Field Name", "Data Type"], ["Reason", "Text"]],
+      },
+      modellingSheets: {
+        "Subject Types": [["Subject Type Name", "Type"], ["W", "Person"]],
+        Encounters: [["Encounter Name", "Subject Type"], ["Field Visit", "W"]],
+      },
+    });
+    const m = b.formMappings.find(x => x.formName === "Field Visit Cancellation");
+    assert.ok(m, "cancellation formMapping exists");
+    assert.equal(m.formType, "IndividualEncounterCancellation");
+    assert.ok(m.encounterTypeUUID, "encounterTypeUUID is set");
+    const knownEncs = new Set(b.encounterTypes.map(e => e.uuid));
+    assert.ok(knownEncs.has(m.encounterTypeUUID), "encounterTypeUUID resolves");
+  });
+
 });

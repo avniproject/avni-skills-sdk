@@ -2,19 +2,23 @@
   "name": "avni-skills-sdk",
   "version": "0.1.0",
   "private": true,
-  "description": "Test framework, generator validation harness, and SDK scaffolding for the AVNI bundle generator. Wraps avniproject/avni-skills as the canonical knowledge base.",
+  "description": "API + agent runtime that wraps avniproject/avni-skills as Claude-Agent-SDK-driven endpoints. BYO Anthropic API key.",
+  "type": "module",
+  "main": "src/index.js",
   "scripts": {
     "test:entities": "node --test tests/entities/*.test.js",
     "test:bundle": "node tests/bundle-harness.js",
     "test:multi-org": "node scripts/multi-org-run.js",
-    "test": "npm run test:entities"
+    "test": "npm run test:entities",
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
   },
-  "engines": {
-    "node": ">=22"
-  },
+  "engines": { "node": ">=22" },
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/avniproject/avni-skills-sdk.git"
+  "repository": { "type": "git", "url": "https://github.com/avniproject/avni-skills-sdk.git" },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.128",
+    "express": "^4.21.2",
+    "archiver": "^7.0.1"
   }
 }
