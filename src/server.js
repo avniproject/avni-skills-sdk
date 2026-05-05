@@ -5,14 +5,28 @@
 // /v1/bundles/generate) require no key.
 //
 // Endpoints:
-//   GET  /health
-//   GET  /v1/skills                  list all skills (frontmatter only)
-//   GET  /v1/skills/:slug             read full SKILL.md + supporting files
-//   POST /v1/bundles/generate         multipart: forms.xlsx + optional modelling.xlsx
-//                                     → returns bundle.zip (deterministic, no LLM)
-//   POST /v1/agent/query              run a one-shot agent query, stream SSE
-//                                     body: { prompt, model?, workspace? }
-//                                     header: Authorization: Bearer <ANTHROPIC_KEY>
+//   GET    /health
+//   GET    /v1/skills                  list all skills (frontmatter only)
+//   GET    /v1/skills/:slug             read full SKILL.md + supporting files
+//   POST   /v1/bundles/generate         multipart: forms.xlsx + optional modelling.xlsx
+//                                       → returns bundle.zip (deterministic, no LLM)
+//   POST   /v1/agent/query              run a one-shot agent query, stream SSE
+//                                       body: { prompt, model?, workspace? }
+//                                       header: Authorization: Bearer <ANTHROPIC_KEY>
+//
+//   --- Phase 3: iterative editing sessions ---
+//   POST   /v1/sessions                 multipart upload → first-pass bundle, returns id
+//   GET    /v1/sessions                 list all sessions
+//   GET    /v1/sessions/:id             metadata + validator state + file tree
+//   GET    /v1/sessions/:id/files/*    read a file from the bundle
+//   GET    /v1/sessions/:id/turns       list edit turns (each = a git commit)
+//   GET    /v1/sessions/:id/turns/:n/diff   unified diff for a turn
+//   POST   /v1/sessions/:id/edit        Wizard-of-Oz edit (no LLM): apply pre-supplied
+//                                       file changes as a turn. Body: { summary, edits }
+//   POST   /v1/sessions/:id/messages    agent-driven edit (BYO Anthropic key, SSE)
+//   POST   /v1/sessions/:id/revert      { to_turn } — hard reset to that turn
+//   GET    /v1/sessions/:id/zip         packaged ZIP of current state
+//   DELETE /v1/sessions/:id             cleanup
 
 import express from "express";
 import fs from "node:fs";
@@ -21,6 +35,7 @@ import os from "node:os";
 import { listSkills, readSkill, avniSkillsPath } from "./skills.js";
 import { generateBundle, validateBundle, zipBundle } from "./bundle.js";
 import { runAgent } from "./agent.js";
+import * as sessions from "./sessions.js";
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -204,6 +219,125 @@ app.post("/v1/agent/query", async (req, res) => {
   }
 });
 
+// ───────────────────────────────────────────────────────────────────
+// /v1/sessions/* — Phase 3 iterative editing
+// ───────────────────────────────────────────────────────────────────
+
+// Create a new session from an SRS upload. Runs the deterministic generator
+// as turn 0. No LLM call required — caller can iterate later via /edit (WoO)
+// or /messages (real agent, BYO key).
+app.post("/v1/sessions", async (req, res) => {
+  try {
+    const ct = req.headers["content-type"] || "";
+    if (!ct.includes("multipart/form-data")) {
+      return res.status(400).json({ error: "Content-Type must be multipart/form-data" });
+    }
+    const { fields, files } = await readMultipart(req);
+    if (!files.forms) return res.status(400).json({ error: "missing 'forms' file (Forms.xlsx)" });
+
+    const result = sessions.createSession({
+      formsBuffer: files.forms.buffer,
+      formsFilename: files.forms.filename,
+      modellingBuffer: files.modelling?.buffer,
+      modellingFilename: files.modelling?.filename,
+      org: fields.org || "Bundle",
+    });
+    res.status(201).json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/v1/sessions", (_req, res) => {
+  try { res.json({ sessions: sessions.listSessions() }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/v1/sessions/:id", (req, res) => {
+  try {
+    const meta = sessions.getSession(req.params.id);
+    res.json({ ...meta, files: sessions.listFiles(req.params.id) });
+  } catch (e) {
+    res.status(404).json({ error: e.message });
+  }
+});
+
+app.get("/v1/sessions/:id/files/*", (req, res) => {
+  try {
+    const rel = req.params[0];
+    const content = sessions.readFile(req.params.id, rel);
+    res.setHeader("Content-Type", rel.endsWith(".json") ? "application/json" : "text/plain");
+    res.send(content);
+  } catch (e) {
+    res.status(404).json({ error: e.message });
+  }
+});
+
+app.get("/v1/sessions/:id/turns", (req, res) => {
+  try { res.json({ turns: sessions.listTurns(req.params.id) }); }
+  catch (e) { res.status(404).json({ error: e.message }); }
+});
+
+app.get("/v1/sessions/:id/turns/:n/diff", (req, res) => {
+  try {
+    const diff = sessions.diffTurn(req.params.id, Number(req.params.n));
+    res.setHeader("Content-Type", "text/plain");
+    res.send(diff);
+  } catch (e) {
+    res.status(404).json({ error: e.message });
+  }
+});
+
+// Wizard-of-Oz edit — apply pre-supplied file edits as a turn.
+// Body: { summary: string, edits: { "path/in/bundle.json": "new content", ... } }
+// Set a path's value to null to delete that file.
+// No LLM call. Used to test the session machinery end-to-end without burning
+// tokens (and for any external agent that wants to drive edits directly).
+app.post("/v1/sessions/:id/edit", (req, res) => {
+  try {
+    const { summary, edits } = req.body || {};
+    if (!summary) return res.status(400).json({ error: "summary required" });
+    if (!edits || typeof edits !== "object") return res.status(400).json({ error: "edits required (object)" });
+    const result = sessions.commitTurn(req.params.id, summary, edits);
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post("/v1/sessions/:id/revert", (req, res) => {
+  try {
+    const toTurn = req.body?.to_turn;
+    if (toTurn === undefined) return res.status(400).json({ error: "to_turn required" });
+    const meta = sessions.revertToTurn(req.params.id, Number(toTurn));
+    res.json(meta);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.get("/v1/sessions/:id/zip", async (req, res) => {
+  try {
+    const meta = sessions.getSession(req.params.id);
+    const { zipPath, bytes } = await sessions.zipBundle(req.params.id);
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="${meta.org}.zip"`);
+    res.setHeader("X-Bundle-Validation", JSON.stringify(meta.validationAtCurrent).slice(0, 4000));
+    fs.createReadStream(zipPath).pipe(res);
+  } catch (e) {
+    res.status(404).json({ error: e.message });
+  }
+});
+
+app.delete("/v1/sessions/:id", (req, res) => {
+  try {
+    sessions.deleteSession(req.params.id);
+    res.status(204).end();
+  } catch (e) {
+    res.status(404).json({ error: e.message });
+  }
+});
+
 const PORT = Number(process.env.PORT || 3030);
 app.listen(PORT, () => {
   console.log(`avni-skills-sdk API listening on :${PORT}`);
@@ -211,7 +345,17 @@ app.listen(PORT, () => {
   console.log(`  Endpoints:`);
   console.log(`    GET  /health`);
   console.log(`    GET  /v1/skills`);
-  console.log(`    GET  /v1/skills/:slug`);
-  console.log(`    POST /v1/bundles/generate    (multipart: forms.xlsx, optional modelling.xlsx)`);
-  console.log(`    POST /v1/agent/query         (BYO Anthropic key in Authorization: Bearer)`);
+  console.log(`    GET    /v1/skills/:slug`);
+  console.log(`    POST   /v1/bundles/generate    (multipart: forms.xlsx, optional modelling.xlsx)`);
+  console.log(`    POST   /v1/agent/query         (BYO Anthropic key in Authorization: Bearer)`);
+  console.log(`    POST   /v1/sessions             (multipart upload → first-pass bundle, returns id)`);
+  console.log(`    GET    /v1/sessions             (list all sessions)`);
+  console.log(`    GET    /v1/sessions/:id          (metadata + file tree)`);
+  console.log(`    GET    /v1/sessions/:id/files/* (read a file)`);
+  console.log(`    GET    /v1/sessions/:id/turns    (list edit turns)`);
+  console.log(`    GET    /v1/sessions/:id/turns/:n/diff`);
+  console.log(`    POST   /v1/sessions/:id/edit     (Wizard-of-Oz: apply pre-supplied edits as a turn)`);
+  console.log(`    POST   /v1/sessions/:id/revert   ({ to_turn })`);
+  console.log(`    GET    /v1/sessions/:id/zip      (final ZIP)`);
+  console.log(`    DELETE /v1/sessions/:id          (cleanup)`);
 });

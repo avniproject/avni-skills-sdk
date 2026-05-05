@@ -39,8 +39,9 @@ End-to-end tested 2026-05-05 with a real Anthropic key. All six levels of `bash 
 | L4 | `/v1/skills/:slug` returns SKILL.md body |
 | L5 | `/v1/bundles/generate` produces a valid ZIP, validator-errors=0 |
 | L6 | `/v1/agent/query` runs Claude session, agent reads `.claude/skills/<name>/SKILL.md`, returns end_turn, 0 errors |
+| L7 | Phase 3 session lifecycle: create → first-pass turn 0 → real edit drops validator errors → diff → revert → ZIP. Org-agnostic 16/16 invariants harness passes on the post-edit bundle. Demo: `bash scripts/demo-phase-3.sh` |
 
-If you change anything in `src/`, re-run `bash scripts/verify.sh` (L1–L5 minimum) before committing.
+If you change anything in `src/`, re-run `bash scripts/verify.sh` (L1–L5 minimum) before committing. For session-API changes also re-run `bash scripts/demo-phase-3.sh`.
 
 ---
 
@@ -144,13 +145,14 @@ The manifest contains absolute paths to private SRS files. **Do not commit the m
 | 0 | Generator hardened, 45 entity tests, multi-org pass | ✅ |
 | 1 | `IndividualEncounterCancellation` encounterTypeUUID bug + regression test | ✅ |
 | 2 | HTTP API + Claude Agent SDK runtime, BYO key, verified L1–L6 | ✅ |
-| 3 | **Workspace persistence — multi-turn editing sessions with git-per-turn diff** | next |
-| 4 | Token-cost wallet (pay-per-use) | TODO |
-| 5 | Avni admin upload integration via MCP | TODO |
-| 6 | UI inside Avni SaaS, Avni SSO | TODO |
-| 7 | Skill eval harness | TODO |
+| 3 | Workspace persistence — sessions, git-per-turn, diff, revert, ZIP, org-agnostic invariants harness | ✅ |
+| 4 | **Real Claude integration on `/v1/sessions/:id/messages` — agent computes edits** | next |
+| 5 | Token-cost wallet (pay-per-use) | TODO |
+| 6 | Avni admin upload integration via MCP | TODO |
+| 7 | UI inside Avni SaaS, Avni SSO | TODO |
+| 8 | Skill eval harness | TODO |
 
-If you're picking up Phase 3, the sketch is in `README.md` under "Phase 3 sketch (next)".
+If you're picking up Phase 4, the sketch is in `README.md` under "Phase 4 sketch (next)". The session machinery on `/v1/sessions/:id/edit` is LLM-agnostic; Phase 4 wires Claude on top to compute the edits payload.
 
 ---
 

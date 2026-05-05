@@ -18,6 +18,7 @@ End-to-end tested with a real Anthropic key:
 | L4 | `/v1/skills/:slug` returns SKILL.md body + supporting files | ✅ |
 | L5 | `/v1/bundles/generate` accepts a synthetic Excel and returns a valid ZIP with **0 validator errors** | ✅ |
 | L6 | `/v1/agent/query` runs a real Claude session that consults the actual avni-skills via tool calls (Glob → Read on `.claude/skills/<name>/SKILL.md`), streams SSE, returns end_turn with 0 errors | ✅ |
+| L7 | Phase 3 sessions: create from real SRS → first-pass at turn 0 → real edit reduces validator errors → diff → revert → ZIP. Org-agnostic invariant harness 16/16 on the post-edit bundle. | ✅ |
 
 Reproduce in your shell:
 
@@ -85,8 +86,20 @@ curl -N -X POST http://localhost:3030/v1/agent/query \
 | `GET` | `/v1/skills/:slug` | — | full SKILL.md body + supporting file list |
 | `POST` | `/v1/bundles/generate` | — | multipart Excel → bundle.zip + `X-Bundle-Errors` / `X-Bundle-Warnings` / `X-Bundle-Validation` headers from the AVNI server-contract validator. **No LLM call**, no token cost. |
 | `POST` | `/v1/agent/query` | `Authorization: Bearer <ANTHROPIC_API_KEY>` | one-shot Claude Agent session. SSE-streamed events. Skills auto-loaded from a staged isolated workspace. |
+| `POST` | `/v1/sessions` | — | multipart upload → first-pass bundle, returns `sessionId`. Workspace = git repo, first-pass committed as turn 0. |
+| `GET` | `/v1/sessions` | — | list all sessions |
+| `GET` | `/v1/sessions/:id` | — | metadata + validator state + file tree |
+| `GET` | `/v1/sessions/:id/files/*` | — | read any file from the bundle |
+| `GET` | `/v1/sessions/:id/turns` | — | list edit turns (each = a git commit) |
+| `GET` | `/v1/sessions/:id/turns/:n/diff` | — | unified diff for turn `n` |
+| `POST` | `/v1/sessions/:id/edit` | — | apply pre-supplied file edits as a turn (Wizard-of-Oz, no LLM). Body: `{ summary, edits: { "path": "new content", ... } }` |
+| `POST` | `/v1/sessions/:id/revert` | — | hard-reset to a turn. Body: `{ to_turn }` |
+| `GET` | `/v1/sessions/:id/zip` | — | packaged ZIP of current state |
+| `DELETE` | `/v1/sessions/:id` | — | cleanup |
 
 The agent endpoint is **BYO-key**. There's no platform-side Anthropic key, no rate limiter, no quota — anyone with their own Claude key can run the full workflow.
+
+The session endpoints power iterative editing: each edit is a git commit on the workspace, fully revertable. A real Claude integration on top of `/v1/sessions/:id/edit` (where the agent computes the edits instead of the caller supplying them) is the next packaging step — the session machinery itself is LLM-agnostic and proven by `scripts/demo-phase-3.sh`.
 
 ---
 
@@ -286,25 +299,16 @@ If neither exists, the SDK throws at startup with a helpful error.
 | 0 | Deterministic generator hardened, 45 entity tests green, multi-org empirical pass | ✅ |
 | 1 | `IndividualEncounterCancellation` encounterTypeUUID bug + regression test | ✅ |
 | 2 | HTTP API + Claude Agent SDK runtime, BYO key, verified L1–L6 | ✅ |
-| 3 | **Workspace persistence** — multi-turn editing sessions with git-per-turn diff history | next |
-| 4 | Token-cost wallet (pay-per-use, per-org) | TODO |
-| 5 | Avni admin upload integration via MCP (`/implementation/uploadBundle`) | TODO |
-| 6 | UI inside Avni SaaS (chat + artifact split-pane), Avni SSO | TODO |
-| 7 | Skill eval harness — golden SRS → expected bundle, regression-block PRs | TODO |
+| 3 | Workspace persistence — sessions, git-per-turn, diff, revert, ZIP, org-agnostic invariants harness | ✅ |
+| 4 | Real Claude integration on `/v1/sessions/:id/messages` — agent computes edits | next |
+| 5 | Token-cost wallet (pay-per-use, per-org) | TODO |
+| 6 | Avni admin upload integration via MCP (`/implementation/uploadBundle`) | TODO |
+| 7 | UI inside Avni SaaS (chat + artifact split-pane), Avni SSO | TODO |
+| 8 | Skill eval harness — golden SRS → expected bundle, regression-block PRs | TODO |
 
-### Phase 3 sketch (next)
+### Phase 4 sketch (next)
 
-```
-POST   /v1/sessions                       multipart upload → first-pass bundle, returns id
-GET    /v1/sessions/:id                   metadata + current bundle file tree
-GET    /v1/sessions/:id/files/:path        read a specific bundle file
-GET    /v1/sessions/:id/turns              list edit turns (each = git commit)
-GET    /v1/sessions/:id/turns/:n/diff      patch for turn n
-POST   /v1/sessions/:id/messages           BYO key — agent applies edits, validates, commits
-POST   /v1/sessions/:id/revert             { to_turn }
-GET    /v1/sessions/:id/zip                final bundle.zip
-DELETE /v1/sessions/:id
-```
+The session machinery is LLM-agnostic and proven by `scripts/demo-phase-3.sh`. Phase 4 wires the Claude Agent SDK on top of `/v1/sessions/:id/edit`: instead of the caller supplying file diffs, the agent reads the bundle + validator errors, decides what to change, and produces the same `{ summary, edits }` payload. The session API stays unchanged.
 
 ---
 
