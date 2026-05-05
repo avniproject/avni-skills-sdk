@@ -86,15 +86,68 @@ curl -s -X POST "$BASE/v1/agent/query" \
 echo ""
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   echo ""
-  echo "  Live agent run (60s timeout via curl --max-time):"
-  # curl --max-time is portable across macOS + Linux (GNU `timeout` isn't on macOS by default)
-  curl -sN --max-time 60 -X POST "$BASE/v1/agent/query" \
+  echo "  Live agent run (90s timeout, full stream → /tmp/avni-sdk-l6-stream.log):"
+  curl -sN --max-time 90 -X POST "$BASE/v1/agent/query" \
     -H "Authorization: Bearer $ANTHROPIC_API_KEY" \
     -H "Content-Type: application/json" \
-    -d '{"prompt":"List the avni-skills you have access to. Reply concisely."}' \
-    | head -c 1200
-  echo ""
-  echo "  (truncated to 1200 bytes; full SSE stream is what the server actually emitted)"
+    -d '{"prompt":"List the 16 avni skills available. For each, give a one-line description. Use the Skill or Read tool — do not answer from memory."}' \
+    > /tmp/avni-sdk-l6-stream.log
+
+  # Summarize the stream — count events, show text content, flag issues
+  node - <<'NODE_EOF' /tmp/avni-sdk-l6-stream.log
+  const fs = require("node:fs");
+  const raw = fs.readFileSync(process.argv[2], "utf8");
+  const events = [];
+  for (const block of raw.split(/\n\n+/)) {
+    const ev = (block.match(/^event: (\S+)/m) || [,null])[1];
+    const data = (block.match(/^data: (.*)$/m) || [,null])[1];
+    if (ev && data) { try { events.push({ ev, data: JSON.parse(data) }); } catch {} }
+  }
+  console.log(`    total SSE events: ${events.length}`);
+
+  const counts = {};
+  for (const e of events) {
+    const tag = e.ev === "agent" ? `agent.${e.data.type || "?"}` : e.ev;
+    counts[tag] = (counts[tag] || 0) + 1;
+  }
+  for (const [k, v] of Object.entries(counts)) console.log(`      ${k}: ${v}`);
+
+  const toolCalls = events.filter(e => e.ev === "agent" && e.data.type === "assistant")
+    .flatMap(e => (e.data.message?.content || [])
+      .filter(c => c.type === "tool_use")
+      .map(c => ({ name: c.name, input: c.input })));
+  console.log(`    tool calls: ${toolCalls.length}`);
+  toolCalls.slice(0, 8).forEach(tc => {
+    const i = JSON.stringify(tc.input).slice(0, 100);
+    console.log(`      • ${tc.name} ${i}`);
+  });
+
+  const texts = events.filter(e => e.ev === "agent" && e.data.type === "assistant")
+    .flatMap(e => (e.data.message?.content || []).filter(c => c.type === "text").map(c => c.text));
+  if (texts.length) {
+    console.log(`    final text (${texts.join("").length} chars):`);
+    const out = texts.join("\n");
+    console.log(out.split("\n").slice(0, 25).map(l => "      " + l).join("\n"));
+    if (out.split("\n").length > 25) console.log(`      ...(${out.split("\n").length - 25} more lines in /tmp/avni-sdk-l6-stream.log)`);
+  } else {
+    console.log("    no assistant text emitted — agent may have errored before responding");
+  }
+
+  const result = events.find(e => e.ev === "agent" && e.data.type === "result");
+  if (result) {
+    console.log(`    result: stop_reason=${result.data.stop_reason || "?"}`);
+    if (result.data.usage) console.log(`    usage: ${JSON.stringify(result.data.usage)}`);
+    if (result.data.total_cost_usd != null) console.log(`    cost: $${result.data.total_cost_usd}`);
+  }
+
+  const errs = events.filter(e => e.ev === "error");
+  if (errs.length) {
+    console.log("    ✗ errors:");
+    errs.forEach(e => console.log(`      ${JSON.stringify(e.data)}`));
+  } else {
+    console.log("    ✓ no errors");
+  }
+NODE_EOF
 else
   echo "  (set ANTHROPIC_API_KEY to run a real agent query)"
 fi
