@@ -163,10 +163,21 @@ app.post("/v1/agent/query", async (req, res) => {
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders?.();
 
+  // Abort the agent only if the CLIENT disconnects from the response stream.
+  // Do NOT listen on req.on("close") — that fires when the request *body*
+  // stream finishes reading (i.e. immediately after Express reads our small
+  // JSON body), and would abort the agent before it even spawned.
   const ac = new AbortController();
-  req.on("close", () => ac.abort());
+  let clientClosed = false;
+  res.on("close", () => {
+    if (!res.writableEnded) {
+      clientClosed = true;
+      ac.abort();
+    }
+  });
 
   const sse = (event, data) => {
+    if (res.writableEnded) return;
     res.write(`event: ${event}\n`);
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
@@ -175,14 +186,19 @@ app.post("/v1/agent/query", async (req, res) => {
     sse("start", { ts: Date.now(), model: model || "claude-haiku-4-5-20251001" });
     for await (const ev of runAgent({
       prompt, apiKey, model, workspace, systemPrompt, allowedTools, permissionMode,
-      signal: ac.signal,
+      abortController: ac,
     })) {
-      // Stream raw SDK events; client decides how to render them
       sse("agent", ev);
     }
     sse("done", { ts: Date.now() });
   } catch (e) {
-    sse("error", { message: e.message });
+    // Diagnostic log to server stdout — helps debug "aborted" mysteries
+    console.error("[/v1/agent/query] error:", e?.stack || e);
+    sse("error", {
+      message: e?.message || String(e),
+      name: e?.name,
+      clientClosed,
+    });
   } finally {
     res.end();
   }

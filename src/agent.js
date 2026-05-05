@@ -45,7 +45,7 @@ export async function* runAgent(opts) {
     systemPrompt = DEFAULT_SYSTEM_PROMPT,
     allowedTools = ["Read", "Glob", "Grep", "Bash", "Edit", "Write"],
     permissionMode = "bypassPermissions",
-    signal,
+    abortController,
   } = opts;
 
   if (!apiKey) throw new Error("apiKey is required (provide via Authorization header)");
@@ -58,17 +58,17 @@ export async function* runAgent(opts) {
   process.env.ANTHROPIC_API_KEY = apiKey;
 
   try {
-    const result = query({
-      prompt,
-      options: {
-        cwd,
-        model,
-        systemPrompt,
-        allowedTools,
-        permissionMode,
-        ...(signal ? { abortController: { signal } } : {}),
-      },
-    });
+    const queryOptions = {
+      cwd,
+      model,
+      systemPrompt,
+      allowedTools,
+      permissionMode,
+    };
+    // SDK expects an actual AbortController instance, not { signal }.
+    if (abortController) queryOptions.abortController = abortController;
+
+    const result = query({ prompt, options: queryOptions });
     for await (const event of result) {
       yield event;
     }
