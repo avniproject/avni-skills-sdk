@@ -53,3 +53,35 @@ export function ensureAgentWorkspace() {
   console.log(`  staged ${count} skills into ${dir}/.claude/skills/`);
   return dir;
 }
+
+/**
+ * Stage avni-skills's 16 skills into <targetDir>/.claude/skills/<name>.
+ * Idempotent — existing symlinks are left as-is, missing ones are created.
+ * Used by Phase 4's session-messages endpoint so the agent's cwd can be the
+ * session's bundle dir directly while still seeing the full skill catalog.
+ *
+ * Returns { staged, total } counts.
+ */
+export function ensureSkillsStagedAt(targetDir) {
+  const root = avniSkillsPath();
+  const skillsDir = path.join(targetDir, ".claude", "skills");
+  fs.mkdirSync(skillsDir, { recursive: true });
+  let staged = 0;
+  const skills = listSkills();
+  for (const skill of skills) {
+    const dst = path.join(skillsDir, skill.slug);
+    if (fs.existsSync(dst)) continue;
+    const src = path.join(root, skill.slug);
+    try {
+      fs.symlinkSync(src, dst, "dir");
+      staged++;
+    } catch {
+      try {
+        fs.mkdirSync(dst, { recursive: true });
+        fs.copyFileSync(path.join(src, "SKILL.md"), path.join(dst, "SKILL.md"));
+        staged++;
+      } catch { /* skip */ }
+    }
+  }
+  return { staged, total: skills.length };
+}

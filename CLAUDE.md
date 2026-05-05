@@ -40,8 +40,9 @@ End-to-end tested 2026-05-05 with a real Anthropic key. All six levels of `bash 
 | L5 | `/v1/bundles/generate` produces a valid ZIP, validator-errors=0 |
 | L6 | `/v1/agent/query` runs Claude session, agent reads `.claude/skills/<name>/SKILL.md`, returns end_turn, 0 errors |
 | L7 | Phase 3 session lifecycle: create → first-pass turn 0 → real edit drops validator errors → diff → revert → ZIP. Org-agnostic 16/16 invariants harness passes on the post-edit bundle. Demo: `bash scripts/demo-phase-3.sh` |
+| L8 | Phase 4 machinery (no key): per-session skill staging + `commitWorkspaceChanges` proven via `node scripts/dryrun-phase-4.mjs` — `.gitignore` excludes `.claude/`, idempotent re-stage, no-op detection, simulated agent edit drops validator errors **6 → 5** on real Astitva SRS, `.claude/` never in git history. The live (`/v1/sessions/:id/messages`) path reuses the L6-verified `runAgent()`. |
 
-If you change anything in `src/`, re-run `bash scripts/verify.sh` (L1–L5 minimum) before committing. For session-API changes also re-run `bash scripts/demo-phase-3.sh`.
+If you change anything in `src/`, re-run `bash scripts/verify.sh` (L1–L5 minimum) before committing. For session-API changes also re-run `bash scripts/demo-phase-3.sh`. For changes to `src/sessions.js` or `/v1/sessions/:id/messages`, also re-run `node scripts/dryrun-phase-4.mjs`.
 
 ---
 
@@ -146,13 +147,13 @@ The manifest contains absolute paths to private SRS files. **Do not commit the m
 | 1 | `IndividualEncounterCancellation` encounterTypeUUID bug + regression test | ✅ |
 | 2 | HTTP API + Claude Agent SDK runtime, BYO key, verified L1–L6 | ✅ |
 | 3 | Workspace persistence — sessions, git-per-turn, diff, revert, ZIP, org-agnostic invariants harness | ✅ |
-| 4 | **Real Claude integration on `/v1/sessions/:id/messages` — agent computes edits** | next |
-| 5 | Token-cost wallet (pay-per-use) | TODO |
+| 4 | Real Claude integration on `/v1/sessions/:id/messages` — agent edits in `<session>/bundle/`, server `git add -A && git commit` after the SSE stream ends. Per-session skill staging + `.gitignore` for `.claude/`. Dryrun (L8) green. | ✅ |
+| 5 | **Token-cost wallet (pay-per-use)** | next |
 | 6 | Avni admin upload integration via MCP | TODO |
 | 7 | UI inside Avni SaaS, Avni SSO | TODO |
 | 8 | Skill eval harness | TODO |
 
-If you're picking up Phase 4, the sketch is in `README.md` under "Phase 4 sketch (next)". The session machinery on `/v1/sessions/:id/edit` is LLM-agnostic; Phase 4 wires Claude on top to compute the edits payload.
+If you're picking up Phase 5 (wallet), the sketch is open: caller's per-key spend tracked server-side, soft cap before agent dispatch, hard cap mid-stream. Read `src/server.js`'s `/v1/sessions/:id/messages` for where to hook the meter — the `usage` blocks come through in the agent SSE events.
 
 ---
 

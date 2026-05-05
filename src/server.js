@@ -305,6 +305,108 @@ app.post("/v1/sessions/:id/edit", (req, res) => {
   }
 });
 
+// Agent-driven edit (Phase 4). BYO Anthropic key.
+//
+// The agent's cwd is the session's bundle dir, with avni-skills staged at
+// `.claude/skills/` (gitignored). The agent reads bundle files, runs the
+// validator if it wants, and applies edits via Read/Edit/Write. After the
+// agent's turn ends, we commit whatever changed in the working tree as a
+// new session turn — git is the authoritative diff source.
+//
+// Body: { prompt: string, model?: string }
+// Header: Authorization: Bearer <ANTHROPIC_API_KEY>
+// Streams SSE: same shape as /v1/agent/query, plus a final `turn` event.
+app.post("/v1/sessions/:id/messages", async (req, res) => {
+  const auth = req.headers.authorization || "";
+  const m = auth.match(/^Bearer\s+(.+)$/);
+  if (!m) {
+    return res.status(401).json({ error: "Authorization: Bearer <ANTHROPIC_API_KEY> required" });
+  }
+  const apiKey = m[1].trim();
+  const { prompt, model } = req.body || {};
+  if (!prompt) return res.status(400).json({ error: "prompt is required in request body" });
+
+  let bundleCwd;
+  try {
+    bundleCwd = sessions.bundleDir(req.params.id);
+    sessions.ensureSessionSkillsStaged(req.params.id);
+  } catch (e) {
+    return res.status(404).json({ error: e.message });
+  }
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+
+  const ac = new AbortController();
+  let clientClosed = false;
+  res.on("close", () => {
+    if (!res.writableEnded) {
+      clientClosed = true;
+      ac.abort();
+    }
+  });
+
+  const sse = (event, data) => {
+    if (res.writableEnded) return;
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  const sessionPrompt = `You are editing an AVNI bundle inside a session workspace.
+
+Workspace layout (your cwd):
+  ./                  — bundle files you can read + edit (concepts.json, forms/*.json, formMappings.json, ...)
+  ./.claude/skills/   — the AVNI knowledge base (16 skills). Read SKILL.md files here for guidance.
+
+The current bundle was produced by the deterministic generator. The user wants you to refine it. After you finish, the server will:
+  1. Run \`git status\` against the bundle dir
+  2. Commit whatever you changed as a new turn
+  3. Re-run the validator and report the delta
+
+Rules:
+  - Edit files in cwd directly via Edit/Write. DO NOT run \`git\` yourself — the server commits.
+  - You can run the validator any time: \`node -e "import('./src/bundle.js')"\` IS NOT available; instead read the JSON yourself or rely on the post-turn validator delta you'll get back.
+  - Keep changes minimal and surgical. Each turn should fix one issue.
+  - If a fix needs human judgement (e.g. F2 cross-group concept reuse), explain your decision and apply it.
+
+User instruction:
+${prompt}`;
+
+  let agentEvents = 0;
+  try {
+    sse("start", {
+      ts: Date.now(),
+      model: model || "claude-haiku-4-5-20251001",
+      sessionId: req.params.id,
+      cwd: bundleCwd,
+    });
+    for await (const ev of runAgent({
+      prompt: sessionPrompt,
+      apiKey,
+      model,
+      workspace: bundleCwd,
+      systemPrompt: "You are an AVNI bundle editor. Use the skills in .claude/skills/ for guidance. Make minimal, correct edits.",
+      abortController: ac,
+    })) {
+      agentEvents++;
+      sse("agent", ev);
+    }
+    // Commit whatever the agent changed
+    const turnSummary = prompt.replace(/\s+/g, " ").trim().slice(0, 80);
+    const turnResult = sessions.commitWorkspaceChanges(req.params.id, turnSummary);
+    sse("turn", turnResult);
+    sse("done", { ts: Date.now(), agentEvents });
+  } catch (e) {
+    console.error("[/v1/sessions/:id/messages] error:", e?.stack || e);
+    sse("error", { message: e?.message || String(e), name: e?.name, clientClosed });
+  } finally {
+    res.end();
+  }
+});
+
 app.post("/v1/sessions/:id/revert", (req, res) => {
   try {
     const toTurn = req.body?.to_turn;
@@ -355,6 +457,7 @@ app.listen(PORT, () => {
   console.log(`    GET    /v1/sessions/:id/turns    (list edit turns)`);
   console.log(`    GET    /v1/sessions/:id/turns/:n/diff`);
   console.log(`    POST   /v1/sessions/:id/edit     (Wizard-of-Oz: apply pre-supplied edits as a turn)`);
+  console.log(`    POST   /v1/sessions/:id/messages (BYO Anthropic key — agent computes edits, commits as turn)`);
   console.log(`    POST   /v1/sessions/:id/revert   ({ to_turn })`);
   console.log(`    GET    /v1/sessions/:id/zip      (final ZIP)`);
   console.log(`    DELETE /v1/sessions/:id          (cleanup)`);

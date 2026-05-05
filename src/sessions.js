@@ -27,6 +27,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { generateBundle, validateBundle, zipBundle as zipBundleDir } from "./bundle.js";
+import { ensureSkillsStagedAt } from "./workspace.js";
 
 const SESSIONS_DIR = process.env.SDK_SESSIONS_DIR || path.join(os.tmpdir(), "avni-sdk-sessions");
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -98,6 +99,11 @@ export function createSession({ formsBuffer, formsFilename, modellingBuffer, mod
 
   // Run the deterministic generator into bundleDir
   generateBundle({ formsPath, modellingPath, org, outDir: bundleDir });
+
+  // .gitignore — keep agent-staging artifacts out of the bundle's git history
+  // and out of the final ZIP. We stage `.claude/skills/` symlinks here when
+  // running Phase 4 messages, but those are not part of the bundle.
+  fs.writeFileSync(path.join(bundleDir, ".gitignore"), ".claude/\n");
 
   // Init git in bundleDir, commit turn 0
   git(bundleDir, "init", "-b", "main");
@@ -225,6 +231,59 @@ export function commitTurn(id, summary, edits) {
   writeMeta(id, meta);
 
   return { turn: newTurn, sha: sha.slice(0, 12), summary, validation };
+}
+
+/**
+ * Return the absolute path to the session's bundle dir.
+ * Used by the Phase 4 messages endpoint as the agent's cwd.
+ */
+export function bundleDir(id) {
+  return path.join(sessionPath(id), "bundle");
+}
+
+/**
+ * Stage avni-skills under <session>/bundle/.claude/skills/ and confirm
+ * `.gitignore` excludes that path so staged skills never get committed.
+ * Idempotent. Returns { staged, total }.
+ */
+export function ensureSessionSkillsStaged(id) {
+  const dir = bundleDir(id);
+  const giPath = path.join(dir, ".gitignore");
+  const giHas = fs.existsSync(giPath) && fs.readFileSync(giPath, "utf8").split(/\r?\n/).some((l) => l.trim() === ".claude/");
+  if (!giHas) {
+    const prev = fs.existsSync(giPath) ? fs.readFileSync(giPath, "utf8") : "";
+    fs.writeFileSync(giPath, (prev ? prev.replace(/\n*$/, "\n") : "") + ".claude/\n");
+  }
+  return ensureSkillsStagedAt(dir);
+}
+
+/**
+ * Snapshot whatever the agent (or a caller) wrote into the bundle dir as a
+ * new turn. Honours `.gitignore`, so staged skills are excluded.
+ *
+ * Returns { turn, sha, summary, validation, changedFiles, noChanges }.
+ *   `noChanges: true` is returned when the working tree was clean (no commit
+ *   was created and the turn counter was NOT incremented).
+ */
+export function commitWorkspaceChanges(id, summary) {
+  const dir = bundleDir(id);
+  // Detect changes against HEAD ignoring .gitignored paths
+  const status = git(dir, "status", "--porcelain").trim();
+  if (!status) {
+    const meta = readMeta(id);
+    return { turn: meta.currentTurn, sha: null, summary, validation: meta.validationAtCurrent, changedFiles: [], noChanges: true };
+  }
+  const changedFiles = status.split("\n").map((l) => l.slice(3)).filter(Boolean);
+  git(dir, "add", "-A");
+  const meta = readMeta(id);
+  const newTurn = meta.currentTurn + 1;
+  git(dir, "commit", "-m", `turn ${newTurn}: ${summary}`);
+  const sha = git(dir, "rev-parse", "HEAD").trim();
+  const validation = summariseValidation(dir);
+  meta.currentTurn = newTurn;
+  meta.validationAtCurrent = validation;
+  writeMeta(id, meta);
+  return { turn: newTurn, sha: sha.slice(0, 12), summary, validation, changedFiles, noChanges: false };
 }
 
 /**

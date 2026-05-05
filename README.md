@@ -8,7 +8,7 @@ HTTP API + Claude-Agent-SDK runtime that wraps [avniproject/avni-skills](https:/
 
 ## Verified working — 2026-05-05
 
-End-to-end tested with a real Anthropic key:
+End-to-end tested with a real Anthropic key (L1–L7) and a no-key dryrun (L8):
 
 | Level | What it proves | State |
 |---|---|---|
@@ -19,6 +19,7 @@ End-to-end tested with a real Anthropic key:
 | L5 | `/v1/bundles/generate` accepts a synthetic Excel and returns a valid ZIP with **0 validator errors** | ✅ |
 | L6 | `/v1/agent/query` runs a real Claude session that consults the actual avni-skills via tool calls (Glob → Read on `.claude/skills/<name>/SKILL.md`), streams SSE, returns end_turn with 0 errors | ✅ |
 | L7 | Phase 3 sessions: create from real SRS → first-pass at turn 0 → real edit reduces validator errors → diff → revert → ZIP. Org-agnostic invariant harness 16/16 on the post-edit bundle. | ✅ |
+| L8 | Phase 4 machinery (no key needed): `scripts/dryrun-phase-4.mjs` proves per-session skill staging + `commitWorkspaceChanges` against a real SRS — `.gitignore` excludes `.claude/`, idempotent re-staging, no-op detection, simulated agent edit drops validator errors **6 → 5**, `.claude/` never enters git history. | ✅ |
 
 Reproduce in your shell:
 
@@ -93,13 +94,17 @@ curl -N -X POST http://localhost:3030/v1/agent/query \
 | `GET` | `/v1/sessions/:id/turns` | — | list edit turns (each = a git commit) |
 | `GET` | `/v1/sessions/:id/turns/:n/diff` | — | unified diff for turn `n` |
 | `POST` | `/v1/sessions/:id/edit` | — | apply pre-supplied file edits as a turn (Wizard-of-Oz, no LLM). Body: `{ summary, edits: { "path": "new content", ... } }` |
+| `POST` | `/v1/sessions/:id/messages` | `Authorization: Bearer <ANTHROPIC_API_KEY>` | **agent-driven edit**. Body: `{ prompt, model? }`. Server sets the agent's cwd to the session's bundle dir (with avni-skills staged at `.claude/skills/`, gitignored), streams SSE, then commits whatever the agent changed in the working tree as the next turn. The final SSE event is `turn` with the validator delta. |
 | `POST` | `/v1/sessions/:id/revert` | — | hard-reset to a turn. Body: `{ to_turn }` |
 | `GET` | `/v1/sessions/:id/zip` | — | packaged ZIP of current state |
 | `DELETE` | `/v1/sessions/:id` | — | cleanup |
 
 The agent endpoint is **BYO-key**. There's no platform-side Anthropic key, no rate limiter, no quota — anyone with their own Claude key can run the full workflow.
 
-The session endpoints power iterative editing: each edit is a git commit on the workspace, fully revertable. A real Claude integration on top of `/v1/sessions/:id/edit` (where the agent computes the edits instead of the caller supplying them) is the next packaging step — the session machinery itself is LLM-agnostic and proven by `scripts/demo-phase-3.sh`.
+The session endpoints power iterative editing: each edit is a git commit on the workspace, fully revertable. Two ways to drive edits:
+
+- **`/v1/sessions/:id/edit`** — Wizard-of-Oz: caller supplies the diff, no LLM, no key. Used by `scripts/demo-phase-3.sh` and any external agent that wants to compute edits client-side.
+- **`/v1/sessions/:id/messages`** — Real Claude (Phase 4). Agent's cwd = the session's bundle dir, with the 16 skills staged at `.claude/skills/`. Agent reads files, decides what to change, writes them back via Edit/Write. Server runs `git status` after the agent ends, commits whatever changed as the next turn. Validator delta is reported in the final SSE event.
 
 ---
 
@@ -300,15 +305,41 @@ If neither exists, the SDK throws at startup with a helpful error.
 | 1 | `IndividualEncounterCancellation` encounterTypeUUID bug + regression test | ✅ |
 | 2 | HTTP API + Claude Agent SDK runtime, BYO key, verified L1–L6 | ✅ |
 | 3 | Workspace persistence — sessions, git-per-turn, diff, revert, ZIP, org-agnostic invariants harness | ✅ |
-| 4 | Real Claude integration on `/v1/sessions/:id/messages` — agent computes edits | next |
-| 5 | Token-cost wallet (pay-per-use, per-org) | TODO |
+| 4 | Real Claude integration on `/v1/sessions/:id/messages` — agent computes edits, server commits as turn. Per-session skill staging + `.gitignore` for `.claude/` + `commitWorkspaceChanges`. Dryrun (L8) proven against real Astitva SRS. | ✅ |
+| 5 | Token-cost wallet (pay-per-use, per-org) | next |
 | 6 | Avni admin upload integration via MCP (`/implementation/uploadBundle`) | TODO |
 | 7 | UI inside Avni SaaS (chat + artifact split-pane), Avni SSO | TODO |
 | 8 | Skill eval harness — golden SRS → expected bundle, regression-block PRs | TODO |
 
-### Phase 4 sketch (next)
+### Phase 4 — how the agent loop is wired
 
-The session machinery is LLM-agnostic and proven by `scripts/demo-phase-3.sh`. Phase 4 wires the Claude Agent SDK on top of `/v1/sessions/:id/edit`: instead of the caller supplying file diffs, the agent reads the bundle + validator errors, decides what to change, and produces the same `{ summary, edits }` payload. The session API stays unchanged.
+When `POST /v1/sessions/:id/messages` is called:
+
+1. The server resolves `<session>/bundle/` and stages avni-skills's 16 skills as symlinks at `<session>/bundle/.claude/skills/<name>` (idempotent). The session's `.gitignore` excludes `.claude/`, so staged skills never enter commit history or the final ZIP.
+2. `runAgent({ workspace: <bundleDir>, ... })` spawns a Claude session with that path as `cwd`. The agent uses Read / Glob / Grep / Bash / Edit / Write / Skill exactly as it does for `/v1/agent/query`.
+3. SSE-streams every event back to the caller as it happens.
+4. After the agent's `for await` loop ends, the server runs `git status --porcelain` against the bundle dir. Any changes are staged, committed as `turn N: <prompt summary>`, validated, and meta is updated.
+5. A final `turn` SSE event is emitted with `{ turn, sha, summary, validation, changedFiles }`. If the agent changed nothing, `noChanges: true` is returned and the turn counter does NOT advance.
+
+This is "git as the diff source" — instead of asking the agent to produce a structured edit payload, we let it edit files in-place and use git to capture exactly what changed.
+
+Reproduce:
+
+```bash
+export ANTHROPIC_API_KEY='sk-ant-...'
+AVNI_SKILLS_PATH=~/code/avni-skills bash scripts/demo-phase-4.sh \
+  --forms /path/to/Forms.xlsx \
+  --modelling /path/to/Modelling.xlsx \
+  --org MyOrg
+```
+
+Or run the no-key dryrun that proves the staging + commit machinery without the SDK call:
+
+```bash
+AVNI_SKILLS_PATH=~/code/avni-skills node scripts/dryrun-phase-4.mjs \
+  --forms /path/to/Forms.xlsx \
+  --modelling /path/to/Modelling.xlsx
+```
 
 ---
 
