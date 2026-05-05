@@ -6,6 +6,31 @@ HTTP API + Claude-Agent-SDK runtime that wraps [avniproject/avni-skills](https:/
 
 ---
 
+## Verify it works
+
+Six levels of verification, ascending in confidence. The first 5 need no API key.
+
+```bash
+AVNI_SKILLS_PATH=~/code/avni-skills bash scripts/verify.sh
+```
+
+| Level | What it proves | Needs |
+|---|---|---|
+| L1 | 45 entity invariants pass | — |
+| L2 | server starts, `/health` responds | — |
+| L3 | `/v1/skills` lists 16 skills | — |
+| L4 | `/v1/skills/:slug` returns full SKILL.md + supporting files | — |
+| L5 | `/v1/bundles/generate` accepts a synthetic Excel and returns a valid ZIP with 0 validator errors | — |
+| L6 | `/v1/agent/query` runs a real Claude Agent session with skills auto-loaded | `ANTHROPIC_API_KEY=sk-ant-...` |
+
+Add `ANTHROPIC_API_KEY` to also run L6:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... AVNI_SKILLS_PATH=~/code/avni-skills bash scripts/verify.sh
+```
+
+---
+
 ## Quick start (60 seconds)
 
 ```bash
