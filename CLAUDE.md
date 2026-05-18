@@ -10,10 +10,14 @@ Read this whole file before making changes. It's the contract.
 
 ```
 avni-skills-sdk (this repo, body)
-  ├── src/server.js         ← Express, 5 endpoints
+  ├── src/server.js         ← Express, all endpoints
   ├── src/skills.js         ← reads avni-skills/*/SKILL.md
   ├── src/bundle.js         ← wraps avni-skills's generator + validator
   ├── src/workspace.js      ← stages avni-skills as .claude/skills/ for the SDK
+  ├── src/sessions.js       ← session storage (default: ~/.avni-skills-sdk/sessions/)
+  ├── src/transcript.js     ← append-only JSONL conversation memory per session
+  ├── src/steplog.js        ← append-only JSONL operational log per session
+  ├── src/wallet.js         ← per-session cost ledger (in-memory + cost.jsonl on disk)
   └── src/agent.js          ← Claude Agent SDK wrapper (BYO key)
 
 avni-skills (separate repo, brain)
@@ -82,6 +86,10 @@ If you find yourself reaching for a hardcoded fallback, the SRS author needs to 
 - All `tests/*.cjs` files are CommonJS. Use `require` / `module.exports`. The `.cjs` extension overrides the package-level type field.
 - Don't change this without understanding the cascade.
 
+### 5b. Adding / editing is the agent's job, not a CLI command
+
+When a user asks to add a subject type, program, encounter type, concept, or form, **do not reach for a workflow script as a user-facing command**. The flow is: agent reads the current bundle → case-insensitive name lookup → upsert (update in place if exists, append otherwise, copying field shapes from existing neighbours verbatim) → Edit/Write back → server commits the diff as a new turn. See `BUNDLE_HARD_RULES` rule #5 in `src/agent.js`. The workflow scripts under `scripts/workflows/` (`add-form.mjs`, `add-subject-type.mjs`, `rename-concept-uuid.mjs`, `fix-formelement-concept-shape.mjs`) are deterministic primitives the agent MAY invoke via Bash for atomicity guarantees — they are not the primary surface.
+
 ### 6. The lockfile is committed
 
 `package-lock.json` is in the repo. Don't delete it. The SDK depends on `@anthropic-ai/claude-agent-sdk` which ships native binaries — pinning matters.
@@ -117,6 +125,16 @@ AVNI_SKILLS_PATH=~/code/avni-skills npm run dev
 
 Listens on `:3030`. Endpoints documented in `README.md`.
 
+### Resume a previous session
+
+Sessions persist at `~/.avni-skills-sdk/sessions/<sid>/` (override with `SDK_SESSIONS_DIR`). Each session dir contains: the `bundle/` git repo, `meta.json`, `transcript.jsonl`, `steps.jsonl`, `cost.jsonl`. To pick up where you left off:
+
+```bash
+npm run cli -- --resume sess_xxxxxxxxxxxxxxxx
+```
+
+No forms/modelling args needed — the bundle is already on disk. The CLI re-attaches via `GET /v1/sessions/:id`, shows the current turn count, and the REPL works normally. Wallet totals hydrate from `cost.jsonl` so the hard-cap circuit breaker can't be bypassed by restarting. `:transcript` / `:steps` / `:cost` REPL commands tail each JSONL file.
+
 ### Run the multi-org generator across N orgs
 
 ```bash
@@ -148,7 +166,8 @@ The manifest contains absolute paths to private SRS files. **Do not commit the m
 | 2 | HTTP API + Claude Agent SDK runtime, BYO key, verified L1–L6 | ✅ |
 | 3 | Workspace persistence — sessions, git-per-turn, diff, revert, ZIP, org-agnostic invariants harness | ✅ 2026-05-05 15:17 IST |
 | 4 | Real Claude integration on `/v1/sessions/:id/messages` — agent edits in `<session>/bundle/`, server `git add -A && git commit` after the SSE stream ends. Per-session skill staging + `.gitignore` for `.claude/`. Dryrun (L8) green. | ✅ 2026-05-05 16:20 IST |
-| 5 | **Token-cost wallet (pay-per-use)** | next |
+| 5 | Token-cost wallet (in-memory + persisted cost.jsonl, hard cap $5/session, mid-turn abort, restart-safe via disk hydrate) | ✅ 2026-05-18 IST |
+| 5a | Durable session storage (default `~/.avni-skills-sdk/sessions/`, override via `SDK_SESSIONS_DIR`), `--resume <sid>` CLI flag, JSONL `transcript.jsonl` (Claude-Code-style conversation memory), JSONL `steps.jsonl` (operational log: validator/workflow/agent-turn/commit with durations + status), endpoints `GET /v1/sessions/:id/{transcript,steps,cost}`, REPL commands `:transcript / :steps / :cost`. 193 tests pass. | ✅ 2026-05-18 IST |
 | 6 | Avni admin upload integration via MCP | TODO |
 | 7 | UI inside Avni SaaS, Avni SSO | TODO |
 | 8 | Skill eval harness | TODO |

@@ -13,6 +13,7 @@ dist/
 multi-org-out/
 out/
 output/
+output-bundle/
 **/bundle-*/
 **/bundle-*.zip
 **/concepts.json
@@ -51,3 +52,6 @@ fixtures/
 *.tmp
 /tmp/
 .cache/
+
+# Stray shell-redirect artifacts (e.g. accidental `> to` typos)
+/to

@@ -16,12 +16,19 @@
     "verify": "node scripts/sdk-cli.mjs --demo",
     "verify:dryrun": "bash -c 'node scripts/dryrun-phase-4.mjs --forms \"$0\" --modelling \"$1\" --org \"${2:-Demo}\"'"
   },
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/avniproject/avni-skills-sdk.git" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/avniproject/avni-skills-sdk.git"
+  },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.128",
-    "express": "^4.21.2",
-    "archiver": "^7.0.1"
+    "acorn": "^8.16.0",
+    "acorn-walk": "^8.3.5",
+    "archiver": "^7.0.1",
+    "express": "^4.21.2"
   }
 }

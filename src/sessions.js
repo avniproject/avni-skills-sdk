@@ -2,7 +2,8 @@
 //
 // Each session is a filesystem dir containing a git repo. Every edit is
 // committed as a turn. The session_id is opaque; sessions live under
-// $SDK_SESSIONS_DIR (default: /tmp/avni-sdk-sessions).
+// $SDK_SESSIONS_DIR (default: ~/.avni-skills-sdk/sessions — durable across
+// reboots; macOS purges $TMPDIR which previously wiped demo sessions).
 //
 // We shell out to `git` rather than pull in simple-git — fewer deps, simpler
 // reasoning. Git is available everywhere we'd deploy this.
@@ -28,9 +29,13 @@ import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { generateBundle, validateBundle, zipBundle as zipBundleDir } from "./bundle.js";
 import { ensureSkillsStagedAt } from "./workspace.js";
+import { validateBundleRules } from "./rules-brain/validate.js";
+import { detectConceptCollisions, formatViolationMessage } from "./rules-brain/concept-gate.js";
 
-const SESSIONS_DIR = process.env.SDK_SESSIONS_DIR || path.join(os.tmpdir(), "avni-sdk-sessions");
+const SESSIONS_DIR = process.env.SDK_SESSIONS_DIR || path.join(os.homedir(), ".avni-skills-sdk", "sessions");
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+
+export const SESSIONS_ROOT = SESSIONS_DIR;
 
 function newId() {
   return "sess_" + crypto.randomBytes(8).toString("hex");
@@ -69,6 +74,26 @@ function summariseValidation(dir) {
     groups[k] = (groups[k] || 0) + 1;
   }
   return { valid: r.valid, errors: r.errors.length, warnings: r.warnings.length, groups };
+}
+
+// Run the Layer-4 rules validator across the bundle's rule fields.
+// Returns a tight summary suitable for inclusion in turn output.
+async function summariseRules(dir) {
+  try {
+    const r = await validateBundleRules(dir);
+    const codes = {};
+    for (const e of r.errors)   codes[e.code] = (codes[e.code] || 0) + 1;
+    for (const w of r.warnings) codes[w.code] = (codes[w.code] || 0) + 1;
+    return {
+      valid: r.errors.length === 0,
+      errors: r.errors.length,
+      warnings: r.warnings.length,
+      codes,
+      filesAffected: Object.keys(r.byFile).length,
+    };
+  } catch {
+    return { valid: true, errors: 0, warnings: 0, codes: {}, filesAffected: 0 };
+  }
 }
 
 // ───────────────────────────────────────────────────────────────────
@@ -265,25 +290,71 @@ export function ensureSessionSkillsStaged(id) {
  *   `noChanges: true` is returned when the working tree was clean (no commit
  *   was created and the turn counter was NOT incremented).
  */
-export function commitWorkspaceChanges(id, summary) {
+export async function commitWorkspaceChanges(id, summary) {
   const dir = bundleDir(id);
-  // Detect changes against HEAD ignoring .gitignored paths
-  const status = git(dir, "status", "--porcelain").trim();
+  // Detect changes against HEAD ignoring .gitignored paths.
+  // Use `-z` so entries are NUL-separated and filenames are NEVER quoted —
+  // safe for paths with spaces / unicode. Each entry is `XY filename` (3-char
+  // prefix). For renames/copies (R/C), the original path follows as its own
+  // NUL-terminated entry; we treat that as a separate listing.
+  const status = git(dir, "status", "-z", "--porcelain");
   if (!status) {
     const meta = readMeta(id);
-    return { turn: meta.currentTurn, sha: null, summary, validation: meta.validationAtCurrent, changedFiles: [], noChanges: true };
+    return { turn: meta.currentTurn, sha: null, summary, validation: meta.validationAtCurrent, rulesValidation: meta.rulesValidationAtCurrent, changedFiles: [], noChanges: true };
   }
-  const changedFiles = status.split("\n").map((l) => l.slice(3)).filter(Boolean);
+  const changedFiles = status.split("\0").filter((e) => e.length >= 4).map((e) => e.slice(3));
+
+  // CONCEPT-COLLISION INTERCEPTOR — runs BEFORE git add/commit.
+  // If concepts.json was modified and the new version introduces a concept
+  // whose name case-insensitively collides with an existing one, revert
+  // concepts.json (and ONLY concepts.json) and return a rejected-turn.
+  if (changedFiles.includes("concepts.json")) {
+    try {
+      const headRaw = git(dir, "show", "HEAD:concepts.json");
+      const oldConcepts = JSON.parse(headRaw);
+      const newPath = path.join(dir, "concepts.json");
+      const newConcepts = JSON.parse(fs.readFileSync(newPath, "utf8"));
+      const { collisions } = detectConceptCollisions(oldConcepts, newConcepts);
+      if (collisions.length > 0) {
+        // Revert concepts.json to HEAD; leave other working-tree edits alone
+        // so the agent can re-commit non-conflicting work in a follow-up turn
+        // if it wants.
+        git(dir, "checkout", "HEAD", "--", "concepts.json");
+        const meta = readMeta(id);
+        return {
+          turn: meta.currentTurn,
+          sha: null,
+          summary,
+          validation: meta.validationAtCurrent,
+          rulesValidation: meta.rulesValidationAtCurrent,
+          changedFiles: [],
+          noChanges: false,
+          rejected: true,
+          rejectionReason: "CONCEPT_COLLISION",
+          violations: collisions,
+          violationMessage: formatViolationMessage(collisions),
+        };
+      }
+    } catch (e) {
+      // If parsing fails (corrupted concepts.json), let the normal commit
+      // path proceed — the bundle validator will catch the breakage.
+      // eslint-disable-next-line no-console
+      console.warn(`[concept-gate] check skipped: ${e.message}`);
+    }
+  }
+
   git(dir, "add", "-A");
   const meta = readMeta(id);
   const newTurn = meta.currentTurn + 1;
   git(dir, "commit", "-m", `turn ${newTurn}: ${summary}`);
   const sha = git(dir, "rev-parse", "HEAD").trim();
   const validation = summariseValidation(dir);
+  const rulesValidation = await summariseRules(dir);
   meta.currentTurn = newTurn;
   meta.validationAtCurrent = validation;
+  meta.rulesValidationAtCurrent = rulesValidation;
   writeMeta(id, meta);
-  return { turn: newTurn, sha: sha.slice(0, 12), summary, validation, changedFiles, noChanges: false };
+  return { turn: newTurn, sha: sha.slice(0, 12), summary, validation, rulesValidation, changedFiles, noChanges: false };
 }
 
 /**

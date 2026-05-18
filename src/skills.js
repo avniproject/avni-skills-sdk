@@ -3,6 +3,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const SDK_SKILLS_DIR = path.resolve(__dirname, "..", "skills");
 
 export function avniSkillsPath() {
   const p =
@@ -29,30 +33,48 @@ function parseFrontmatter(text) {
   return fields;
 }
 
+function readSkillFolder(root, slug) {
+  const skillFile = path.join(root, slug, "SKILL.md");
+  if (!fs.existsSync(skillFile)) return null;
+  const fm = parseFrontmatter(fs.readFileSync(skillFile, "utf8"));
+  return {
+    slug,
+    name: fm.name || slug,
+    description: fm.description || "",
+    version: fm.version || null,
+    path: path.join(slug, "SKILL.md"),
+  };
+}
+
 export function listSkills() {
   const root = avniSkillsPath();
   const skills = [];
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
     if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-    const skillFile = path.join(root, entry.name, "SKILL.md");
-    if (!fs.existsSync(skillFile)) continue;
-    const text = fs.readFileSync(skillFile, "utf8");
-    const fm = parseFrontmatter(text);
-    skills.push({
-      slug: entry.name,
-      name: fm.name || entry.name,
-      description: fm.description || "",
-      version: fm.version || null,
-      path: path.join(entry.name, "SKILL.md"),
-    });
+    const s = readSkillFolder(root, entry.name);
+    if (s) skills.push({ ...s, source: "avni-skills" });
+  }
+  // SDK-local skills (rules-author, etc.) — staged into the agent workspace
+  // alongside the avni-skills ones. Surfacing them in /v1/skills keeps the
+  // discovery endpoint honest.
+  if (fs.existsSync(SDK_SKILLS_DIR)) {
+    for (const entry of fs.readdirSync(SDK_SKILLS_DIR, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+      const s = readSkillFolder(SDK_SKILLS_DIR, entry.name);
+      if (s) skills.push({ ...s, source: "sdk-local" });
+    }
   }
   return skills;
 }
 
 export function readSkill(slug) {
   const root = avniSkillsPath();
-  const dir = path.join(root, slug);
-  if (!fs.existsSync(path.join(dir, "SKILL.md"))) return null;
+  let dir = path.join(root, slug);
+  if (!fs.existsSync(path.join(dir, "SKILL.md"))) {
+    // Fall through to SDK-local skills (rules-author).
+    dir = path.join(SDK_SKILLS_DIR, slug);
+    if (!fs.existsSync(path.join(dir, "SKILL.md"))) return null;
+  }
   const skillText = fs.readFileSync(path.join(dir, "SKILL.md"), "utf8");
   const fm = parseFrontmatter(skillText);
   // Also list supporting files (other .md / .json / .js next to SKILL.md)

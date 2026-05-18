@@ -6,22 +6,21 @@ HTTP API + Claude-Agent-SDK runtime that wraps [avniproject/avni-skills](https:/
 
 ---
 
-## Verified working — 2026-05-05 (IST)
+## Verified working — 2026-05-18 (IST)
 
 End-to-end tested with a real Anthropic key (L1–L7) and a no-key dryrun (L8). All times below are **Asia/Kolkata (IST, UTC+5:30)**.
 
 | Level | What it proves | Verified | State |
 |---|---|---|---|
-| L1 | 45 entity invariants pass (org-agnostic) | 2026-05-05 12:55 IST | ✅ |
+| L1 | **193 entity + integration tests** pass (org-agnostic, synthetic fixtures only) | 2026-05-18 IST | ✅ |
 | L2 | server starts, `/health` responds | 2026-05-05 13:17 IST | ✅ |
-| L3 | `/v1/skills` returns the 16 avni-skills skills | 2026-05-05 13:24 IST | ✅ |
+| L3 | `/v1/skills` returns the avni-skills skills (16 brain + sdk-local) | 2026-05-05 13:24 IST | ✅ |
 | L4 | `/v1/skills/:slug` returns SKILL.md body + supporting files | 2026-05-05 13:30 IST | ✅ |
 | L5 | `/v1/bundles/generate` accepts a synthetic Excel and returns a valid ZIP with **0 validator errors** | 2026-05-05 13:44 IST | ✅ |
-| L6 | `/v1/agent/query` runs a real Claude session that consults the actual avni-skills via tool calls (Glob → Read on `.claude/skills/<name>/SKILL.md`), streams SSE, returns end_turn with 0 errors | 2026-05-05 13:56 IST | ✅ |
+| L6 | `/v1/agent/query` runs a real Claude session that consults the actual avni-skills via tool calls, streams SSE, returns end_turn with 0 errors | 2026-05-05 13:56 IST | ✅ |
 | L7 | Phase 3 sessions: create from real SRS → first-pass at turn 0 → real edit reduces validator errors → diff → revert → ZIP. Org-agnostic invariant harness 16/16 on the post-edit bundle. | 2026-05-05 15:17 IST | ✅ |
-| L8 | Phase 4 machinery (no key needed): `scripts/dryrun-phase-4.mjs` proves per-session skill staging + `commitWorkspaceChanges` against a real SRS — `.gitignore` excludes `.claude/`, idempotent re-staging, no-op detection, simulated agent edit drops validator errors **6 → 5**, `.claude/` never enters git history. | 2026-05-05 16:20 IST | ✅ |
-
-**Latest push:** `70c0889 — feat(phase-4): agent-driven session edits via /v1/sessions/:id/messages` — 2026-05-05 16:20 IST.
+| L8 | Phase 4 machinery: per-session skill staging + `commitWorkspaceChanges`, `.gitignore` excludes `.claude/`, idempotent re-staging, simulated agent edit drops validator errors. | 2026-05-05 16:20 IST | ✅ |
+| L9 | **Phase 5 + 5a — durable sessions + JSONL conversation memory + cost ledger + resume**. Sessions persist at `~/.avni-skills-sdk/sessions/`, `--resume <sid>` re-attaches without re-running Stage 1, wallet hydrates from `cost.jsonl` (hard-cap restart-safe), `transcript.jsonl` + `steps.jsonl` capture every event. **End-to-end test verifies state survives process restart.** See [`docs/phase-5-sessions-and-memory.md`](docs/phase-5-sessions-and-memory.md). | 2026-05-18 IST | ✅ |
 
 ---
 
@@ -185,18 +184,82 @@ L6 writes the full SSE stream to `/tmp/avni-sdk-l6-stream.log` and prints a stru
 
 ---
 
-## Quick start (60 seconds)
+## Getting started
 
-```bash
-git clone https://github.com/avniproject/avni-skills.git ~/code/avni-skills
-git clone https://github.com/avniproject/avni-skills-sdk.git ~/code/avni-skills-sdk
+### The two-repo model — read this first
 
-cd ~/code/avni-skills && npm install
-cd ~/code/avni-skills-sdk && npm install
-AVNI_SKILLS_PATH=~/code/avni-skills npm start
+```
+┌─────────────────────────────────┐         ┌──────────────────────────────────┐
+│  avni-skills  (the BRAIN)       │         │  avni-skills-sdk  (the BODY)     │
+│  ─────────────────────────       │ <───── │  ───────────────────────────     │
+│  • SRS-Bundle generator (JS)    │  reads  │  • HTTP API (Express)            │
+│  • Validator                     │ via    │  • Claude Agent SDK runtime      │
+│  • 16 SKILL.md knowledge files  │  env   │  • Session machinery (git/turns) │
+│    (architecture, rules,        │   var  │  • Transcript + step + cost JSONL│
+│     debugging, migration, …)    │        │  • REPL CLI                      │
+└─────────────────────────────────┘         └──────────────────────────────────┘
+        avniproject/avni-skills                      avniproject/avni-skills-sdk
 ```
 
-API listens on `:3030`. Drive it from any language:
+**`avni-skills` is the source of truth for everything AVNI** — the deterministic generator, the validator, the per-domain knowledge base. It's a pure-JS library + a folder of `SKILL.md` files. The SDK never copies or vendors it; it locates it at runtime via the `AVNI_SKILLS_PATH` env var and exposes the brain as agent-callable HTTP endpoints.
+
+You need **both** repos checked out locally. Cloning only the SDK gets you a body with no brain.
+
+### Prerequisites
+
+- **Node.js 20+** (the SDK declares `"type": "module"`; some dev deps need v20 features)
+- **`git`** on PATH (the session machinery shells out to `git` per turn)
+- **`ANTHROPIC_API_KEY`** for any agent-driven endpoint (free deterministic endpoints don't need one — see L5 in the table above)
+
+### Clone + install
+
+```bash
+# 1. The brain (generator + validator + skills)
+git clone https://github.com/avniproject/avni-skills.git ~/code/avni-skills
+cd ~/code/avni-skills && npm install
+
+# 2. The body (HTTP API + agent runtime)
+git clone https://github.com/avniproject/avni-skills-sdk.git ~/code/avni-skills-sdk
+cd ~/code/avni-skills-sdk && npm install
+
+# 3. Point the SDK at the brain — recommended: set in your shell rc so it's permanent
+export AVNI_SKILLS_PATH=~/code/avni-skills
+# Optional: BYO Anthropic key for agent endpoints
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+If `AVNI_SKILLS_PATH` is unset the SDK falls back to a sibling clone at `../avni-skills` (so the layout above also works without any env config). If neither is found, every helper throws at startup with a clear error.
+
+### Verify your install (no API key needed)
+
+```bash
+cd ~/code/avni-skills-sdk
+npm test                            # L1: 193 entity + integration tests
+bash scripts/verify.sh              # L1–L5 (server, /health, /v1/skills, /v1/bundles/generate)
+```
+
+L1–L5 take ~30 seconds combined. If they pass, the brain is wired correctly and you're ready to drive the API.
+
+### Try the interactive REPL
+
+```bash
+# A. With your own SRS
+npm run cli -- --forms ./MyOrg-Forms.xlsx --modelling ./MyOrg-Modelling.xlsx --org "MyOrg"
+
+# B. Built-in synthetic SRS (great for first-time)
+npm run cli -- --demo
+
+# C. Resume a previous session (bundle, transcript, wallet all carry over)
+npm run cli -- --resume sess_xxxxxxxxxxxxxxxx
+```
+
+Inside the REPL, free-text prompts go to the agent (costs tokens). Commands prefixed with `:` are free local actions — `:summary` for a deterministic audit, `:transcript` to tail conversation memory, `:cost` to see wallet state, `:zip` to export the final bundle. Type `:help` for the full list.
+
+Sessions persist at `~/.avni-skills-sdk/sessions/<sid>/` (override via `SDK_SESSIONS_DIR`). See [`docs/phase-5-sessions-and-memory.md`](docs/phase-5-sessions-and-memory.md) for the full session/memory/cost model.
+
+### Drive the API directly
+
+API listens on `:3030`. From any language:
 
 ```bash
 # List the 16 skills (no API key)
@@ -241,6 +304,15 @@ curl -N -X POST http://localhost:3030/v1/agent/query \
 | `POST` | `/v1/sessions/:id/revert` | — | hard-reset to a turn. Body: `{ to_turn }` |
 | `GET` | `/v1/sessions/:id/zip` | — | packaged ZIP of current state |
 | `DELETE` | `/v1/sessions/:id` | — | cleanup |
+| `GET` | `/v1/sessions/:id/transcript` | — | **Phase 5a** — replay JSONL conversation memory (`?limit=N&kinds=user_message,turn_commit`). |
+| `GET` | `/v1/sessions/:id/steps` | — | **Phase 5a** — JSONL operational log (validator/workflow/agent-turn/commit with durations + status). |
+| `GET` | `/v1/sessions/:id/cost` | — | **Phase 5** — wallet snapshot: totals, remaining, caps, turn count, tokens. Disk-hydrated so totals survive process restart. |
+| `POST` | `/v1/sessions/:id/wallet/reset` | — | Bump the per-session hard cap (audit trail preserved in `cost.jsonl`). |
+| `GET` | `/v1/sessions/:id/summary` | — | Deterministic anomaly detector. Free. 9 anomaly classes (orphan answers, flattened concepts, invalid location names, …). |
+| `POST` | `/v1/sessions/:id/evaluate` | `Authorization: Bearer <ANTHROPIC_API_KEY>` | LLM semantic-gap audit (~$0.05–0.20). |
+| `GET` | `/v1/sessions/:id/rules` | — | List every populated rule, classified by carrier + field. |
+| `GET` | `/v1/sessions/:id/rules/validation` | — | Layer-4 acorn-based validator (R1–R6) over every rule body in the bundle. |
+| `PUT` | `/v1/sessions/:id/rules` | — | Compile + commit declarative rules. Body: `{ summary, updates:[{file,field,ir|js}], formType? }`. |
 
 The agent endpoint is **BYO-key**. There's no platform-side Anthropic key, no rate limiter, no quota — anyone with their own Claude key can run the full workflow.
 
