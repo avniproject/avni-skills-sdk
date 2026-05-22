@@ -6,13 +6,13 @@ HTTP API + Claude-Agent-SDK runtime that wraps [avniproject/avni-skills](https:/
 
 ---
 
-## Verified working — 2026-05-18 (IST)
+## Verified working — 2026-05-22 (IST)
 
 End-to-end tested with a real Anthropic key (L1–L7) and a no-key dryrun (L8). All times below are **Asia/Kolkata (IST, UTC+5:30)**.
 
 | Level | What it proves | Verified | State |
 |---|---|---|---|
-| L1 | **193 entity + integration tests** pass (org-agnostic, synthetic fixtures only) | 2026-05-18 IST | ✅ |
+| L1 | **380 entity + integration tests** pass (org-agnostic, synthetic fixtures only) | 2026-05-22 IST | ✅ |
 | L2 | server starts, `/health` responds | 2026-05-05 13:17 IST | ✅ |
 | L3 | `/v1/skills` returns the avni-skills skills (16 brain + sdk-local) | 2026-05-05 13:24 IST | ✅ |
 | L4 | `/v1/skills/:slug` returns SKILL.md body + supporting files | 2026-05-05 13:30 IST | ✅ |
@@ -21,6 +21,7 @@ End-to-end tested with a real Anthropic key (L1–L7) and a no-key dryrun (L8). 
 | L7 | Phase 3 sessions: create from real SRS → first-pass at turn 0 → real edit reduces validator errors → diff → revert → ZIP. Org-agnostic invariant harness 16/16 on the post-edit bundle. | 2026-05-05 15:17 IST | ✅ |
 | L8 | Phase 4 machinery: per-session skill staging + `commitWorkspaceChanges`, `.gitignore` excludes `.claude/`, idempotent re-staging, simulated agent edit drops validator errors. | 2026-05-05 16:20 IST | ✅ |
 | L9 | **Phase 5 + 5a — durable sessions + JSONL conversation memory + cost ledger + resume**. Sessions persist at `~/.avni-skills-sdk/sessions/`, `--resume <sid>` re-attaches without re-running Stage 1, wallet hydrates from `cost.jsonl` (hard-cap restart-safe), `transcript.jsonl` + `steps.jsonl` capture every event. **End-to-end test verifies state survives process restart.** See [`docs/phase-5-sessions-and-memory.md`](docs/phase-5-sessions-and-memory.md). | 2026-05-18 IST | ✅ |
+| L10 | **Phase 6 — YAML spec pipeline + dependency graph + deterministic patcher + multi-agent foundation**. `POST /v1/sessions/:id/apply-spec` takes a YAML spec, materialises declarative rules → JS via rules-brain, patches the live bundle preserving UUIDs, returns a structured per-file diff + integrity report. Dogfood: declarative IR compiled to **386 bytes of canonical `imports.rulesConfig.RuleCondition` JS** landing in `programs.json`. Reproducible via `bash scripts/demo-spec-pipeline.sh`. See [`docs/phase-6-spec-pipeline-and-agents.md`](docs/phase-6-spec-pipeline-and-agents.md). | 2026-05-22 IST | ✅ |
 
 ---
 
