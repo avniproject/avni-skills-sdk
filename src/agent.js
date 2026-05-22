@@ -10,7 +10,7 @@
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { ensureAgentWorkspace } from "./workspace.js";
-import { listSkills } from "./skills.js";
+import { listSkills, listBundleAuthoringSkills } from "./skills.js";
 
 // Hard rules — agents that produce bundles MUST follow these. Distilled from
 // real failure modes observed against multi-org SRS runs:
@@ -91,6 +91,7 @@ ${BUNDLE_HARD_RULES}`;
  * @param {string} [opts.systemPrompt]
  * @param {string[]} [opts.allowedTools]
  * @param {string} [opts.permissionMode]
+ * @param {string} [opts.skillScope] — "bundle-authoring" (curated 7) | "all" (default = all)
  * @param {AbortController} [opts.abortController]
  * @returns {AsyncIterable}
  */
@@ -103,6 +104,7 @@ export async function* runAgent(opts) {
     systemPrompt = DEFAULT_SYSTEM_PROMPT,
     allowedTools = ["Read", "Glob", "Grep", "Bash", "Edit", "Write", "Skill"],
     permissionMode = "bypassPermissions",
+    skillScope = "all",
     abortController,
   } = opts;
 
@@ -110,7 +112,11 @@ export async function* runAgent(opts) {
   if (!prompt) throw new Error("prompt is required");
 
   const cwd = workspace || ensureAgentWorkspace();
-  const skillNames = listSkills().map((s) => s.slug);
+  const skillNames = (
+    skillScope === "bundle-authoring"
+      ? listBundleAuthoringSkills()
+      : listSkills()
+  ).map((s) => s.slug);
 
   const prevKey = process.env.ANTHROPIC_API_KEY;
   process.env.ANTHROPIC_API_KEY = apiKey;

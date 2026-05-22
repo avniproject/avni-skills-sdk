@@ -733,6 +733,11 @@ ${prompt}`;
       apiKey,
       model: effectiveModel,
       workspace: bundleCwd,
+      // Curated: 7 load-bearing skills for bundle authoring, down from 17.
+      // Off-topic skills (mobile-testing, support tickets, metabase, etc.)
+      // remain readable via /v1/skills/:slug but aren't pre-loaded into the
+      // agent's context. See src/skills.js LOAD_BEARING_BUNDLE_SKILLS.
+      skillScope: "bundle-authoring",
       systemPrompt: `You are an AVNI bundle editor inside a session workspace.
 
 YOUR CWD IS ALREADY AN AVNI BUNDLE.
