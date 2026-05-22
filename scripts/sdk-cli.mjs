@@ -314,6 +314,10 @@ ${bold(":add-form")} <spec.json> [--dry-run]
                 atomic multi-file form insertion (creates form file, appends concepts + formMapping).
                 Spec shape: {name, formType, subjectTypeName, formElements[{name,conceptName,dataType,...}]}.
                 ${dim("(deterministic shortcut — for arbitrary add/edit, just talk to the agent in free text.)")}
+${bold(":apply")} <spec.yaml>
+                deterministic patch: parse YAML → materialise declarative rules → patch bundle → commit turn
+                Shows: structured diff (+added/~updated per file), compiled rule list, integrity check
+${bold(":changes")} [N]      semantic diff for turn N (default = last) — per-file added/updated/removed entries
 ${bold(":transcript")} [N]   tail conversation memory (user/assistant/turn events from transcript.jsonl)
 ${bold(":steps")} [N]        tail operational log (validator runs, agent turns, commits, durations)
 ${bold(":cost")}              wallet snapshot — total spent / remaining / tokens / cap-percentage
@@ -573,6 +577,109 @@ async function cmdState(sid) {
   const meta = await getJson(`/v1/sessions/${sid}`);
   console.log(`  org=${meta.org}  currentTurn=${meta.currentTurn}  files=${meta.files.length}`);
   console.log(`  validator: ${formatValidation(meta.validationAtCurrent)}`);
+}
+
+// :apply <yaml-file>  — patch the bundle deterministically from a YAML spec.
+// Streams the structured diff + materialised rules + integrity check.
+async function cmdApply(sid, fileArg) {
+  if (!fileArg) {
+    console.log(red("  usage: :apply <path-to-spec.yaml>"));
+    return;
+  }
+  const fp = path.resolve(fileArg);
+  if (!fs.existsSync(fp)) {
+    console.log(red("  file not found: " + fp));
+    return;
+  }
+  const yamlStr = fs.readFileSync(fp, "utf8");
+  let res;
+  try {
+    res = await postJson(`/v1/sessions/${sid}/apply-spec`, { yaml: yamlStr });
+  } catch (e) {
+    console.log(red("  apply-spec failed: " + (e.message || e)));
+    return;
+  }
+  // Render
+  if (res.turn) {
+    console.log(green("  ✓") + " turn " + cyan(String(res.turn.turn)) +
+                " · sha=" + dim(res.turn.sha) +
+                " · " + res.filesChanged.length + " files changed");
+  } else {
+    console.log(dim("  (no-op — spec produced no changes)"));
+  }
+  if (res.diffSummary) {
+    console.log(dim("  diff:"));
+    console.log(res.diffSummary);
+  }
+  if (res.ruleCompilation?.compiled?.length) {
+    console.log(dim("  rules materialised:"));
+    for (const c of res.ruleCompilation.compiled) {
+      console.log("    " + green("✓") + " " + c.ruleType + " · " + dim(c.locator) + " (" + c.jsBytes + " bytes)");
+    }
+  }
+  if (res.ruleCompilation?.errors?.length) {
+    console.log(red("  rule compilation errors:"));
+    for (const e of res.ruleCompilation.errors) {
+      console.log("    " + red("✗") + " " + e.locator + ": " + e.error);
+    }
+  }
+  if (!res.integrity?.ok) {
+    console.log(red("  ✗ integrity check failed (" + res.integrity.issues.length + " issue(s)):"));
+    for (const i of res.integrity.issues.slice(0, 8)) {
+      const icon = i.severity === "error" ? red("✗") : yellow("!");
+      console.log("    " + icon + " " + i.message);
+    }
+    if (res.integrity.issues.length > 8) console.log(dim("    … " + (res.integrity.issues.length - 8) + " more"));
+  } else {
+    console.log(dim("  integrity: ✓ no dangling references"));
+  }
+}
+
+// :diff [N] — show the structured per-file diff for a turn (default = last)
+async function cmdSemanticDiff(sid, turnArg) {
+  // Pull the most recent turn_commit event (or the requested turn) from the transcript.
+  const data = await getJson(`/v1/sessions/${sid}/transcript?kinds=turn_commit&limit=20`);
+  const events = data.events || [];
+  if (events.length === 0) {
+    console.log(dim("  (no commits yet in this session)"));
+    return;
+  }
+  let target;
+  if (turnArg) {
+    const n = Number(turnArg);
+    target = events.find((e) => e.turn === n);
+    if (!target) { console.log(red("  no transcript event for turn " + n)); return; }
+  } else {
+    target = events[events.length - 1];
+  }
+  console.log("  turn " + cyan(String(target.turn)) +
+              " · " + dim(target.source || "?") +
+              " · sha=" + dim((target.sha || "").slice(0, 8)));
+  if (target.summary) console.log(dim("  summary: ") + target.summary);
+  if (target.diff && Object.keys(target.diff).length > 0) {
+    for (const [file, ops] of Object.entries(target.diff)) {
+      const a = ops.added?.length || 0;
+      const u = ops.updated?.length || 0;
+      const r = ops.removed?.length || 0;
+      console.log("  " + cyan(file) + ":  +" + a + "  ~" + u + "  -" + r);
+      for (const e of (ops.added || []).slice(0, 5)) console.log("    " + green("+") + " " + (e.name || e.uuid));
+      for (const e of (ops.updated || []).slice(0, 5)) {
+        const fields = e.fields?.length ? dim(" (" + e.fields.slice(0, 3).join(",") + ")") : "";
+        console.log("    " + yellow("~") + " " + (e.name || e.uuid) + fields);
+      }
+    }
+  } else if (target.filesChanged?.length) {
+    console.log(dim("  files changed (no structured diff captured):"));
+    for (const f of target.filesChanged) console.log("    " + cyan(f));
+  } else {
+    console.log(dim("  (no file changes recorded)"));
+  }
+  if (target.integrity && !target.integrity.ok) {
+    console.log(red("  integrity issues:"));
+    for (const i of target.integrity.issues.slice(0, 5)) {
+      console.log("    " + (i.severity === "error" ? red("✗") : yellow("!")) + " " + i.message);
+    }
+  }
 }
 
 async function cmdTranscript(sid, limitArg) {
@@ -929,6 +1036,8 @@ async function handleLine(input) {
       case "transcript": case "tx": await cmdTranscript(sid, arg1); break;
       case "steps": case "log": await cmdSteps(sid, arg1); break;
       case "cost": case "wallet": await cmdCost(sid); break;
+      case "apply": await cmdApply(sid, arg1); break;
+      case "changes": case "semantic-diff": case "sdiff": await cmdSemanticDiff(sid, arg1); break;
       case "quit": case "q": case "exit": return "quit";
       default: console.log(red(`unknown command: :${cmd}  (try :help)`));
     }
