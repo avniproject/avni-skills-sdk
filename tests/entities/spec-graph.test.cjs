@@ -245,6 +245,43 @@ test('AddressLevelType.parentUuid creates a self-referential edge', () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+// ─── Wrapped-shape tolerance (real-bundle quirk surfaced by corpus regression)
+
+test('buildBundleGraph tolerates wrapped operationalSubjectTypes shape (real-bundle format)', () => {
+  const dir = tmpBundle('wrapped');
+  writeJson(dir, 'subjectTypes.json', [{ uuid: 'st-1', name: 'Beneficiary' }]);
+  // Real generator emits this wrapped shape; integrity walker must handle it.
+  writeJson(dir, 'operationalSubjectTypes.json', {
+    operationalSubjectTypes: [
+      { uuid: 'op-1', subjectType: { uuid: 'st-1', voided: false }, name: 'Beneficiary' },
+    ],
+  });
+  const g = buildBundleGraph(dir);
+  assert.equal(g.counts.operationalSubjectType, 1);
+  // The operationalMirror edge points at st-1 via the NESTED .uuid path
+  const ic = integrityCheck(g);
+  assert.equal(ic.ok, true, 'integrity must pass on wrapped shape');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('buildBundleGraph tolerates wrapped operationalPrograms + operationalEncounterTypes', () => {
+  const dir = tmpBundle('wrapped-all');
+  writeJson(dir, 'subjectTypes.json', [{ uuid: 'st-1', name: 'X' }]);
+  writeJson(dir, 'programs.json', [{ uuid: 'p-1', name: 'P' }]);
+  writeJson(dir, 'encounterTypes.json', [{ uuid: 'e-1', name: 'E' }]);
+  writeJson(dir, 'operationalPrograms.json', {
+    operationalPrograms: [{ uuid: 'op-p', program: { uuid: 'p-1' }, name: 'P' }],
+  });
+  writeJson(dir, 'operationalEncounterTypes.json', {
+    operationalEncounterTypes: [{ uuid: 'op-e', encounterType: { uuid: 'e-1' }, name: 'E' }],
+  });
+  const g = buildBundleGraph(dir);
+  assert.equal(g.counts.operationalProgram, 1);
+  assert.equal(g.counts.operationalEncounterType, 1);
+  assert.equal(integrityCheck(g).ok, true);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('GroupRole produces both group + member subjectType edges', () => {
   const dir = tmpBundle('grouprole');
   const groupSt = uuid(), memberSt = uuid(), gr = uuid();

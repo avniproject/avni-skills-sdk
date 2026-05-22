@@ -14,7 +14,8 @@
     "dev": "node --watch src/server.js",
     "cli": "node scripts/sdk-cli.mjs",
     "verify": "node scripts/sdk-cli.mjs --demo",
-    "verify:dryrun": "bash -c 'node scripts/dryrun-phase-4.mjs --forms \"$0\" --modelling \"$1\" --org \"${2:-Demo}\"'"
+    "verify:dryrun": "bash -c 'node scripts/dryrun-phase-4.mjs --forms \"$0\" --modelling \"$1\" --org \"${2:-Demo}\"'",
+    "corpus:validate": "node tests/corpus/run.cjs"
   },
   "engines": {
     "node": ">=22"
