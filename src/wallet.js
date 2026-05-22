@@ -63,6 +63,7 @@ function hydrateFromDisk(sessionId, row) {
       outputTokens: entry.outputTokens || 0,
       aborted: !!entry.aborted,
       abortReason: entry.abortReason || null,
+      agent: entry.agent || null,
       endedAt: entry.endedAt || 0,
     });
   }
@@ -90,6 +91,20 @@ function get(sessionId) {
 
 export function getWallet(sessionId) {
   const row = get(sessionId);
+  // Per-agent breakdown: aggregate turn rows by agent tag. Untagged turns
+  // (legacy /messages calls, /evaluate, etc.) bucket under "unspecified".
+  const byAgent = {};
+  for (const t of row.turns) {
+    const a = t.agent || "unspecified";
+    if (!byAgent[a]) byAgent[a] = { turns: 0, usd: 0, inputTokens: 0, outputTokens: 0 };
+    byAgent[a].turns += 1;
+    byAgent[a].usd += t.usd || 0;
+    byAgent[a].inputTokens += t.inputTokens || 0;
+    byAgent[a].outputTokens += t.outputTokens || 0;
+  }
+  // Round per-agent usd for display
+  for (const a of Object.keys(byAgent)) byAgent[a].usd = Number(byAgent[a].usd.toFixed(6));
+
   return {
     totalUsd: Number(row.totalUsd.toFixed(6)),
     totalInputTokens: row.totalInputTokens,
@@ -97,6 +112,7 @@ export function getWallet(sessionId) {
     turnCount: row.turns.length,
     caps: { ...DEFAULTS },
     remainingUsd: Math.max(0, DEFAULTS.hardCapUsd - row.totalUsd),
+    byAgent,
   };
 }
 
@@ -144,15 +160,15 @@ export function startTurn(sessionId, { now = Date.now() } = {}) {
       }
       return null;
     },
-    recordResult({ usd = 0, inputTokens = 0, outputTokens = 0, aborted = false, abortReason = null }) {
+    recordResult({ usd = 0, inputTokens = 0, outputTokens = 0, aborted = false, abortReason = null, agent = null }) {
       const endedAt = Date.now();
       row.totalUsd += usd;
       row.totalInputTokens += inputTokens;
       row.totalOutputTokens += outputTokens;
-      row.turns.push({ turnIndex, usd, inputTokens, outputTokens, aborted, abortReason, endedAt });
+      row.turns.push({ turnIndex, usd, inputTokens, outputTokens, aborted, abortReason, agent, endedAt });
       appendCostEntry(sessionId, {
         ts: new Date(endedAt).toISOString(),
-        turnIndex, usd, inputTokens, outputTokens, aborted, abortReason, endedAt,
+        turnIndex, usd, inputTokens, outputTokens, aborted, abortReason, agent, endedAt,
       });
       return getWallet(sessionId);
     },

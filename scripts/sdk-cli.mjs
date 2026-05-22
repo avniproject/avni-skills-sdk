@@ -322,6 +322,8 @@ ${bold(":agent")} <spec|bundle-config|review> <prompt>
                 structured-output JSON block matching avni-ai's {intent, target_phase, …} contract.
                 Shows: routing, applied_changes / ambiguities, schema validation result.
 ${bold(":changes")} [N]      semantic diff for turn N (default = last) — per-file added/updated/removed entries
+${bold(":diag")}              multi-agent failure visibility — schema breaks, circuit-breakers,
+                validator regressions, integrity issues, ambiguity loops, per-agent durations
 ${bold(":transcript")} [N]   tail conversation memory (user/assistant/turn events from transcript.jsonl)
 ${bold(":steps")} [N]        tail operational log (validator runs, agent turns, commits, durations)
 ${bold(":cost")}              wallet snapshot — total spent / remaining / tokens / cap-percentage
@@ -831,7 +833,97 @@ async function cmdCost(sid) {
   console.log(`  ${dim("turns recorded")} ${cyan(String(w.turnCount))}`);
   console.log(`  ${dim("input tokens")}  ${cyan(String(w.totalInputTokens))}`);
   console.log(`  ${dim("output tokens")} ${cyan(String(w.totalOutputTokens))}`);
+  if (w.byAgent && Object.keys(w.byAgent).length > 0) {
+    console.log("");
+    console.log(dim("  per-agent breakdown:"));
+    const rows = Object.entries(w.byAgent).sort(([, a], [, b]) => b.usd - a.usd);
+    for (const [agent, r] of rows) {
+      const pctAgent = w.totalUsd ? (r.usd / w.totalUsd) * 100 : 0;
+      console.log(`    ${cyan(agent.padEnd(20))} ${dim("$")}${r.usd.toFixed(4).padStart(8)} ${dim("·")} ${String(r.turns).padStart(3)} turns ${dim("·")} ${pctAgent.toFixed(1).padStart(5)}%`);
+    }
+  }
   if (pct > 80) console.log(yellow(`  ⚠ ${pct.toFixed(0)}% of cap consumed — reset via POST /v1/sessions/${sid}/wallet/reset to continue.`));
+}
+
+// :diag — diagnostic summary: where is the multi-agent loop failing?
+async function cmdDiag(sid) {
+  const d = await getJson(`/v1/sessions/${sid}/diagnostics`);
+  const s = d.summary;
+  const f = d.failures;
+
+  console.log(dim("═══ summary ═══"));
+  console.log(`  total turns:    ${cyan(String(s.totalTurns))}`);
+  console.log(`  total cost:     ${cyan("$" + s.totalCostUsd.toFixed(4))} ${dim("of $" + s.wallet.capUsd.toFixed(2) + " cap")}`);
+  if (s.byAgent.length > 0) {
+    console.log(dim("  by agent:"));
+    for (const a of s.byAgent) {
+      const status = `${green(a.ok + "ok")}/${a.schema_error ? red(a.schema_error + "schema") : dim("0schema")}/${a.aborted ? yellow(a.aborted + "abort") : dim("0abort")}/${a.error ? red(a.error + "err") : dim("0err")}`;
+      console.log(`    ${cyan(a.agent.padEnd(20))} ${String(a.turns).padStart(3)} turns · ${status} · $${a.cost_usd.toFixed(4)}`);
+    }
+  }
+  console.log("");
+
+  const total = (arr) => arr.length;
+  const sum = total(f.schemaErrors) + total(f.circuitBreaks) + total(f.agentErrors) +
+              total(f.validatorRegressions) + total(f.integrityIssues) + total(f.semanticFailures) + total(f.ambiguityLoops);
+  if (sum === 0) {
+    console.log(green("  ✓ no failures detected across the session"));
+    return;
+  }
+
+  console.log(red("═══ failures ═══"));
+
+  if (f.schemaErrors.length) {
+    console.log(red(`  schema_errors (${f.schemaErrors.length}):`));
+    for (const e of f.schemaErrors.slice(0, 5)) {
+      console.log(`    ${red("✗")} turn ${e.turn} · ${cyan(e.agent)} · ${e.errors[0] || "(no message)"}`);
+    }
+  }
+  if (f.circuitBreaks.length) {
+    console.log(yellow(`  circuit_breaks (${f.circuitBreaks.length}):`));
+    for (const e of f.circuitBreaks.slice(0, 5)) {
+      console.log(`    ${yellow("!")} turn ${e.turn} · ${cyan(e.agent)} · ${e.reason} · $${(e.cost_usd || 0).toFixed(4)}`);
+    }
+  }
+  if (f.agentErrors.length) {
+    console.log(red(`  agent_errors (${f.agentErrors.length}):`));
+    for (const e of f.agentErrors.slice(0, 5)) {
+      console.log(`    ${red("✗")} turn ${e.turn} · ${cyan(e.agent)} · ${(e.error || "").slice(0, 80)}`);
+    }
+  }
+  if (f.validatorRegressions.length) {
+    console.log(red(`  validator_regressions (${f.validatorRegressions.length}):`));
+    for (const e of f.validatorRegressions.slice(0, 5)) {
+      console.log(`    ${red("↑")} turn ${e.turn} · ${cyan(e.agent)} · errors ${e.before.errors} → ${e.after.errors} (Δ +${e.delta})`);
+    }
+  }
+  if (f.integrityIssues.length) {
+    console.log(red(`  integrity_issues (${f.integrityIssues.length}):`));
+    for (const e of f.integrityIssues.slice(0, 5)) {
+      console.log(`    ${red("✗")} turn ${e.turn} · ${cyan(e.agent)} · ${e.issues.length} dangling refs`);
+      for (const i of e.issues.slice(0, 2)) console.log(`       ${dim(i.message || i.field || "")}`);
+    }
+  }
+  if (f.semanticFailures.length) {
+    console.log(yellow(`  semantic_failures (${f.semanticFailures.length}):`));
+    for (const e of f.semanticFailures.slice(0, 5)) {
+      console.log(`    ${yellow("!")} turn ${e.turn} · ${cyan(e.agent)} · ${e.type}`);
+    }
+  }
+  if (f.ambiguityLoops.length) {
+    console.log(yellow(`  ambiguity_loops (${f.ambiguityLoops.length}):`));
+    for (const l of f.ambiguityLoops.slice(0, 5)) {
+      console.log(`    ${yellow("⟳")} ${cyan(l.agent)} · ${l.turns} consecutive ask_user (turn ${l.fromTurn} → ${l.toTurn})`);
+    }
+  }
+
+  if (Object.keys(d.durations || {}).length > 0) {
+    console.log("");
+    console.log(dim("  durations (ms):"));
+    for (const [agent, st] of Object.entries(d.durations)) {
+      console.log(`    ${cyan(agent.padEnd(20))} count=${st.count} · p50=${st.p50_ms} · p95=${st.p95_ms} · max=${st.max_ms}`);
+    }
+  }
 }
 
 
@@ -1140,6 +1232,7 @@ async function handleLine(input) {
       case "apply": await cmdApply(sid, arg1); break;
       case "changes": case "semantic-diff": case "sdiff": await cmdSemanticDiff(sid, arg1); break;
       case "agent": await cmdAgent(sid, rest); break;
+      case "diag": case "diagnostics": await cmdDiag(sid); break;
       case "quit": case "q": case "exit": return "quit";
       default: console.log(red(`unknown command: :${cmd}  (try :help)`));
     }
