@@ -317,6 +317,10 @@ ${bold(":add-form")} <spec.json> [--dry-run]
 ${bold(":apply")} <spec.yaml>
                 deterministic patch: parse YAML → materialise declarative rules → patch bundle → commit turn
                 Shows: structured diff (+added/~updated per file), compiled rule list, integrity check
+${bold(":agent")} <spec|bundle-config|review> <prompt>
+                dispatch to a specialised agent (BYO Anthropic key in env). Each ends with a
+                structured-output JSON block matching avni-ai's {intent, target_phase, …} contract.
+                Shows: routing, applied_changes / ambiguities, schema validation result.
 ${bold(":changes")} [N]      semantic diff for turn N (default = last) — per-file added/updated/removed entries
 ${bold(":transcript")} [N]   tail conversation memory (user/assistant/turn events from transcript.jsonl)
 ${bold(":steps")} [N]        tail operational log (validator runs, agent turns, commits, durations)
@@ -632,6 +636,103 @@ async function cmdApply(sid, fileArg) {
     if (res.integrity.issues.length > 8) console.log(dim("    … " + (res.integrity.issues.length - 8) + " more"));
   } else {
     console.log(dim("  integrity: ✓ no dangling references"));
+  }
+}
+
+// :agent <spec|bundle-config|review> <prompt>  — dispatch a turn to the
+// named structured-output agent. Streams SSE; renders the routing decision,
+// the structured output, the diff + integrity report, and any schema errors.
+async function cmdAgent(sid, rest) {
+  if (!rest || rest.length < 2) {
+    console.log(red("  usage: :agent <spec|bundle-config|review> <prompt>"));
+    return;
+  }
+  const agentName = rest[0];
+  const userPrompt = rest.slice(1).join(" ");
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    console.log(red("  ANTHROPIC_API_KEY not set in env — :agent requires a live key."));
+    return;
+  }
+
+  rule(cyan("agent · " + agentName + " · " + MODEL.replace(/^claude-/, "").split("-").slice(0, 3).join("-")), dim);
+  const body = JSON.stringify({ agent: agentName, prompt: userPrompt, model: MODEL });
+  const r = await fetch(`${BASE}/v1/sessions/${sid}/agent-messages`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " + apiKey,
+    },
+    body,
+  });
+  if (!r.ok) {
+    const txt = await r.text();
+    console.log(red("  ✗ " + r.status + ": " + txt.slice(0, 200)));
+    return;
+  }
+
+  // Stream SSE — render salient events; ignore noisy intermediate frames.
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let lastEvent = null;
+  let structured = null;
+  let schemaErrors = [];
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf("\n\n")) !== -1) {
+      const block = buf.slice(0, nl);
+      buf = buf.slice(nl + 2);
+      const evMatch = block.match(/^event:\s*(.+)$/m);
+      const dataMatch = block.match(/^data:\s*([\s\S]+)$/m);
+      if (!evMatch || !dataMatch) continue;
+      const ev = evMatch[1].trim();
+      let data;
+      try { data = JSON.parse(dataMatch[1]); } catch { continue; }
+      lastEvent = ev;
+      if (ev === "agent_routing") {
+        console.log(dim("  routing → ") + agentName + dim(" · model ") + cyan(data.model.replace(/^claude-/, "")));
+      } else if (ev === "structured_output") {
+        structured = data;
+      } else if (ev === "structured_output_error") {
+        schemaErrors = data.errors || [];
+      } else if (ev === "turn") {
+        console.log(dim("  → turn ") + cyan(String(data.turn)) + dim(" · sha=") + dim(data.sha) +
+                    dim(" · validator ") + (data.validation?.valid ? green("✓") : red("✗ " + (data.validation?.errors || 0) + " errors")));
+      } else if (ev === "done") {
+        console.log(dim("  done · " + data.agentEvents + " events · cost $" +
+                       (data.wallet?.totalUsd || 0).toFixed(4) +
+                       " · schema " + (data.schemaOk ? green("✓") : red("✗"))));
+      } else if (ev === "error") {
+        console.log(red("  ✗ " + (data.message || JSON.stringify(data))));
+      }
+    }
+  }
+  rule("", dim);
+  if (structured) {
+    console.log(dim("  ── structured output ──"));
+    console.log(dim("  intent:       ") + cyan(structured.intent));
+    console.log(dim("  target_phase: ") + structured.target_phase);
+    console.log(dim("  reason:       ") + structured.reason);
+    if (structured.applied_changes?.length) {
+      console.log(dim("  applied_changes:"));
+      for (const c of structured.applied_changes) {
+        console.log("    " + green("✓") + " " + c.operation + " " + c.section + " · " + (c.item_names || []).join(", "));
+      }
+    }
+    if (structured.ambiguities?.length) {
+      console.log(yellow("  ambiguities (agent is asking you):"));
+      for (const a of structured.ambiguities) {
+        console.log("    " + yellow("?") + " " + a.question);
+        for (const o of (a.options || [])) console.log("       · " + o);
+      }
+    }
+  } else if (schemaErrors.length) {
+    console.log(red("  ✗ structured-output contract broken:"));
+    for (const e of schemaErrors.slice(0, 5)) console.log("    " + e);
   }
 }
 
@@ -1038,6 +1139,7 @@ async function handleLine(input) {
       case "cost": case "wallet": await cmdCost(sid); break;
       case "apply": await cmdApply(sid, arg1); break;
       case "changes": case "semantic-diff": case "sdiff": await cmdSemanticDiff(sid, arg1); break;
+      case "agent": await cmdAgent(sid, rest); break;
       case "quit": case "q": case "exit": return "quit";
       default: console.log(red(`unknown command: :${cmd}  (try :help)`));
     }
