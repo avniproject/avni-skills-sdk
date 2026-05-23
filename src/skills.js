@@ -90,8 +90,13 @@ const LOAD_BEARING_BUNDLE_SKILLS = new Set([
   "project-scoping",          // SRS → AVNI mapping workflow
   "product-knowledge",        // codebase feasibility checks
   // sdk-local
-  "rules-author",             // canonical rule body shapes (validation/
-                              // decision/visitSchedule/eligibility/skipLogic)
+  "rules-author",                // canonical rule body shapes (validation/
+                                  // decision/visitSchedule/eligibility/skipLogic)
+  "avni-implementer-reference",  // 117 sections distilled from avni-ai's
+                                  // dify/merged.md — advanced-feature-guide,
+                                  // how-to guides, sidebar docs, sample
+                                  // implementations, reporting, architecture.
+                                  // Built by scripts/build-implementer-reference.mjs.
 ]);
 
 export function listBundleAuthoringSkills() {

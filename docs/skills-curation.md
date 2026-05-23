@@ -1,10 +1,10 @@
 # Skills curation for the bundle-authoring agent
 
-**Shipped 2026-05-22 IST (Phase 6a) · WS4 · 8/17 skills active for `/messages`**
+**Shipped 2026-05-22 IST (Phase 6a) · WS4 · 9/18 skills active for `/messages`**
 
 The bundle-authoring agent (the one driving `/v1/sessions/:id/messages`) used to load **all 17** skills it could find in `avni-skills/` + `avni-skills-sdk/skills/`. Many of those skills are off-topic for bundle authoring — they're for post-launch debugging, mobile device QA, support tickets, metabase reports. Loading them inflates the agent's per-turn cache_creation_input_tokens without adding signal.
 
-This audit reduces the agent's exposed skill set to the **8 load-bearing skills**. The other 9 stay in the brain (still readable via `GET /v1/skills/:slug`) — just not pre-loaded into the agent's context.
+This audit reduces the agent's exposed skill set to the **9 load-bearing skills** (8 originally + 1 added in Phase 6c when we distilled `avni-ai/dify/merged.md` into a vendored skill). The other 9 stay in the brain (still readable via `GET /v1/skills/:slug`) — just not pre-loaded into the agent's context.
 
 ## The kept 8
 
@@ -18,6 +18,7 @@ This audit reduces the agent's exposed skill set to the **8 load-bearing skills*
 | `project-scoping` (brain) | SRS → AVNI mapping workflow. Cited during the YAML-spec drafting phase. |
 | `product-knowledge` (brain) | Codebase feasibility checks — "does AVNI support X?" The agent reads this before promising features. |
 | `rules-author` (sdk-local) | Canonical rule body shapes for the 5 rule types (validation/decision/visitSchedule/eligibility/skipLogic). |
+| `avni-implementer-reference` (sdk-local) | 117 sections distilled from `avni-ai/dify/merged.md` — advanced-feature-guide (40), webapp sidebar docs (35), how-to guides (12), basic-feature-guide (13), sample-implementations (9), reporting (6), architecture (2). The vendored implementer-facing reference book. Built by `scripts/build-implementer-reference.mjs` — re-run when upstream `merged.md` changes. |
 
 ## The dropped 9
 

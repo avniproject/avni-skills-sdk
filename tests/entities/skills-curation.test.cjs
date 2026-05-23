@@ -19,13 +19,14 @@ test("listBundleAuthoringSkills returns a strict subset of listSkills", async ()
   assert.ok(curated.length <= all.length);
 });
 
-test("curated set contains the 7 load-bearing skills", async () => {
+test("curated set contains the load-bearing skills", async () => {
   const { listBundleAuthoringSkills } = await load();
   const slugs = listBundleAuthoringSkills().map((s) => s.slug).sort();
   // These are the skills the agent actually needs for bundle authoring.
   // Audit committed in src/skills.js LOAD_BEARING_BUNDLE_SKILLS.
   const expected = [
     "architecture-patterns",
+    "avni-implementer-reference",
     "backend-architecture",
     "implementation-engineer",
     "product-codebase",
