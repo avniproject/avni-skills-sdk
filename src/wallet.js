@@ -195,5 +195,3 @@ export function _testReset() {
   ledger.clear();
 }
 
-// Expose default values to /v1/sessions/:id/wallet for UI display.
-export const DEFAULT_CAPS = { ...DEFAULTS };

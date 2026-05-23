@@ -35,8 +35,6 @@ import { detectConceptCollisions, formatViolationMessage } from "./rules-brain/c
 const SESSIONS_DIR = process.env.SDK_SESSIONS_DIR || path.join(os.homedir(), ".avni-skills-sdk", "sessions");
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
-export const SESSIONS_ROOT = SESSIONS_DIR;
-
 function newId() {
   return "sess_" + crypto.randomBytes(8).toString("hex");
 }
