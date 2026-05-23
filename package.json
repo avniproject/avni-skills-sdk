@@ -14,7 +14,10 @@
     "dev": "node --watch src/server.js",
     "cli": "node scripts/sdk-cli.mjs",
     "verify": "node scripts/sdk-cli.mjs --demo",
-    "verify:dryrun": "bash -c 'node scripts/dryrun-phase-4.mjs --forms \"$0\" --modelling \"$1\" --org \"${2:-Demo}\"'"
+    "verify:dryrun": "bash -c 'node scripts/dryrun-phase-4.mjs --forms \"$0\" --modelling \"$1\" --org \"${2:-Demo}\"'",
+    "corpus:validate": "node tests/corpus/run.cjs",
+    "dashboard": "node scripts/observability-dashboard.mjs",
+    "repl:observed": "bash scripts/repl-with-dashboard.sh"
   },
   "engines": {
     "node": ">=22"
@@ -29,6 +32,8 @@
     "acorn": "^8.16.0",
     "acorn-walk": "^8.3.5",
     "archiver": "^7.0.1",
+    "blessed": "^0.1.81",
+    "blessed-contrib": "^4.11.0",
     "express": "^4.21.2"
   }
 }

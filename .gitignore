@@ -55,3 +55,7 @@ fixtures/
 
 # Stray shell-redirect artifacts (e.g. accidental `> to` typos)
 /to
+
+
+# Sub-agent worktree artifacts (Claude Code harness creates these)
+.claude/

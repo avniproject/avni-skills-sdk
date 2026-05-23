@@ -1,5 +1,11 @@
 // Skill discovery — read SKILL.md frontmatter from avni-skills/.
 // Pure data, no Claude API call needed. Used by /v1/skills routes.
+//
+// Bundle-authoring agent: prefer listBundleAuthoringSkills() over listSkills()
+// when constructing the agent's allowed-skills set. The full 16-brain list
+// includes domains the agent doesn't need (mobile-testing, metabase reports,
+// support-engineer post-launch debug) and dilutes context. Audit lives in
+// docs/skills-curation.md.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -65,6 +71,40 @@ export function listSkills() {
     }
   }
   return skills;
+}
+
+// Load-bearing skills for the bundle-authoring agent. Curated from a survey
+// of the 16 brain skills + 1 sdk-local. Each entry was kept iff a real
+// bundle-authoring task (add/edit forms/concepts/rules, fix validator
+// errors, map SRS → bundle) routinely touches it. Off-topic skills (mobile
+// device testing, post-launch support tickets, metabase reports, CSV data
+// migration, org go-live) are deliberately excluded — they remain readable
+// via /v1/skills/:slug but aren't pre-loaded into the agent's context.
+const LOAD_BEARING_BUNDLE_SKILLS = new Set([
+  // brain (avni-skills/)
+  "srs-bundle-generator",     // canonical generator + bundle config
+  "backend-architecture",     // entity model, observation format, ETL
+  "product-codebase",         // rules-config API reference
+  "architecture-patterns",    // design patterns from official analysis
+  "implementation-engineer",  // form configuration + rule patterns
+  "project-scoping",          // SRS → AVNI mapping workflow
+  "product-knowledge",        // codebase feasibility checks
+  // sdk-local
+  "rules-author",                // canonical rule body shapes (validation/
+                                  // decision/visitSchedule/eligibility/skipLogic)
+  "avni-implementer-reference",  // 117 sections distilled from avni-ai's
+                                  // dify/merged.md — advanced-feature-guide,
+                                  // how-to guides, sidebar docs, sample
+                                  // implementations, reporting, architecture.
+                                  // Built by scripts/build-implementer-reference.mjs.
+]);
+
+export function listBundleAuthoringSkills() {
+  return listSkills().filter((s) => LOAD_BEARING_BUNDLE_SKILLS.has(s.slug));
+}
+
+export function isBundleAuthoringSkill(slug) {
+  return LOAD_BEARING_BUNDLE_SKILLS.has(slug);
 }
 
 export function readSkill(slug) {

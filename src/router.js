@@ -84,6 +84,3 @@ function aliasFor(modelOrAlias) {
        : modelOrAlias;
 }
 
-// Export the keyword sets so tests can inspect them; also handy for the
-// /v1/sessions/:id/wallet endpoint to surface what triggers escalation.
-export const _routingKeywords = { STRUCTURAL_KEYWORDS, DEEP_REASONING_KEYWORDS };
