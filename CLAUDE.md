@@ -10,15 +10,52 @@ Read this whole file before making changes. It's the contract.
 
 ```
 avni-skills-sdk (this repo, body)
-  ├── src/server.js         ← Express, all endpoints
-  ├── src/skills.js         ← reads avni-skills/*/SKILL.md
-  ├── src/bundle.js         ← wraps avni-skills's generator + validator
-  ├── src/workspace.js      ← stages avni-skills as .claude/skills/ for the SDK
-  ├── src/sessions.js       ← session storage (default: ~/.avni-skills-sdk/sessions/)
-  ├── src/transcript.js     ← append-only JSONL conversation memory per session
-  ├── src/steplog.js        ← append-only JSONL operational log per session
-  ├── src/wallet.js         ← per-session cost ledger (in-memory + cost.jsonl on disk)
-  └── src/agent.js          ← Claude Agent SDK wrapper (BYO key)
+  ├── src/server.js              ← thin Express bootstrap + CORS + mountRoutes(app)
+  ├── src/routes/                ← per-domain HTTP endpoint modules
+  │     ├── index.js                ← mountRoutes(app) — wires each module
+  │     ├── health.js               ← GET /health
+  │     ├── skills.js               ← /v1/skills + /v1/skills/:slug
+  │     ├── bundles.js              ← POST /v1/bundles/generate
+  │     ├── agent-query.js          ← POST /v1/agent/query
+  │     ├── sessions-lifecycle.js   ← POST/GET/DELETE /v1/sessions + files + turns + diff + zip + revert
+  │     ├── sessions-edit.js        ← POST /:id/edit + POST /:id/apply-spec
+  │     ├── sessions-messages.js    ← /:id/messages (Phase 4) + /:id/agent-messages (WS5)
+  │     ├── sessions-observability.js ← /:id/{transcript,steps,cost,diagnostics}
+  │     ├── sessions-rules.js       ← /:id/rules + /rules/validation + PUT /rules
+  │     └── sessions-summary-evaluate.js  ← /summary, /evaluate, /wallet[/reset]
+  ├── src/middleware/multipart.js ← small multipart parser (used by /bundles/generate)
+  ├── src/pipeline.js            ← WS2 orchestrator: parse YAML → materialise rules → patch
+  ├── src/agent-output-schema.js ← WS5 structured-output contract + validator
+  ├── src/agents/                ← WS5 agent configs (spec / bundle-config / review)
+  ├── src/skills.js              ← reads avni-skills/*/SKILL.md + bundle-authoring filter
+  ├── src/bundle.js              ← wraps avni-skills's generator + validator
+  ├── src/workspace.js           ← stages avni-skills as .claude/skills/ for the SDK
+  ├── src/sessions.js            ← session storage (default: ~/.avni-skills-sdk/sessions/)
+  ├── src/transcript.js          ← append-only JSONL conversation memory per session
+  ├── src/steplog.js             ← append-only JSONL operational log per session
+  ├── src/wallet.js              ← per-session cost ledger (in-memory + cost.jsonl on disk)
+  ├── src/agent.js               ← Claude Agent SDK wrapper (BYO key)
+  ├── src/router.js              ← prompt → model routing (haiku ↔ sonnet)
+  ├── src/rules-brain/           ← R1–R6 acorn-based JS-rule validator + vendored
+  │                                  rules-config DeclarativeRuleHolder
+  ├── scripts/sdk-cli.mjs        ← thin REPL entrypoint (args + boot + readline loop)
+  └── scripts/cli/               ← REPL implementation (factory-pattern modules)
+        ├── ui.mjs                 ← ANSI helpers, box, rule, startSpinner, withSpinner
+        ├── server-mgmt.mjs        ← ensureServer + http helpers (getJson/postJson/getText)
+        ├── session.mjs            ← createSession + attachSession (REPL bootstrap)
+        ├── sse.mjs                ← sendMessage — POST /messages + SSE renderer
+        ├── banner.mjs             ← header box + bundle-stats box + suggestions
+        ├── render.mjs             ← formatValidation + describeToolUse
+        ├── help.mjs               ← buildHelp() — the :help text
+        ├── bundle-path.mjs        ← guessBundlePath(sid) for tool-cwd resolution
+        ├── dispatch.mjs           ← makeDispatcher — ":command args" routing
+        └── commands/              ← REPL command bundles (factory functions)
+              ├── turns.mjs           ← :turns, :diff, :files, :read, :state, :revert, :zip
+              ├── rules.mjs           ← :rules, :rulev, :refs, :rename, :add-form
+              ├── audit.mjs           ← :summary, :eval
+              ├── workflows.mjs       ← :apply
+              ├── observability.mjs   ← :transcript, :steps, :cost, :changes, :diag
+              └── agents.mjs          ← :agent, :model
 
 avni-skills (separate repo, brain)
   ├── 16 skill folders (architecture-patterns, backend-architecture, ...)
