@@ -93,6 +93,7 @@ ${BUNDLE_HARD_RULES}`;
  * @param {string} [opts.permissionMode]
  * @param {string} [opts.skillScope] — "bundle-authoring" (curated 7) | "all" (default = all)
  * @param {AbortController} [opts.abortController]
+ * @param {string} [opts.resume] — SDK session id to resume; when set, the SDK rehydrates the prior transcript server-side and the new prompt is appended as the next turn. Caller is responsible for capturing this from the `system/init` event on turn 1.
  * @returns {AsyncIterable}
  */
 export async function* runAgent(opts) {
@@ -106,6 +107,7 @@ export async function* runAgent(opts) {
     permissionMode = "bypassPermissions",
     skillScope = "all",
     abortController,
+    resume,
   } = opts;
 
   if (!apiKey) throw new Error("apiKey is required (provide via Authorization header)");
@@ -137,6 +139,11 @@ export async function* runAgent(opts) {
       skills: skillNames.length ? skillNames : "all",
     };
     if (abortController) queryOptions.abortController = abortController;
+    // Native SDK session continuation — the SDK rehydrates the prior
+    // transcript (incl. tool_use/tool_result pairing) and the new prompt is
+    // appended as the next turn. cwd MUST be identical to turn 1 or the SDK
+    // silently starts a fresh session.
+    if (resume) queryOptions.resume = resume;
 
     const result = query({ prompt, options: queryOptions });
     for await (const event of result) yield event;

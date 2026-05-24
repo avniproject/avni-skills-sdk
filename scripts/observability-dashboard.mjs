@@ -57,9 +57,10 @@ const grid = new contrib.grid({ rows: 12, cols: 12, screen });
 // Top-left (6 cols × 6 rows): per-agent table
 const agentTable = grid.set(0, 0, 6, 6, contrib.table, {
   keys: false,
-  label: " per-agent · turns / status / cost ",
+  label: " per-agent ",
   columnSpacing: 2,
-  columnWidth: [16, 6, 6, 6, 6, 9],
+  // Tight widths so the table fits in narrow tmux panes (~40-60 cols).
+  columnWidth: [12, 5, 4, 6, 5, 8],
   fg: "white",
   selectedFg: "white",
   selectedBg: "blue",
@@ -68,32 +69,40 @@ const agentTable = grid.set(0, 0, 6, 6, contrib.table, {
 
 // Top-right (6 cols × 3 rows): cost gauge
 const costGauge = grid.set(0, 6, 3, 6, contrib.gauge, {
-  label: " wallet · % of $5 cap consumed ",
+  label: " wallet ",
   stroke: "green",
   fill: "white",
 });
 
-// Mid-right (6 cols × 3 rows): summary text
-const summaryBox = grid.set(3, 6, 3, 6, contrib.log, {
+// Mid-right (6 cols × 3 rows): summary text.
+// Use blessed.box (not contrib.log) so setContent REPLACES on each refresh
+// rather than appending — otherwise the same lines pile up every 2s and the
+// pane becomes unreadable. tags:true so {bold}/{red-fg} render styled.
+const summaryBox = grid.set(3, 6, 3, 6, blessed.box, {
   label: " session ",
-  fg: "cyan",
-  selectedFg: "cyan",
-  bufferLength: 50,
+  tags: true,
+  style: { fg: "cyan", border: { fg: "cyan" } },
+  border: { type: "line" },
+  padding: { left: 1, right: 1 },
 });
 
-// Bottom-left (6 cols × 6 rows): failures by category
-const failureBar = grid.set(6, 0, 6, 6, contrib.bar, {
-  label: " failures by category ",
-  barWidth: 5,
-  barSpacing: 4,
-  xOffset: 2,
-  maxHeight: 9,
-  barBgColor: "red",
+// Bottom-left (6 cols × 6 rows): failures.
+// Use a plain text box (not contrib.bar) — bar chart in a narrow pane
+// overlays the value text on top of the label and corrupts both. A simple
+// "label: count" listing is more readable AND highlights non-zero categories.
+const failuresBox = grid.set(6, 0, 6, 6, blessed.box, {
+  label: " failures ",
+  tags: true,
+  style: { fg: "white", border: { fg: "white" } },
+  border: { type: "line" },
+  padding: { left: 1, right: 1 },
 });
 
-// Bottom-right (6 cols × 6 rows): recent steps tail
+// Bottom-right (6 cols × 6 rows): recent steps tail.
+// tags:true so the {gray-fg}/{green-fg}/{red-fg} icons render styled.
 const stepsLog = grid.set(6, 6, 6, 6, contrib.log, {
-  label: " recent steps (steps.jsonl tail) ",
+  label: " recent steps ",
+  tags: true,
   fg: "white",
   selectedFg: "white",
   bufferLength: 200,
@@ -124,15 +133,24 @@ async function refresh() {
     fetchJson(`/v1/sessions/${SID}/steps?limit=20`),
   ]);
 
-  // ── Summary box (top-right text)
-  summaryBox.setContent("");
+  // ── Summary box (top-right text). setContent REPLACES, doesn't append.
   if (!diag) {
-    summaryBox.log(`{red-fg}server unreachable @ ${BASE}{/}`);
+    summaryBox.setContent(
+      `{red-fg}server unreachable{/}\n` +
+      `  @ ${BASE}\n\n` +
+      `  start the REPL with\n` +
+      `  {bold}npm start{/} in the\n` +
+      `  left pane.`
+    );
   } else {
     const s = diag.summary;
-    summaryBox.log(`{bold}${SID.slice(0, 16)}{/}…`);
-    summaryBox.log(`turns: ${s.totalTurns}   cost: ${fmtUsd(s.totalCostUsd)} / $${s.wallet.capUsd.toFixed(2)}`);
-    summaryBox.log(`refresh: every ${REFRESH_MS}ms     press q to exit`);
+    summaryBox.setContent(
+      `{bold}${SID}{/}\n` +
+      `turns:  ${s.totalTurns}\n` +
+      `cost:   ${fmtUsd(s.totalCostUsd)} / $${s.wallet.capUsd.toFixed(2)}\n` +
+      `tokens: in ${s.wallet.byAgent ? Object.values(s.wallet.byAgent).reduce((a, x) => a + (x.inputTokens || 0), 0) : 0} · out ${s.wallet.byAgent ? Object.values(s.wallet.byAgent).reduce((a, x) => a + (x.outputTokens || 0), 0) : 0}\n` +
+      `\n{gray-fg}refresh ${REFRESH_MS}ms · press q to exit{/}`
+    );
   }
 
   // ── Per-agent stats table
@@ -159,24 +177,30 @@ async function refresh() {
     costGauge.setLabel(` wallet · ${fmtUsd(cost.totalUsd)} / $${cost.caps.hardCapUsd.toFixed(2)} (${pct.toFixed(1)}%) `);
   }
 
-  // ── Failures bar
+  // ── Failures text listing — non-zero categories highlighted red.
   if (diag?.failures) {
     const f = diag.failures;
-    failureBar.setData({
-      titles: ["schema", "circuit", "agent.err", "regress", "integ", "semantic", "loops"],
-      data: [
-        f.schemaErrors.length,
-        f.circuitBreaks.length,
-        f.agentErrors.length,
-        f.validatorRegressions.length,
-        f.integrityIssues.length,
-        f.semanticFailures.length,
-        f.ambiguityLoops.length,
-      ],
+    const items = [
+      ["schema errors",     f.schemaErrors.length],
+      ["circuit breaks",    f.circuitBreaks.length],
+      ["agent errors",      f.agentErrors.length],
+      ["validator regress", f.validatorRegressions.length],
+      ["integrity issues",  f.integrityIssues.length],
+      ["semantic failures", f.semanticFailures.length],
+      ["ambiguity loops",   f.ambiguityLoops.length],
+    ];
+    const lines = items.map(([label, n]) => {
+      const tag = n > 0 ? `{red-fg}{bold}${String(n).padStart(3)}{/}` : `{gray-fg}${String(n).padStart(3)}{/}`;
+      return `${tag}  ${label}`;
     });
+    const total = items.reduce((a, [, n]) => a + n, 0);
+    lines.unshift(total > 0 ? `{red-fg}${total} total failure(s){/}` : `{green-fg}no failures yet{/}`);
+    lines.splice(1, 0, "");
+    failuresBox.setContent(lines.join("\n"));
   }
 
-  // ── Steps log (tail only the new entries since last poll)
+  // ── Steps log (tail only the new entries since last poll). Tight format
+  // for narrow tmux panes: HH:MM:SS · icon · kind · duration.
   if (steps?.steps) {
     const list = steps.steps;
     const newOnes = list.slice(lastStepCount);
@@ -185,10 +209,9 @@ async function refresh() {
       const icon = s.status === "ok" ? "{green-fg}✓{/}" :
                    s.status === "error" ? "{red-fg}✗{/}" :
                    s.status === "aborted" ? "{yellow-fg}!{/}" :
-                   s.status === "schema_error" ? "{red-fg}{bold}✗{/}" :
+                   s.status === "schema_error" ? "{red-fg}{bold}!{/}" :
                    "{cyan-fg}·{/}";
-      const meta = s.meta ? Object.entries(s.meta).slice(0, 2).map(([k, v]) => `${k}=${v}`).join(" ") : "";
-      stepsLog.log(`{gray-fg}${ts}{/} ${icon} ${pad(s.kind, 14)} ${pad(fmtMs(s.duration_ms), 7)} {gray-fg}${meta}{/}`);
+      stepsLog.log(`{gray-fg}${ts}{/} ${icon} ${pad(s.kind, 12)} ${pad(fmtMs(s.duration_ms), 7)}`);
     }
     lastStepCount = list.length;
   }

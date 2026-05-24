@@ -82,7 +82,18 @@ export function register(app) {
       res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
 
-    const sessionPrompt = `You are editing an AVNI bundle inside a session workspace.
+    // Native SDK session resume — if we've captured the SDK session id on a
+    // prior turn, the SDK rehydrates the full transcript server-side and the
+    // agent sees this prompt as a follow-up. Without this, every turn is a
+    // cold agent with zero memory of the prior conversation.
+    const sdkSessionId = sessions.getSdkSessionId(req.params.id);
+
+    // Per-turn prompt: keep it short — system prompt + transcript are
+    // hydrated by the SDK on resume. On the FIRST turn the system prompt
+    // alone sets the workspace context.
+    const sessionPrompt = sdkSessionId
+      ? prompt
+      : `You are editing an AVNI bundle inside a session workspace.
 
 Workspace layout (your cwd):
   ./                  — bundle files you can read + edit (concepts.json, forms/*.json, formMappings.json, ...)
@@ -125,6 +136,7 @@ ${prompt}`;
         apiKey,
         model: effectiveModel,
         workspace: bundleCwd,
+        resume: sdkSessionId,
         // Curated: 7 load-bearing skills for bundle authoring, down from 17.
         // Off-topic skills (mobile-testing, support tickets, metabase, etc.)
         // remain readable via /v1/skills/:slug but aren't pre-loaded into the
@@ -167,6 +179,30 @@ ${BUNDLE_HARD_RULES}`,
       })) {
         agentEvents++;
         sse("agent", ev);
+        // First-turn handshake: capture the SDK's own session id from the
+        // init event and persist it so subsequent turns can pass `resume:`.
+        if (ev?.type === "system" && ev?.subtype === "init" && ev?.session_id) {
+          try { sessions.setSdkSessionId(req.params.id, ev.session_id); } catch {}
+        }
+        // Persist assistant text to our transcript.jsonl per turn — the SDK
+        // maintains its own transcript at ~/.claude/projects/... for resume,
+        // but we also want a flat, queryable copy for REPL display and
+        // observability tools that don't want to walk SDK internals.
+        if (ev?.type === "assistant" && ev.message?.content) {
+          const textParts = [];
+          for (const b of ev.message.content) {
+            if (b.type === "text" && typeof b.text === "string" && b.text.trim()) textParts.push(b.text);
+          }
+          if (textParts.length) {
+            try {
+              transcript.appendEvent(req.params.id, {
+                kind: "assistant_message",
+                content: textParts.join("\n"),
+                model: effectiveModel,
+              });
+            } catch {}
+          }
+        }
         // Track running cost from result events (Claude Agent SDK emits a
         // `result` event with total_cost_usd). Mid-stream abort check fires
         // every event so we don't have to wait for the SDK to emit usage.
