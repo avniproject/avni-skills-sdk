@@ -44,6 +44,7 @@ import { makeAuditCommands }         from "./cli/commands/audit.mjs";
 import { makeWorkflowsCommands }     from "./cli/commands/workflows.mjs";
 import { makeObservabilityCommands } from "./cli/commands/observability.mjs";
 import { makeAgentsCommands }        from "./cli/commands/agents.mjs";
+import { makeSessionsCommands }      from "./cli/commands/sessions.mjs";
 import { makeDispatcher }            from "./cli/dispatch.mjs";
 
 const SDK_DIR = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
@@ -69,10 +70,13 @@ const BASE = `http://localhost:${PORT}`;
 
 // Mutable shared state across SSE renderer + commands. MODEL is `let`-y
 // (mutated by :model). priorValidationGroups is updated after each turn by
-// the SSE renderer so it can detect validator regressions.
+// the SSE renderer so it can detect validator regressions. sid is mutated
+// by `:session resume <id>` so the REPL can hop between sessions without a
+// restart — Claude-Code-style.
 const state = {
   MODEL: arg("model", "claude-haiku-4-5-20251001"),
   priorValidationGroups: null,
+  sid: null,
 };
 
 // ─── Resolve AVNI_SKILLS_PATH automatically if possible ───────────
@@ -187,6 +191,7 @@ const commands = {
   workflows:     makeWorkflowsCommands({ http }),
   observability: makeObservabilityCommands({ http }),
   agents:        makeAgentsCommands({ http, BASE, state }),
+  sessions:      makeSessionsCommands({ http, state, attachSession }),
 };
 const { handleLine } = makeDispatcher({ commands, sendMessage, state });
 
@@ -215,7 +220,7 @@ if (RESUME_SID) {
     { okMsg: "session created (turn 0 committed)" },
   );
 }
-const sid = sess.sessionId;
+state.sid = sess.sessionId;
 
 // Bundle stats box (entity counts + validator) + context-aware next-step
 // suggestions block (different for clean vs error-laden bundles).
@@ -244,7 +249,9 @@ for await (const line of rl) {
   const input = line.trim();
   if (!input) { safePrompt(); continue; }
   try {
-    const r = await handleLine(input, sid);
+    // sid is pulled from state on EVERY line so `:session resume <id>` can
+    // hop sessions mid-REPL without a restart.
+    const r = await handleLine(input, state.sid);
     if (r === "quit") break;
   } catch (e) {
     console.log(red("error: " + (e?.message || e)));
@@ -253,7 +260,7 @@ for await (const line of rl) {
   safePrompt();
 }
 
-console.log(dim(`session preserved at ${sid}`));
+console.log(dim(`session preserved at ${state.sid}`));
 if (!rlClosed) rl.close();
 if (startedServer && serverProc) serverProc.kill();
 process.exit(0);

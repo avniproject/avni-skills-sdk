@@ -11,6 +11,37 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { ensureAgentWorkspace } from "./workspace.js";
 import { listSkills, listBundleAuthoringSkills } from "./skills.js";
+import { createBundleMcpServer, BUNDLE_TOOL_NAMES } from "./agents/bundle-mcp-server.js";
+
+// Bash commands the agent is forbidden from running. The server is the sole
+// committer (it runs `git add -A && git commit` after each turn ends), so
+// any agent-initiated git write corrupts the turn counter and orphans audit
+// rows. We also block destructive shell. Read-only git stays allowed.
+//
+// Regex deliberately liberal — we'd rather block too much (false positive
+// surfaces a clear deny message the agent can react to) than too little
+// (silent contract violation, as in bug B2 / sess_7b4a7ad42b244487).
+const FORBIDDEN_BASH_PATTERNS = [
+  // Git write commands (any subcommand that mutates the repo)
+  /(^|[\s;&|])git\s+(commit|push|reset|checkout\s+[^-]|rm|restore|stash|merge|rebase|cherry-pick|tag|clean|gc)\b/,
+  // Destructive filesystem ops outside the bundle dir, or recursive force-rm anywhere
+  /(^|[\s;&|])rm\s+(-[rR]f|-fr|-rf)\b/,
+  // Privilege escalation has no place inside the agent loop
+  /(^|[\s;&|])sudo\b/,
+];
+
+function checkForbiddenBash(command) {
+  if (typeof command !== "string" || !command.trim()) return null;
+  for (const pat of FORBIDDEN_BASH_PATTERNS) {
+    if (pat.test(command)) {
+      return {
+        pattern: pat.source,
+        reason: `BLOCKED: this Bash command matches a forbidden pattern (${pat.source}). The server is the sole committer — it runs \`git add -A && git commit\` after your turn ends. Read-only git (status/log/diff/show) is fine. If you tried to "clean up" file formatting outside of the user's request, stop — see BUNDLE_HARD_RULES #10.`,
+      };
+    }
+  }
+  return null;
+}
 
 // Hard rules — agents that produce bundles MUST follow these. Distilled from
 // real failure modes observed against multi-org SRS runs:
@@ -61,7 +92,17 @@ export const BUNDLE_HARD_RULES = `HARD RULES — do NOT violate any of these. Th
 
 8. FORM-ELEMENT.CONCEPT SHAPE (mandatory). Every \`formElement.concept\` in a forms/*.json file MUST be a NESTED OBJECT with at minimum these keys: \`{ name, uuid, dataType }\` (typically also \`active: true, media: [], answers: [] }\`). It must NEVER be a bare UUID string. AVNI's server-side Jackson deserializer rejects \`"concept": "<uuid>"\` with a \`MismatchedInputException\` and the bundle fails to upload — even though the local validator passes (the local check only verifies UUID resolution, not shape). This trap was first observed when an agent was asked "fix all errors" and "fixed" F2 cross-group reuse by replacing the inline concept with just its UUID — 148 elements broken across 8 forms, server crashed on upload. The recovery workflow is \`scripts/workflows/fix-formelement-concept-shape.mjs\`. The prevention is this rule: NEVER flatten the concept field; if you're editing a formElement, copy the full nested object verbatim.
 
-9. If you can't satisfy a constraint, STOP and explain what's missing. Do not paper over with placeholder UUIDs or guessed enum values.`;
+9. If you can't satisfy a constraint, STOP and explain what's missing. Do not paper over with placeholder UUIDs or guessed enum values.
+
+10. ANSWER THE USER'S EXPLICIT REQUEST FIRST. Do NOT opportunistically:
+   - rename files / strip trailing whitespace / add final newlines / reformat JSON
+   - rebuild operational mirrors that already exist
+   - "tidy up" unrelated entries you happened to read
+   in the same turn as a user-facing fix. Hygiene work is its own turn and only when the user asks. A bundle author asking "fix the C5 error" wants the C5 error fixed — not a 12-file cleanup commit. Audit logs show the agent has done this and burned $0.20+ doing the wrong thing. Stop.
+
+11. NEVER run \`git commit\`, \`git push\`, \`git reset\`, \`git checkout --\`, \`git rm\`, \`git restore\`, or \`git stash\`. The server is the ONLY committer — it runs \`git add -A && git commit\` after your turn ends and labels it \`turn N: <summary>\`. Read-only git commands (\`git status\`, \`git log\`, \`git diff\`, \`git show\`) are fine. Any write-mode git from inside your turn corrupts the turn counter, orphans cost entries, and creates commits the audit log can't account for. The Bash tool will reject these commands at the gate — if you see "BLOCKED: agent-initiated git write", that is by design.
+
+12. CURRENT VALIDATOR STATE is provided to you at the top of every turn. Trust it. If the user asks "what is the error" → quote the items listed verbatim. If the user asks "fix the error" → fix EXACTLY the errors listed; do NOT speculate about other issues you might find. If your prompt does NOT include a "CURRENT VALIDATOR STATE" section, run the validator yourself before answering.`;
 
 const DEFAULT_SYSTEM_PROMPT = `You are the Avni bundle authoring agent.
 
@@ -103,7 +144,7 @@ export async function* runAgent(opts) {
     model = "claude-haiku-4-5-20251001",
     workspace,
     systemPrompt = DEFAULT_SYSTEM_PROMPT,
-    allowedTools = ["Read", "Glob", "Grep", "Bash", "Edit", "Write", "Skill"],
+    allowedTools = ["Read", "Glob", "Grep", "Bash", "Edit", "Write", "Skill", ...BUNDLE_TOOL_NAMES],
     permissionMode = "bypassPermissions",
     skillScope = "all",
     abortController,
@@ -137,6 +178,41 @@ export async function* runAgent(opts) {
       // Explicitly enable our skills (filters out anything else the SDK
       // might discover, and turns the Skill tool on).
       skills: skillNames.length ? skillNames : "all",
+      // In-process MCP server exposing bundle-specific deterministic tools
+      // (validator, concept lookup, summary, export-to-path). Replaces a
+      // bunch of brittle Bash patterns the agent used to reach for. See
+      // src/agents/bundle-mcp-server.js.
+      mcpServers: {
+        "avni-bundle": createBundleMcpServer(),
+      },
+      // PreToolUse gate — block forbidden Bash commands (git writes,
+      // recursive rm, sudo) BEFORE execution. The server is the sole
+      // committer; agent-initiated commits orphan the audit trail. See
+      // FORBIDDEN_BASH_PATTERNS above and audit of sess_7b4a7ad42b244487.
+      hooks: {
+        PreToolUse: [{
+          matcher: "Bash",
+          hooks: [async (input) => {
+            if (input?.hook_event_name !== "PreToolUse" || input?.tool_name !== "Bash") {
+              return { continue: true };
+            }
+            const cmd = input?.tool_input?.command;
+            const violation = checkForbiddenBash(cmd);
+            if (violation) {
+              return {
+                decision: "block",
+                reason: violation.reason,
+                hookSpecificOutput: {
+                  hookEventName: "PreToolUse",
+                  permissionDecision: "deny",
+                  permissionDecisionReason: violation.reason,
+                },
+              };
+            }
+            return { continue: true };
+          }],
+        }],
+      },
     };
     if (abortController) queryOptions.abortController = abortController;
     // Native SDK session continuation — the SDK rehydrates the prior
