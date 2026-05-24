@@ -13,7 +13,7 @@ export function makeDispatcher({ commands, sendMessage, state }) {
   // Flatten the command bundles into a single name → handler map. Each value
   // is `(sid, arg1?, rest?) => Promise<void>`; we wrap to normalise calling.
   const {
-    turns, rules, audit, workflows, observability, agents,
+    turns, rules, audit, workflows, observability, agents, sessions,
   } = commands;
 
   async function handleLine(input, sid) {
@@ -63,6 +63,13 @@ export function makeDispatcher({ commands, sendMessage, state }) {
         // agents
         case "agent":   await agents.cmdAgent(sid, rest); break;
         case "model":   agents.cmdModel(arg1); break;
+
+        // session management — list / resume / info (Claude Code /resume style)
+        case "session": case "sessions": case "s":
+                        await sessions.cmdSession(rest); break;
+        case "resume":
+                        // shorthand: `:resume sess_xxx` == `:session resume sess_xxx`
+                        await sessions.cmdSession(["resume", ...rest]); break;
 
         // exit
         case "quit": case "q": case "exit": return "quit";

@@ -41,7 +41,11 @@ ${bold(":model")} [name]  show or change agent model. Aliases: haiku | sonnet | 
 ${bold(":revert <N>")}    hard-reset to turn N
 ${bold(":zip [path]")}    download final ZIP (default: <repo>/output-bundle/<org>-<sid>.zip)
 ${bold(":state")}         re-fetch session metadata
+${bold(":session")}       list recent sessions (id, org, age, turn, errors, cost). Aliases: ${bold(":sessions")}, ${bold(":s")}
+${bold(":session resume <sess_xxx>")}  hop the live REPL to a different session — Claude-Code-style /resume.
+                Alias: ${bold(":resume <sess_xxx>")}. The next free-text prompt and every :command targets the resumed session.
+${bold(":session info [sess_xxx]")}    print full meta + cost totals for current (or named) session.
 ${bold(":help")}          this list
-${bold(":quit")} / ${bold(":q")}     exit (session is preserved on disk — resume via ${cyan("npm run cli -- --resume <sid>")})
+${bold(":quit")} / ${bold(":q")}     exit (session is preserved on disk — resume via ${cyan(":session resume <sid>")} or ${cyan("npm run cli -- --resume <sid>")})
 `;
 }

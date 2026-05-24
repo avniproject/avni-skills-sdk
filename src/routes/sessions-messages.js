@@ -88,12 +88,20 @@ export function register(app) {
     // cold agent with zero memory of the prior conversation.
     const sdkSessionId = sessions.getSdkSessionId(req.params.id);
 
+    // Current validator state — prepended to EVERY per-turn prompt (cold
+    // start and resume) so the agent never has to re-discover what's broken
+    // and can't hallucinate the wrong error code. Costs ~150 tokens, saves
+    // entire wasted turns. See audit of sess_7b4a7ad42b244487 (bug B1).
+    const validatorPreamble = sessions.currentValidatorStateText(req.params.id);
+    const validatorPreambleBlock = validatorPreamble ? `\n${validatorPreamble}\n\n---\n` : "";
+
     // Per-turn prompt: keep it short — system prompt + transcript are
     // hydrated by the SDK on resume. On the FIRST turn the system prompt
-    // alone sets the workspace context.
+    // alone sets the workspace context. Validator state is prepended every
+    // turn regardless.
     const sessionPrompt = sdkSessionId
-      ? prompt
-      : `You are editing an AVNI bundle inside a session workspace.
+      ? `${validatorPreambleBlock}User instruction:\n${prompt}`
+      : `${validatorPreambleBlock}You are editing an AVNI bundle inside a session workspace.
 
 Workspace layout (your cwd):
   ./                  — bundle files you can read + edit (concepts.json, forms/*.json, formMappings.json, ...)
@@ -143,6 +151,16 @@ ${prompt}`;
         // agent's context. See src/skills.js LOAD_BEARING_BUNDLE_SKILLS.
         skillScope: "bundle-authoring",
         systemPrompt: `You are an AVNI bundle editor inside a session workspace.
+
+DETERMINISTIC TOOLS — PREFER THESE OVER BASH WHENEVER APPLICABLE:
+  • bundle_validator_run()                    — structured validator output (errors, warnings, code groups). USE THIS instead of \`node ... validateBundle\` via Bash.
+  • bundle_find_concept({name})               — case-insensitive concept lookup. MANDATORY before adding any concept (BUNDLE_HARD_RULES #6). Replaces scripts/agent-tools/find-concept.mjs.
+  • bundle_summary()                          — entity counts + names. USE THIS to orient yourself before reading individual files.
+  • bundle_export_to_path({destPath})         — zip the bundle + copy to a destination (handles ~, dirs, .zip suffix). USE THIS when the user says "save the bundle", "put it on Desktop", "give me the zip".
+
+Free-form Bash is still allowed for what these tools don't cover, but if a tool exists for what you're about to do, USE IT. The tools are deterministic, structured, audited, and cheaper.
+
+
 
 YOUR CWD IS ALREADY AN AVNI BUNDLE.
 An SRS spreadsheet has ALREADY been processed by the deterministic generator into a working bundle in your cwd. There is NO spreadsheet to ask about. Do not ask the user to "share the data" — it is already on disk as JSON.
@@ -224,6 +242,22 @@ ${BUNDLE_HARD_RULES}`,
       // Commit whatever the agent changed (even on abort — partial work is still recorded)
       const turnSummary = prompt.replace(/\s+/g, " ").trim().slice(0, 80);
       const turnResult = await sessions.commitWorkspaceChanges(req.params.id, turnSummary);
+
+      // Thrash detector (bug B6): the agent burned a non-trivial amount of
+      // output tokens but committed nothing. Almost always means it spun on
+      // misdiagnosis or got stuck in a Read/Edit/revert loop. Surface a
+      // warning event so the dashboard + REPL can flag it.
+      const isThrash = turnResult.noChanges === true && runningOutputTokens >= 3000;
+      if (isThrash) {
+        sse("thrash-warning", {
+          ts: Date.now(),
+          outputTokens: runningOutputTokens,
+          events: agentEvents,
+          reason: "no_commit_but_high_token_burn",
+          hint: "Agent produced >3k output tokens but no file changes landed. Possible misdiagnosis or revert loop. Consider :model sonnet, a more specific prompt, or :revert.",
+        });
+      }
+
       // Record cost + tokens in the wallet ledger
       const walletSnapshot = turnMeter.recordResult({
         usd: runningCostUsd,
@@ -232,7 +266,13 @@ ${BUNDLE_HARD_RULES}`,
         aborted: !!circuitBreakReason,
         abortReason: circuitBreakReason,
       });
-      sse("turn", { ...turnResult, wallet: walletSnapshot, aborted: !!circuitBreakReason, abortReason: circuitBreakReason });
+      sse("turn", {
+        ...turnResult,
+        wallet: walletSnapshot,
+        aborted: !!circuitBreakReason,
+        abortReason: circuitBreakReason,
+        thrash: isThrash,
+      });
       sse("done", { ts: Date.now(), agentEvents, wallet: walletSnapshot });
       try {
         transcript.appendEvent(req.params.id, {
@@ -247,16 +287,23 @@ ${BUNDLE_HARD_RULES}`,
           model: effectiveModel,
           aborted: !!circuitBreakReason,
           abortReason: circuitBreakReason,
+          // Bug B4: distinguish real commits from no-op turns so the
+          // dashboard + audit log can tell them apart.
+          noChanges: turnResult.noChanges === true,
+          changedFiles: turnResult.changedFiles || [],
+          thrash: isThrash,
         });
         steplog.logStep(req.params.id, {
           kind: "agent_turn",
-          status: circuitBreakReason ? "aborted" : "ok",
+          status: circuitBreakReason ? "aborted" : (isThrash ? "thrash" : "ok"),
           duration_ms: Date.now() - turnStartedAt,
           meta: {
             turn: turnResult.turn, sha: turnResult.sha, model: effectiveModel,
             cost_usd: Number(runningCostUsd.toFixed(6)),
             input_tokens: runningInputTokens, output_tokens: runningOutputTokens,
             events: agentEvents, abortReason: circuitBreakReason,
+            noChanges: turnResult.noChanges === true,
+            thrash: isThrash,
           },
         });
       } catch (logErr) {

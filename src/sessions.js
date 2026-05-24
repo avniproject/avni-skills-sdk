@@ -176,6 +176,38 @@ export function getSdkSessionId(id) {
   return meta.sdkSessionId || null;
 }
 
+// Build a human-readable preamble describing the bundle's CURRENT validator
+// state, suitable for prepending to every per-turn agent prompt. Stops the
+// agent from re-discovering the error (one cold turn = ~$0.15) and from
+// hallucinating wrong codes ("C3" when it's actually C5). Capped at 8 errors
+// + 5 warnings so it never bloats the prompt.
+export function currentValidatorStateText(id) {
+  let r;
+  try {
+    const dir = path.join(sessionPath(id), "bundle");
+    r = validateBundle(dir);
+  } catch (e) {
+    return "";
+  }
+  if (r.valid && r.warnings.length === 0) {
+    return "CURRENT VALIDATOR STATE (server-truth): ✓ bundle is clean — no errors, no warnings.";
+  }
+  const lines = ["CURRENT VALIDATOR STATE (server-truth — do not re-discover, do not guess error codes, do not fabricate codes):"];
+  if (r.errors.length) {
+    lines.push(`  errors (${r.errors.length}):`);
+    for (const e of r.errors.slice(0, 8)) lines.push(`    • ${e}`);
+    if (r.errors.length > 8) lines.push(`    … and ${r.errors.length - 8} more`);
+  }
+  if (r.warnings.length) {
+    lines.push(`  warnings (${r.warnings.length}):`);
+    for (const w of r.warnings.slice(0, 5)) lines.push(`    • ${w}`);
+    if (r.warnings.length > 5) lines.push(`    … and ${r.warnings.length - 5} more`);
+  }
+  lines.push("");
+  lines.push("If the user says \"what is the error?\" or \"fix the error\", refer to the items above verbatim. Codes are real (C-class = concepts, F-class = forms/formMappings, R-class = rules, G-class = enums) — use them exactly as shown. Do not invent a code that is not in this list.");
+  return lines.join("\n");
+}
+
 export function listFiles(id) {
   const dir = path.join(sessionPath(id), "bundle");
   const out = [];
