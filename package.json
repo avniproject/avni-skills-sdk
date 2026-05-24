@@ -10,7 +10,7 @@
     "test:bundle": "node tests/bundle-harness.cjs",
     "test:multi-org": "node scripts/multi-org-run.js",
     "test": "npm run test:entities",
-    "start": "node src/server.js",
+    "start": "bash scripts/repl-with-dashboard.sh",
     "dev": "node --watch src/server.js",
     "cli": "node scripts/sdk-cli.mjs",
     "verify": "node scripts/sdk-cli.mjs --demo",

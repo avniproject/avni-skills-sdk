@@ -9,39 +9,37 @@ time without breaking the REPL's flow.
 
 ---
 
-## Two ways to run
+## Default: one command, side-by-side (RECOMMENDED)
 
-### Option A — manual (no tmux required)
+Needs `tmux` (one-time `brew install tmux` on macOS, `sudo apt install tmux` on Debian).
 
-In **terminal #1**, start the REPL as usual:
+```bash
+npm start                                           # synthetic SRS demo
+npm start -- --demo                                  # explicit
+npm start -- --forms ./MyOrg-Forms.xlsx --org MyOrg # your own SRS
+npm start -- --resume sess_xxxxxxxxxxxxxxxx          # come back to a session
+```
 
+This is the tmux-launcher (`scripts/repl-with-dashboard.sh`) bound to `npm start`. Layout: 60% left pane (REPL) + 40% right pane (dashboard). The right pane waits up to 60s for a fresh session to appear under `~/.avni-skills-sdk/sessions/` and auto-attaches.
+
+Detach without quitting: `Ctrl-b d`. Re-attach: `tmux attach -t avni-sdk-<pid>` (the pid is from the launching process).
+
+## Fallback: manual two-terminal (when tmux isn't installed)
+
+`npm start` gracefully degrades — prints instructions and starts the REPL alone. Then:
+
+In **terminal #1**:
 ```bash
 npm run cli -- --demo
 # → ✓ session sess_xxxxxxxxxxxxxxxx
 ```
 
-In **terminal #2**, attach the dashboard:
-
+In **terminal #2**:
 ```bash
 npm run dashboard -- --session sess_xxxxxxxxxxxxxxxx
 ```
 
-The dashboard polls every 2s. Press `q` or `Ctrl-C` to exit. Works in any
-terminal that supports ANSI (iTerm2, Terminal.app, kitty, wezterm,
-Warp, etc.).
-
-### Option B — automatic side-by-side (tmux)
-
-If you have `tmux` installed (`brew install tmux` on macOS), one command
-launches both panes:
-
-```bash
-bash scripts/repl-with-dashboard.sh --demo
-# or
-bash scripts/repl-with-dashboard.sh --forms ./MyOrg-Forms.xlsx --org MyOrg
-# or
-bash scripts/repl-with-dashboard.sh --resume sess_xxxxxxxxxxxxxxxx
-```
+Works in any terminal that supports ANSI (iTerm2, Terminal.app, kitty, wezterm, Warp, etc.). Press `q` or `Ctrl-C` to exit the dashboard.
 
 Layout: 60% left pane (REPL) + 40% right pane (dashboard). The right pane
 waits up to 60s for a fresh session to appear under
