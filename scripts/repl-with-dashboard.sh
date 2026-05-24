@@ -90,11 +90,20 @@ exec npm run dashboard -- --session $(ls -t "$SDK_SESSIONS_DIR" | head -1)
 BASH
 )
 
-# Forward all CLI args to the left pane
-LEFT_CMD="cd '$SDK_DIR' && AVNI_SKILLS_PATH='$AVNI_SKILLS_PATH' npm run cli -- $*"
+# Forward all CLI args to the left pane — re-quote each arg with printf %q
+# so quoted args containing spaces (--forms "Durga India.xlsx", --org "Durga
+# India") survive the `tmux new-session "$LEFT_CMD"` round-trip. Without
+# this, `$*` joins on bare space and the receiving npm sees the path tokens
+# as positional args; REPL silently errors out and the right-pane dashboard
+# polls a dead server forever.
+LEFT_ARGS=""
+for a in "$@"; do
+  LEFT_ARGS+=" $(printf '%q' "$a")"
+done
+LEFT_CMD="cd $(printf '%q' "$SDK_DIR") && AVNI_SKILLS_PATH=$(printf '%q' "$AVNI_SKILLS_PATH") npm run cli --${LEFT_ARGS}"
 
 "$TMUX_BIN" new-session -d -s "$SESSION_NAME" -x 220 -y 50 "$LEFT_CMD"
 "$TMUX_BIN" split-window -h -t "$SESSION_NAME" -p 40 \
-  "cd '$SDK_DIR' && AVNI_SKILLS_PATH='$AVNI_SKILLS_PATH' bash -c '$RIGHT_CMD'"
+  "cd $(printf '%q' "$SDK_DIR") && AVNI_SKILLS_PATH=$(printf '%q' "$AVNI_SKILLS_PATH") bash -c $(printf '%q' "$RIGHT_CMD")"
 "$TMUX_BIN" select-pane -t "$SESSION_NAME":0.0
 "$TMUX_BIN" attach-session -t "$SESSION_NAME"
