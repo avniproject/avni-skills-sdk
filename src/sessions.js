@@ -158,6 +158,24 @@ export function getSession(id) {
   return meta;
 }
 
+// Persist the Claude Agent SDK's internal session id on first dispatch so
+// subsequent turns can pass `resume: <id>` to query() and inherit the full
+// prior transcript (user + assistant + tool_use + tool_result). The SDK
+// stores the underlying JSONL at ~/.claude/projects/<encoded-cwd>/<id>.jsonl
+// — keyed by cwd, which we hold stable per session.
+export function setSdkSessionId(id, sdkSessionId) {
+  if (!sdkSessionId || typeof sdkSessionId !== "string") return;
+  const meta = readMeta(id);
+  if (meta.sdkSessionId === sdkSessionId) return; // already set, no-op
+  meta.sdkSessionId = sdkSessionId;
+  writeMeta(id, meta);
+}
+
+export function getSdkSessionId(id) {
+  const meta = readMeta(id);
+  return meta.sdkSessionId || null;
+}
+
 export function listFiles(id) {
   const dir = path.join(sessionPath(id), "bundle");
   const out = [];

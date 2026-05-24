@@ -88,8 +88,15 @@ export function register(app) {
       allowedTools: agentCfg.allowedTools,
     });
 
-    // Compose final agent prompt: agent's system prompt + bundle context + user prompt
-    const composedPrompt = `${agentCfg.systemPrompt}
+    // Native SDK resume — if the prior dispatch on this session captured a
+    // sdkSessionId, the SDK rehydrates the full transcript so the agent sees
+    // this prompt in context. The first turn primes the system prompt; later
+    // turns can use a short composed prompt because the SDK replays history.
+    const sdkSessionId = sessions.getSdkSessionId(req.params.id);
+
+    const composedPrompt = sdkSessionId
+      ? prompt
+      : `${agentCfg.systemPrompt}
 
 ---
 
@@ -115,6 +122,7 @@ ${prompt}`;
         apiKey,
         model: effectiveModel,
         workspace: bundleCwd,
+        resume: sdkSessionId,
         systemPrompt: agentCfg.systemPrompt,
         allowedTools: agentCfg.allowedTools,
         skillScope: agentCfg.skillScope,
@@ -122,13 +130,31 @@ ${prompt}`;
       })) {
         agentEvents++;
         sse("agent", ev);
+        // First-turn handshake: capture SDK session id for future `resume:`.
+        if (ev?.type === "system" && ev?.subtype === "init" && ev?.session_id) {
+          try { sessions.setSdkSessionId(req.params.id, ev.session_id); } catch {}
+        }
         // Accumulate text from assistant messages — we'll parse the trailing
-        // fenced ```json``` block after the stream ends.
+        // fenced ```json``` block after the stream ends. Also persist to our
+        // own transcript.jsonl so the REPL + observability dashboard can
+        // render history without walking the SDK's internal store.
         if (ev?.type === "assistant" && ev.message?.content) {
+          const textParts = [];
           for (const block of ev.message.content) {
             if (block.type === "text" && typeof block.text === "string") {
               assistantText += block.text;
+              if (block.text.trim()) textParts.push(block.text);
             }
+          }
+          if (textParts.length) {
+            try {
+              transcript.appendEvent(req.params.id, {
+                kind: "assistant_message",
+                content: textParts.join("\n"),
+                model: effectiveModel,
+                agent: agentName,
+              });
+            } catch {}
           }
         }
         if (ev?.type === "result" && typeof ev.total_cost_usd === "number") {

@@ -62,3 +62,26 @@ export function transcriptStats(sessionId) {
   for (const e of events) counts[e.kind] = (counts[e.kind] || 0) + 1;
   return { total: events.length, counts, firstTs: events[0]?.ts || null, lastTs: events.at(-1)?.ts || null };
 }
+
+// Read recent user+assistant messages from the transcript and format them as
+// a "Recent conversation" preamble for the next agent turn. Returns "" if
+// the transcript has none yet. Callers should invoke this BEFORE appending
+// the current turn's user_message so the new prompt isn't double-included.
+export function buildPriorContextString(sessionId, { limit = 12, maxCharsPerMessage = 800 } = {}) {
+  const events = readTranscript(sessionId, {
+    kinds: ["user_message", "assistant_message"],
+    limit,
+  });
+  if (events.length === 0) return "";
+  const lines = ["Recent conversation in this session (chronological — oldest first, most recent last):"];
+  for (const e of events) {
+    const role = e.kind === "user_message" ? "User" : "Assistant";
+    const text = String(e.content || "").replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    const truncated = text.length > maxCharsPerMessage ? text.slice(0, maxCharsPerMessage) + "…" : text;
+    lines.push(`  ${role}: ${truncated}`);
+  }
+  lines.push("");
+  lines.push("The above is this session's conversation memory. The current user instruction below may be a short follow-up (\"yes\", \"do it\", \"add it and zip it\") — interpret it against the most recent assistant message. Do NOT ask the user to re-state what was already discussed.");
+  return lines.join("\n");
+}
