@@ -12,7 +12,7 @@ End-to-end tested with a real Anthropic key (L1–L7) and a no-key dryrun (L8). 
 
 | Level | What it proves | Verified | State |
 |---|---|---|---|
-| L1 | **380 entity + integration tests** pass (org-agnostic, synthetic fixtures only) | 2026-05-22 IST | ✅ |
+| L1 | **433 entity + integration tests** pass (org-agnostic, synthetic fixtures only — no real-LLM, see Evaluation harness below for that) | 2026-05-25 IST | ✅ |
 | L2 | server starts, `/health` responds | 2026-05-05 13:17 IST | ✅ |
 | L3 | `/v1/skills` returns the avni-skills skills (16 brain + sdk-local) | 2026-05-05 13:24 IST | ✅ |
 | L4 | `/v1/skills/:slug` returns SKILL.md body + supporting files | 2026-05-05 13:30 IST | ✅ |
@@ -120,7 +120,7 @@ AVNI_SKILLS_PATH=~/code/avni-skills npm run cli -- \
 If you don't want to spend tokens, you can still prove every layer below the agent SDK works:
 
 ```bash
-# 45 entity invariants (org-agnostic)
+# 433 entity invariants (org-agnostic)
 AVNI_SKILLS_PATH=~/code/avni-skills npm test
 
 # L1–L5 (server, generator, validator, ZIP) end-to-end
@@ -153,12 +153,68 @@ A typical "verify it works" session: send a fix-an-error prompt → agent edits 
 
 ---
 
+## Built-in agent tools
+
+The agent's cwd is loaded with an in-process MCP server (`avni-bundle`) that exposes four tools the agent SHOULD prefer over raw Bash. The server is constructed per-request via `createBundleMcpServer(bundleCwd)` so its closure captures the live session's bundle dir — there is no global cwd to race on.
+
+| Tool name | Purpose |
+|---|---|
+| `mcp__avni-bundle__bundle_validator_run` | Run the avni-skills validator against the current bundle and return structured errors/warnings. Replaces `Bash node …/bundle_validator.js`. |
+| `mcp__avni-bundle__bundle_find_concept` | Case-insensitive lookup of a concept by name or UUID across `concepts.json` and every form. Replaces `Bash grep`. |
+| `mcp__avni-bundle__bundle_summary` | Deterministic anomaly summary (orphan answers, flattened concepts, invalid locations, …). Same engine as `/v1/sessions/:id/summary`. Free. |
+| `mcp__avni-bundle__bundle_export_to_path` | Path-jailed ZIP export to a caller-supplied path. Only writes under `~/Desktop`, `~/Downloads`, `~/Documents`, `~/.avni-skills-sdk/exports`, or `$SDK_EXPORT_DIR`. Refuses symlinks, traversal, and `/private/etc/...`. |
+
+The tool names above are frozen — they appear verbatim in every `transcript.jsonl` and `steps.jsonl` ever written. See `src/agents/bundle-mcp-tool-names.js`.
+
+---
+
+## `:session` REPL command
+
+| Subcommand | What it does |
+|---|---|
+| `:session` or `:session list` | List sessions on disk with sid, turn count, last-modified, hard-cap headroom |
+| `:session resume <id>` | Re-attach the REPL to a previously persisted session without restart |
+| `:session info` | Print the current session's sid, bundle path, transcript/steps/cost paths, validator state |
+| `:session prune --older-than <days> [--dry-run]` | (forthcoming) shell out to `scripts/prune-sessions.mjs` — for now run the script directly |
+
+---
+
+## Safety model
+
+Two layers, not one.
+
+1. **Prompt-rule guidance.** `BUNDLE_HARD_RULES` (12 numbered rules, source in `src/agent.js`) is injected into every agent system prompt and re-injected per-turn via `currentValidatorStateText`. This is guidance: the model is *asked* to follow it. Treat it as documentation of intent, not enforcement.
+2. **Code-enforced rules.** Independent of what the model decides:
+   - **PreToolUse Bash hook** blocks `git` writes, `rm -rf`, `sudo`, and other destructive shells before they execute — first line of defense regardless of prompt drift.
+   - **Post-turn unauthorized-mutation detector** (`src/security/post-turn-detector.js`) diffs the working tree after every turn against an allowlist; out-of-scope writes are reverted and the turn is rejected.
+   - **Path-jailed `bundle_export_to_path`** refuses to write outside the export allowlist (see table above).
+   - **Per-session async mutex** (`src/locks.js`) serialises concurrent writes to a single session's bundle dir so two `messages` calls can't interleave commits.
+   - **Per-IP rate-limit middleware** (`src/middleware/rate-limit.js`) caps inbound requests; 429s are logged via `src/logging.js`.
+
+If you read only one sentence: prompt-only rules are guidance, not enforcement — the code-enforced layer is what you trust under adversarial prompts.
+
+---
+
+## Evaluation harness
+
+`tests/eval/` is the only place real LLM behaviour is regression-tested. The 433-test suite under `tests/entities/` uses synthetic SRSes and zero tokens; it cannot catch a model regression by construction. The eval harness opts in with two env vars and is skipped otherwise:
+
+```bash
+export ANTHROPIC_API_KEY='sk-ant-...'
+export SDK_EVAL_BUDGET_USD=5         # hard cap; harness aborts past this
+npm run eval                          # node tests/eval/run.cjs
+```
+
+Cost estimate: a full sweep is ~$1–3 against Haiku 4.5 (12 scenarios × ~3 turns × ~$0.05). The harness asserts on validator-error deltas and on tool-call choice (e.g. did the agent reach for `mcp__avni-bundle__bundle_find_concept` instead of `Bash grep`?). See `tests/eval/README.md` for the scenario list and how to add one.
+
+---
+
 ## How to reproduce L1–L8 (paper-trail)
 
 ```bash
 cd ~/code/avni-skills-sdk
 
-# L1: 45 org-agnostic entity tests
+# L1: 433 org-agnostic entity tests
 AVNI_SKILLS_PATH=~/code/avni-skills npm test
 
 # L2-L5: server/health/skills/generator/validator (no key)
@@ -235,7 +291,7 @@ If `AVNI_SKILLS_PATH` is unset the SDK falls back to a sibling clone at `../avni
 
 ```bash
 cd ~/code/avni-skills-sdk
-npm test                            # L1: 193 entity + integration tests
+npm test                            # L1: 433 entity + integration tests (no real-LLM)
 bash scripts/verify.sh              # L1–L5 (server, /health, /v1/skills, /v1/bundles/generate)
 ```
 
@@ -378,43 +434,7 @@ Result: the agent sees **exactly the 16 skills from avni-skills, nothing else**.
 
 ## Project layout
 
-```
-avni-skills-sdk/
-├── README.md                       ← this file
-├── CLAUDE.md                       ← rules for Claude Code agents working here
-├── package.json                    ← "type": "module"; npm test → entity suite
-├── src/                            ← SDK + HTTP API (ESM)
-│   ├── server.js                   Express, 5 endpoints
-│   ├── agent.js                    Claude Agent SDK wrapper
-│   ├── skills.js                   Skill discovery from avni-skills/
-│   ├── bundle.js                   Deterministic generator + validator + ZIP
-│   ├── workspace.js                Symlinks avni-skills/* into .claude/skills/
-│   └── index.js                    Programmatic exports
-├── tests/                          ← CommonJS (tests use require)
-│   ├── entities/                   45 org-agnostic invariant tests
-│   │   ├── lib/fixture.cjs         synthetic-SRS workbook builder
-│   │   ├── subject-types.test.cjs  8 tests
-│   │   ├── programs.test.cjs       6 tests
-│   │   ├── encounter-types.test.cjs 4 tests
-│   │   ├── forms.test.cjs          7 tests
-│   │   ├── concepts.test.cjs       8 tests
-│   │   ├── form-mappings.test.cjs  7 tests (incl. cancellation regression)
-│   │   ├── operational-files.test.cjs  5 tests
-│   │   └── README.md
-│   └── bundle-harness.cjs          16-test bundle-level harness
-├── scripts/
-│   ├── verify.sh                   one-shot 6-level verification
-│   └── multi-org-run.js            generate + classify across N orgs
-├── examples/
-│   └── manifest.example.json       input shape for multi-org-run
-└── docs/                           ← bug-fix journey
-    ├── summary.md                  5-step POC report
-    ├── audit.md                    initial bundle audit
-    ├── path-a-reconciliation.md    Bug 1 (junk-concept filter)
-    ├── astitva-reconciliation.md   second-org reconciliation
-    ├── bug-a-and-dehardcoding.md   Bug A + removal of all hardcoded org assumptions
-    └── multi-org-empirical.md      10-org empirical run
-```
+See `CLAUDE.md` for the current, accurate file tree (split routes, agents/, security/, middleware/, locks/logging/session-prune, tests/eval/). The high-level shape: `src/` (ESM, server + routes + agents + brain wrappers), `tests/` (CJS, 433 org-agnostic suites + eval harness), `scripts/` (CLI + verify + dryruns + prune-sessions), `docs/` (bug-fix journey + per-phase reports).
 
 ### Mixed module systems explained
 
@@ -485,20 +505,9 @@ L1–L5 should all be green. L6 only runs if `ANTHROPIC_API_KEY` is set; for nor
 
 ## How it depends on `avniproject/avni-skills`
 
-The actual deterministic generator (`generate_bundle_v2.js`) and validator (`bundle_validator.js`) live in [`avniproject/avni-skills`](https://github.com/avniproject/avni-skills). This repo provides:
+The deterministic generator (`generate_bundle_v2.js`) and validator (`bundle_validator.js`) live in [`avniproject/avni-skills`](https://github.com/avniproject/avni-skills). This repo provides the HTTP API, the agent runtime, the entity test framework, the validation harness, the multi-org runner, and the bug-fix journey docs.
 
-- **HTTP API** that exposes them
-- **Test framework** that exercises the generator's contract per entity
-- **Validation harness** that pins regression-blocking invariants on any generated bundle
-- **Multi-org runner** for empirical confidence checks across N orgs
-- **Documentation** of the bug-fix journey
-
-Resolution order for finding `avni-skills`:
-
-1. `$AVNI_SKILLS_PATH` env var
-2. `../avni-skills/` (sibling clone fallback)
-
-If neither exists, the SDK throws at startup with a helpful error.
+Resolution order: `$AVNI_SKILLS_PATH` env var, then sibling `../avni-skills/`. If neither exists, the SDK throws at startup with a helpful error.
 
 ---
 

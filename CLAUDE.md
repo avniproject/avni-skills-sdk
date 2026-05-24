@@ -31,14 +31,24 @@ avni-skills-sdk (this repo, body)
   ├── src/bundle.js              ← wraps avni-skills's generator + validator
   ├── src/workspace.js           ← stages avni-skills as .claude/skills/ for the SDK
   ├── src/sessions.js            ← session storage (default: ~/.avni-skills-sdk/sessions/)
+  ├── src/session-prune.js       ← prune logic (older-than, dry-run, audit)
   ├── src/transcript.js          ← append-only JSONL conversation memory per session
   ├── src/steplog.js             ← append-only JSONL operational log per session
   ├── src/wallet.js              ← per-session cost ledger (in-memory + cost.jsonl on disk)
+  ├── src/locks.js               ← per-session async mutex (serialises concurrent writes)
+  ├── src/logging.js             ← structured logger (one place for rate-limit/prune/security events)
+  ├── src/middleware/rate-limit.js ← per-IP rate-limit middleware (429s logged)
+  ├── src/security/post-turn-detector.js ← diffs the working tree after each turn,
+  │                                  reverts out-of-scope writes, rejects the turn
+  ├── src/agents/bundle-mcp-server.js     ← per-request factory createBundleMcpServer(bundleCwd)
+  │                                  exposes 4 in-process MCP tools to the agent
+  ├── src/agents/bundle-mcp-tool-names.js ← FROZEN tool-name constants (see rule §7)
   ├── src/agent.js               ← Claude Agent SDK wrapper (BYO key)
   ├── src/router.js              ← prompt → model routing (haiku ↔ sonnet)
   ├── src/rules-brain/           ← R1–R6 acorn-based JS-rule validator + vendored
   │                                  rules-config DeclarativeRuleHolder
   ├── scripts/sdk-cli.mjs        ← thin REPL entrypoint (args + boot + readline loop)
+  ├── scripts/prune-sessions.mjs ← CLI wrapper for src/session-prune.js
   └── scripts/cli/               ← REPL implementation (factory-pattern modules)
         ├── ui.mjs                 ← ANSI helpers, box, rule, startSpinner, withSpinner
         ├── server-mgmt.mjs        ← ensureServer + http helpers (getJson/postJson/getText)
@@ -56,6 +66,9 @@ avni-skills-sdk (this repo, body)
               ├── workflows.mjs       ← :apply
               ├── observability.mjs   ← :transcript, :steps, :cost, :changes, :diag
               └── agents.mjs          ← :agent, :model
+  └── tests/eval/                ← real-LLM regression scenarios (gated on
+                                    SDK_EVAL_BUDGET_USD + ANTHROPIC_API_KEY);
+                                    the ONLY place model behaviour is exercised
 
 avni-skills (separate repo, brain)
   ├── 16 skill folders (architecture-patterns, backend-architecture, ...)
@@ -82,6 +95,7 @@ End-to-end tested 2026-05-05 IST with a real Anthropic key. All times below are 
 | L6 | `/v1/agent/query` runs Claude session, agent reads `.claude/skills/<name>/SKILL.md`, returns end_turn, 0 errors | 2026-05-05 13:56 |
 | L7 | Phase 3 session lifecycle: create → first-pass turn 0 → real edit drops validator errors → diff → revert → ZIP. Org-agnostic 16/16 invariants harness passes on the post-edit bundle. Demo: `bash scripts/demo-phase-3.sh` | 2026-05-05 15:17 |
 | L8 | Phase 4 machinery (no key): per-session skill staging + `commitWorkspaceChanges` proven via `node scripts/dryrun-phase-4.mjs` — `.gitignore` excludes `.claude/`, idempotent re-stage, no-op detection, simulated agent edit drops validator errors **6 → 5** on real Astitva SRS, `.claude/` never in git history. The live (`/v1/sessions/:id/messages`) path reuses the L6-verified `runAgent()`. | 2026-05-05 16:20 |
+| L9+ | **Phase 7 — Audit-driven A+ roundup**: per-session async mutex (`src/locks.js`), per-IP rate-limit middleware, structured logger, session-prune CLI, real-LLM eval harness (`tests/eval/`), post-turn unauthorized-mutation detector, path-jailed `bundle_export_to_path` (allowlist: ~/Desktop, ~/Downloads, ~/Documents, ~/.avni-skills-sdk/exports, $SDK_EXPORT_DIR), MCP server changed to per-request factory `createBundleMcpServer(bundleCwd)` so the cwd closure can't race. 433/433 tests + 21/21 corpus still green. | 2026-05-25 |
 
 If you change anything in `src/`, re-run `bash scripts/verify.sh` (L1–L5 minimum) before committing. For session-API changes also re-run `bash scripts/demo-phase-3.sh`. For changes to `src/sessions.js` or `/v1/sessions/:id/messages`, also re-run `node scripts/dryrun-phase-4.mjs`.
 
@@ -125,11 +139,45 @@ If you find yourself reaching for a hardcoded fallback, the SRS author needs to 
 
 ### 5b. Adding / editing is the agent's job, not a CLI command
 
-When a user asks to add a subject type, program, encounter type, concept, or form, **do not reach for a workflow script as a user-facing command**. The flow is: agent reads the current bundle → case-insensitive name lookup → upsert (update in place if exists, append otherwise, copying field shapes from existing neighbours verbatim) → Edit/Write back → server commits the diff as a new turn. See `BUNDLE_HARD_RULES` rule #5 in `src/agent.js`. The workflow scripts under `scripts/workflows/` (`add-form.mjs`, `add-subject-type.mjs`, `rename-concept-uuid.mjs`, `fix-formelement-concept-shape.mjs`) are deterministic primitives the agent MAY invoke via Bash for atomicity guarantees — they are not the primary surface.
+When a user asks to add a subject type, program, encounter type, concept, or form, **do not reach for a workflow script as a user-facing command**. The flow is: agent reads the current bundle → case-insensitive name lookup → upsert (update in place if exists, append otherwise, copying field shapes from existing neighbours verbatim) → Edit/Write back → server commits the diff as a new turn. See `BUNDLE_HARD_RULES` rule #5 in `src/agent.js`.
+
+For the **{add-form, find-concept}** path specifically the agent SHOULD prefer the in-process MCP tools over raw Bash or workflow scripts:
+
+- `mcp__avni-bundle__bundle_find_concept` — case-insensitive concept lookup by name or UUID (replaces `Bash grep`)
+- `mcp__avni-bundle__bundle_validator_run` — validator with structured output (replaces `Bash node …/bundle_validator.js`)
+- `mcp__avni-bundle__bundle_summary` — deterministic anomaly summary
+- `mcp__avni-bundle__bundle_export_to_path` — path-jailed ZIP export
+
+These give atomicity + auditability for free; the corresponding `scripts/workflows/*.mjs` scripts remain available as deterministic primitives the agent MAY invoke via Bash when the MCP tool doesn't cover the shape, but they are not the primary surface.
 
 ### 6. The lockfile is committed
 
 `package-lock.json` is in the repo. Don't delete it. The SDK depends on `@anthropic-ai/claude-agent-sdk` which ships native binaries — pinning matters.
+
+### 7. Tool name freeze (in-process MCP)
+
+The four MCP tools' **fully-qualified names MUST NOT be renamed**:
+
+- `mcp__avni-bundle__bundle_validator_run`
+- `mcp__avni-bundle__bundle_find_concept`
+- `mcp__avni-bundle__bundle_summary`
+- `mcp__avni-bundle__bundle_export_to_path`
+
+These strings appear verbatim in every persisted `transcript.jsonl` and `steps.jsonl` across every session ever run. Renaming silently breaks replay, audit grep, and analytics. The frozen constants live in `src/agents/bundle-mcp-tool-names.js` (`Object.freeze`); new tools get NEW names, never repurposed.
+
+### 8. Code-enforced rules vs prompt rules
+
+`BUNDLE_HARD_RULES` (in `src/agent.js`) is guidance injected into the agent's system prompt. The model is *asked* to follow it. Items 10–12 of those rules are ALSO enforced by code, independent of prompt drift:
+
+| Rule intent | Code that enforces it |
+|---|---|
+| No destructive shell (git writes, `rm -rf`, `sudo`) | PreToolUse Bash hook in `src/agent.js` |
+| No out-of-scope file mutations per turn | `src/security/post-turn-detector.js` — diffs working tree post-turn, reverts violations, rejects the turn |
+| ZIP export must land inside an allowlisted path | Path-jail in `src/agents/bundle-mcp-server.js` (`bundle_export_to_path`) — allowlist: `~/Desktop`, `~/Downloads`, `~/Documents`, `~/.avni-skills-sdk/exports`, `$SDK_EXPORT_DIR` |
+| No concurrent writes to the same session | Per-session async mutex in `src/locks.js` |
+| Inbound traffic capped | Per-IP rate-limit middleware in `src/middleware/rate-limit.js` |
+
+When you add a new rule: if it is safety-critical, write the code-enforcement first and link it from `BUNDLE_HARD_RULES`. Prompt-only rules are documentation of intent, not guarantees.
 
 ---
 
@@ -171,6 +219,28 @@ npm run cli -- --resume sess_xxxxxxxxxxxxxxxx
 ```
 
 No forms/modelling args needed — the bundle is already on disk. The CLI re-attaches via `GET /v1/sessions/:id`, shows the current turn count, and the REPL works normally. Wallet totals hydrate from `cost.jsonl` so the hard-cap circuit breaker can't be bypassed by restarting. `:transcript` / `:steps` / `:cost` REPL commands tail each JSONL file.
+
+### Prune old sessions
+
+```bash
+# safe — show what would be removed, touch nothing
+node scripts/prune-sessions.mjs --older-than 30 --dry-run
+
+# actually delete sessions older than 30 days
+node scripts/prune-sessions.mjs --older-than 30
+```
+
+The script reads from `SDK_SESSIONS_DIR` (default `~/.avni-skills-sdk/sessions/`) and refuses to run without `--older-than`. Audit lines go through `src/logging.js`.
+
+### Run the real-LLM eval harness
+
+```bash
+export ANTHROPIC_API_KEY='sk-ant-...'
+export SDK_EVAL_BUDGET_USD=5   # required — harness aborts past this
+npm run eval
+```
+
+`tests/eval/` is gated on both env vars so it can never accidentally burn tokens in CI. Cost: ~$1–3 per full sweep against Haiku 4.5.
 
 ### Run the multi-org generator across N orgs
 
@@ -227,6 +297,9 @@ If a teammate / user reports a bug, classify it before assigning:
 | "The agent saw the wrong skills (24 instead of 16)" | Workspace staging not active | `src/workspace.js` + `src/agent.js` `settingSources: []` |
 | "API endpoint hangs / aborts immediately" | Express SSE event-listener bug | `src/server.js` — must be `res.on('close')`, not `req.on('close')` |
 | "Agent has access to MCP tools we didn't configure" | Host's `~/.claude/settings.json` leaking in | `src/agent.js` — confirm `settingSources: []` is set |
+| "Caller getting HTTP 429 / rate-limit-exceeded" | Per-IP middleware cap hit | `src/middleware/rate-limit.js` — tune the bucket; logs go through `src/logging.js` |
+| "`prune-sessions` removed a session I wanted" / wrong dir purged | Misconfigured `SDK_SESSIONS_DIR` or forgotten `--dry-run` | `src/session-prune.js` + `scripts/prune-sessions.mjs` — audit log records every deletion |
+| "Turn rejected / files reverted that the agent legitimately needed to touch" | Post-turn unauthorized-mutation detector flagged it | `src/security/post-turn-detector.js` — extend the allowlist; do NOT silently disable |
 
 ---
 

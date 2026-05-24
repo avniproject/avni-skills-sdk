@@ -142,7 +142,37 @@ export function makeSessionsCommands({ http, state, attachSession }) {
       return;
     }
 
-    console.log(red(`unknown :session subcommand "${sub}". Try: list, resume <id>, info [id]`));
+    // :session prune [--older-than <days>] [--dry-run]
+    // Delegates to src/session-prune.js (loaded dynamically; CLI lives at
+    // scripts/prune-sessions.mjs for ops use outside the REPL).
+    if (sub === "prune") {
+      let days = 30;
+      let dryRun = true;  // safe default — explicit --yes to actually delete
+      for (let i = 1; i < args.length; i++) {
+        if (args[i] === "--older-than") { days = Number(args[++i]) || days; }
+        else if (args[i] === "--yes" || args[i] === "--confirm") { dryRun = false; }
+        else if (args[i] === "--dry-run") { dryRun = true; }
+      }
+      try {
+        const sdkDir = process.cwd();
+        const mod = await import(`${sdkDir}/src/session-prune.js`);
+        const result = mod.pruneOlderThan({ days, dryRun });
+        rule(cyan(dryRun ? "prune (dry-run)" : "prune (DELETING)"), dim);
+        console.log(dim(`older than: `) + days + dim(" days  ·  freedBytes: ") + result.freedBytes);
+        console.log(dim(`kept: `) + result.kept.length + dim("   pruned: ") + (dryRun ? yellow(`${result.pruned.length} (would prune)`) : red(result.pruned.length)));
+        for (const p of result.pruned.slice(0, 10)) {
+          console.log(`  ${dryRun ? yellow("would-prune") : red("pruned")} ${cyan(p.sid)} ${dim(p.org || "?")} age=${p.ageDays}d`);
+        }
+        if (dryRun) {
+          console.log(dim("  ↪ re-run with ") + cyan("--yes") + dim(" to actually delete"));
+        }
+      } catch (e) {
+        console.log(red("prune failed: " + (e?.message || e)));
+      }
+      return;
+    }
+
+    console.log(red(`unknown :session subcommand "${sub}". Try: list, resume <id>, info [id], prune [--older-than N] [--yes]`));
   }
 
   return { cmdSession };
