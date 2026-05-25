@@ -46,6 +46,8 @@
 import express from "express";
 import { avniSkillsPath } from "./skills.js";
 import { mountRoutes } from "./routes/index.js";
+import { rateLimit } from "./middleware/rate-limit.js";
+import { logger } from "./logging.js";
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -60,12 +62,23 @@ app.use((req, res, next) => {
   next();
 });
 
+// H5 — per-IP rate limit. Defaults: 60 req/min, 30 burst. Override with
+// SDK_RATE_LIMIT_TOKENS_PER_MIN / SDK_RATE_LIMIT_BURST env vars.
+// Cheap read-only endpoints are skipped so a tool polling /health doesn't
+// eat into the budget legitimate /messages calls need.
+app.use(rateLimit({
+  tokensPerMinute: Number(process.env.SDK_RATE_LIMIT_TOKENS_PER_MIN || 60),
+  burst: Number(process.env.SDK_RATE_LIMIT_BURST || 30),
+  skip: (req) => req.path === "/health" || (req.method === "GET" && req.path === "/v1/skills"),
+}));
+
 mountRoutes(app);
 
 const PORT = Number(process.env.PORT || 3030);
 app.listen(PORT, () => {
+  logger.info({ event: "server.listen", port: PORT }, `avni-skills-sdk API listening on :${PORT}`);
   console.log(`avni-skills-sdk API listening on :${PORT}`);
-  try { console.log(`  AVNI_SKILLS_PATH = ${avniSkillsPath()}`); } catch (e) { console.warn("  ⚠", e.message); }
+  try { console.log(`  AVNI_SKILLS_PATH = ${avniSkillsPath()}`); } catch (e) { logger.warn({ event: "skills.path.missing", err: e.message }, e.message); }
   console.log(`  Endpoints:`);
   console.log(`    GET    /health`);
   console.log(`    GET    /v1/skills`);

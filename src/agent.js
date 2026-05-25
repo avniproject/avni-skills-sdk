@@ -21,13 +21,38 @@ import { createBundleMcpServer, BUNDLE_TOOL_NAMES } from "./agents/bundle-mcp-se
 // Regex deliberately liberal — we'd rather block too much (false positive
 // surfaces a clear deny message the agent can react to) than too little
 // (silent contract violation, as in bug B2 / sess_7b4a7ad42b244487).
+//
+// IMPORTANT: this is a LEX-LEVEL filter; it cannot be made bulletproof
+// against an adversary that knows shell. Bypass vectors observed in
+// adversarial tests: `eval "git commit"`, `bash -c "git commit"`,
+// backtick `\`git ...\``, `$(git ...)`, hex-encoded args. The patterns
+// below catch the obvious bypass attempts, but the REAL defense is the
+// post-turn git-scope detector in src/security/post-turn-detector.js,
+// which runs after the SDK stream ends and reverts any commit not
+// authored by the server's identity. Treat this regex set as a first
+// line of defense, NOT a complete one.
 const FORBIDDEN_BASH_PATTERNS = [
   // Git write commands (any subcommand that mutates the repo)
   /(^|[\s;&|])git\s+(commit|push|reset|checkout\s+[^-]|rm|restore|stash|merge|rebase|cherry-pick|tag|clean|gc)\b/,
-  // Destructive filesystem ops outside the bundle dir, or recursive force-rm anywhere
-  /(^|[\s;&|])rm\s+(-[rR]f|-fr|-rf)\b/,
+  // Destructive filesystem ops, both short flags and long flags.
+  // Catches `rm -rf`, `rm --recursive --force`, `rm -r --force`, etc.
+  /(^|[\s;&|])rm\s+(-[rR]f|-fr|-rf|(-[rR]\s+(--force|-f\b))|(--force\s+(-[rR]\b|--recursive))|(--recursive\s+(--force|-f\b))|(--recursive\b.*--force)|(--force\b.*--recursive))/,
+  // --no-preserve-root is a hard red flag with rm regardless of other flags
+  /(^|[\s;&|])rm\b[^|;&]*--no-preserve-root\b/,
   // Privilege escalation has no place inside the agent loop
   /(^|[\s;&|])sudo\b/,
+  // Shell re-entry — these are the obvious bypass vectors for the git/rm
+  // filters above. The agent has no legitimate reason to invoke another
+  // shell from within Bash. Blocks `bash -c "..."`, `sh -c`, `zsh -c`,
+  // and `eval`.
+  /(^|[\s;&|])(bash|sh|zsh|ksh|dash)\s+-c\b/,
+  /(^|[\s;&|])eval\b/,
+  // Command substitution containing git — `\`git commit ...\`` and
+  // `$(git commit ...)`. We're permissive: any backtick/`$(`-wrapped git
+  // (read-only or not) gets blocked because the wrapping itself signals
+  // an attempt to evade the top-level git regex.
+  /`[^`]*\bgit\b/,
+  /\$\(\s*git\b/,
 ];
 
 function checkForbiddenBash(command) {
@@ -54,6 +79,28 @@ function checkForbiddenBash(command) {
 //     existing one (C3/D1 errors)
 // Embedded into both DEFAULT_SYSTEM_PROMPT (for /v1/agent/query) and the
 // session-messages system prompt (for /v1/sessions/:id/messages).
+//
+// ENFORCEMENT MATRIX — read before trusting any rule below at face value.
+// Rules 1–9 are GUIDANCE: the model is asked to follow them, but nothing
+// stops the model from violating them mid-turn. They will produce validator
+// errors and the user will see them downstream.
+//
+// Rules 10–12 (added in the audit) are ENFORCED by server-side code; the
+// model cannot circumvent them even if it ignores the prompt text:
+//   • Rule #10 (no opportunistic hygiene work)  → still soft (prompt-only).
+//   • Rule #11 (no agent-initiated git writes)  → LEX enforcement via
+//       FORBIDDEN_BASH_PATTERNS + PreToolUse hook in THIS file (above);
+//       POST-HOC enforcement via detectUnauthorizedMutations() in
+//       src/security/post-turn-detector.js (caller wires it into
+//       src/routes/sessions-messages.js before commitWorkspaceChanges).
+//   • Rule #12 (validator state is authoritative) → ENFORCED by server-side
+//       state injection at the top of every turn in
+//       src/routes/sessions-messages.js (the "CURRENT VALIDATOR STATE"
+//       block is appended programmatically, not relying on the agent to
+//       fetch it).
+// Future-proofing note: if you add a new rule, mark it [GUIDANCE] or
+// [ENFORCED → <file>] in this matrix. Don't let prompt-only rules drift
+// into being treated as guarantees.
 export const BUNDLE_HARD_RULES = `HARD RULES — do NOT violate any of these. They map to real validator errors that block server upload.
 
 1. NEVER invent UUIDs. Every UUID you introduce must be v4-shaped: 8-4-4-4-12 lowercase hex. Use \`crypto.randomUUID()\` in Node, or copy an existing UUID from the bundle if you're referencing one. NO short tokens like "c-cancel-reason-001" or "ans-other".
@@ -75,13 +122,13 @@ export const BUNDLE_HARD_RULES = `HARD RULES — do NOT violate any of these. Th
    • formMappings.json: when you add a new top-level entity that needs a registration/visit form, also append the matching mapping in the SAME turn (atomicity, rule #2).
 
 6. CONCEPT-LOOKUP GATE (mandatory pre-edit step, NOT optional).
-   BEFORE adding any new concept to concepts.json, you MUST run this exact Bash command and read its output:
-     \`AVNI_FIND_CONCEPT="<name to add>"; node /Users/samanvay/Developer/avni-skills-sdk/scripts/agent-tools/find-concept.mjs "$AVNI_FIND_CONCEPT"\`
-   The CLI does a case-insensitive scan of concepts.json in cwd and returns JSON with a "guidance" field. Read the guidance and act on it literally:
+   BEFORE adding any new concept to concepts.json, you MUST call the MCP tool:
+     \`bundle_find_concept({ name: "<name to add>" })\`
+   (registered as \`mcp__avni-bundle__bundle_find_concept\` — exposed by the in-process avni-bundle MCP server; no Bash shell-out, no absolute paths.) The tool does a case-insensitive scan of concepts.json in the bundle cwd and returns JSON with a "guidance" field. Read the guidance and act on it literally:
      • If guidance says "EXACT MATCH. REUSE UUID..." → DO NOT add a new concept. Use that UUID in your edit instead.
      • If guidance says "Multiple case-insensitive matches" → pick the first match's UUID and reuse, OR ask the user.
      • Only if guidance says "SAFE to add a new concept" → proceed to add it.
-   The C3/D1 validator treats concept names case-insensitively ("Other" and "other" collide). This gate exists because a real agent run "fixed" a C5 error by adding a lowercase "other" while "Other" already existed, introducing a C3 regression. The CLI prevents that mistake mechanically. SKIPPING THIS STEP IS A HARD-RULE VIOLATION.
+   The C3/D1 validator treats concept names case-insensitively ("Other" and "other" collide). This gate exists because a real agent run "fixed" a C5 error by adding a lowercase "other" while "Other" already existed, introducing a C3 regression. The MCP tool prevents that mistake mechanically. SKIPPING THIS STEP IS A HARD-RULE VIOLATION. (Legacy CLI \`scripts/agent-tools/find-concept.mjs\` may still exist as a fallback for non-agent use, but the agent loop must use the MCP tool.)
 
 7. HONESTY ON FIXES — when your prompt is to fix a validator error or known issue:
    a) BEFORE editing: Read the validation state (the user's prompt will usually quote the error code class — F2, C3, C5, etc.).
@@ -144,7 +191,7 @@ export async function* runAgent(opts) {
     model = "claude-haiku-4-5-20251001",
     workspace,
     systemPrompt = DEFAULT_SYSTEM_PROMPT,
-    allowedTools = ["Read", "Glob", "Grep", "Bash", "Edit", "Write", "Skill", ...BUNDLE_TOOL_NAMES],
+    allowedTools,
     permissionMode = "bypassPermissions",
     skillScope = "all",
     abortController,
@@ -155,6 +202,13 @@ export async function* runAgent(opts) {
   if (!prompt) throw new Error("prompt is required");
 
   const cwd = workspace || ensureAgentWorkspace();
+  // Default allowedTools depend on whether a real bundle workspace is in
+  // play. Bundle MCP tools are only registered when `workspace` is passed
+  // (see mcpServers below), so don't advertise them when they're absent —
+  // the agent would try to call them and get a "tool not found" error.
+  const effectiveAllowedTools = allowedTools ?? (workspace
+    ? ["Read", "Glob", "Grep", "Bash", "Edit", "Write", "Skill", ...BUNDLE_TOOL_NAMES]
+    : ["Read", "Glob", "Grep", "Bash", "Edit", "Write", "Skill"]);
   const skillNames = (
     skillScope === "bundle-authoring"
       ? listBundleAuthoringSkills()
@@ -169,7 +223,7 @@ export async function* runAgent(opts) {
       cwd,
       model,
       systemPrompt,
-      allowedTools,
+      allowedTools: effectiveAllowedTools,
       permissionMode,
       // Isolate from the host's ~/.claude/* settings so we don't leak the
       // user's personal skills/settings into this session. Empty array =
@@ -178,13 +232,19 @@ export async function* runAgent(opts) {
       // Explicitly enable our skills (filters out anything else the SDK
       // might discover, and turns the Skill tool on).
       skills: skillNames.length ? skillNames : "all",
-      // In-process MCP server exposing bundle-specific deterministic tools
-      // (validator, concept lookup, summary, export-to-path). Replaces a
-      // bunch of brittle Bash patterns the agent used to reach for. See
-      // src/agents/bundle-mcp-server.js.
-      mcpServers: {
-        "avni-bundle": createBundleMcpServer(),
-      },
+      // In-process MCP server exposing bundle-specific deterministic tools.
+      // Built per-request as a closure capturing `cwd` — required because
+      // in-process MCP handlers run in the host process and `process.cwd()`
+      // would resolve to the SERVER's startup dir, not the agent's cwd
+      // (confirmed via SDK source inspection — see Phase 7 audit notes).
+      //
+      // Only register the bundle MCP server when a workspace was explicitly
+      // passed (i.e. caller is a session-based endpoint with a real bundle
+      // dir). Sessionless callers like /v1/agent/query get an empty
+      // mcpServers map — the bundle tools have nothing to operate on.
+      mcpServers: workspace
+        ? { "avni-bundle": createBundleMcpServer(cwd) }
+        : {},
       // PreToolUse gate — block forbidden Bash commands (git writes,
       // recursive rm, sudo) BEFORE execution. The server is the sole
       // committer; agent-initiated commits orphan the audit trail. See

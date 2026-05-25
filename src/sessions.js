@@ -35,6 +35,18 @@ import { detectConceptCollisions, formatViolationMessage } from "./rules-brain/c
 const SESSIONS_DIR = process.env.SDK_SESSIONS_DIR || path.join(os.homedir(), ".avni-skills-sdk", "sessions");
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
+// Cache of currentValidatorStateText() results keyed by sessionId. Entry shape:
+// { sha: <HEAD git SHA at compute time>, text: <rendered preamble>, ts: <epoch ms> }.
+// Invalidation is implicit: commitWorkspaceChanges()/commitTurn()/revertToTurn()
+// all change HEAD, so the next read sees a SHA mismatch and recomputes.
+const VALIDATOR_CACHE = new Map();
+
+// Test-only escape hatch. The cache is keyed by HEAD SHA so it's correct
+// across real flows, but test fixtures recycle session IDs across cases.
+export function _resetValidatorCache() {
+  VALIDATOR_CACHE.clear();
+}
+
 function newId() {
   return "sess_" + crypto.randomBytes(8).toString("hex");
 }
@@ -182,30 +194,47 @@ export function getSdkSessionId(id) {
 // hallucinating wrong codes ("C3" when it's actually C5). Capped at 8 errors
 // + 5 warnings so it never bloats the prompt.
 export function currentValidatorStateText(id) {
-  let r;
+  // Cache by HEAD SHA. On 1000-concept bundles the full validator is
+  // non-trivial; the per-turn prompt dispatch path calls this on every turn.
+  // SHA equality is the right cache key: any agent commit (or revert) changes
+  // HEAD, so the next read recomputes naturally — no manual invalidation.
+  let bundleDir, headSha;
   try {
-    const dir = path.join(sessionPath(id), "bundle");
-    r = validateBundle(dir);
+    bundleDir = path.join(sessionPath(id), "bundle");
+    headSha = git(bundleDir, "rev-parse", "HEAD").trim();
   } catch (e) {
     return "";
   }
+  const cached = VALIDATOR_CACHE.get(id);
+  if (cached && cached.sha === headSha) return cached.text;
+
+  let r;
+  try {
+    r = validateBundle(bundleDir);
+  } catch (e) {
+    return "";
+  }
+  let text;
   if (r.valid && r.warnings.length === 0) {
-    return "CURRENT VALIDATOR STATE (server-truth): ✓ bundle is clean — no errors, no warnings.";
+    text = "CURRENT VALIDATOR STATE (server-truth): ✓ bundle is clean — no errors, no warnings.";
+  } else {
+    const lines = ["CURRENT VALIDATOR STATE (server-truth — do not re-discover, do not guess error codes, do not fabricate codes):"];
+    if (r.errors.length) {
+      lines.push(`  errors (${r.errors.length}):`);
+      for (const e of r.errors.slice(0, 8)) lines.push(`    • ${e}`);
+      if (r.errors.length > 8) lines.push(`    … and ${r.errors.length - 8} more`);
+    }
+    if (r.warnings.length) {
+      lines.push(`  warnings (${r.warnings.length}):`);
+      for (const w of r.warnings.slice(0, 5)) lines.push(`    • ${w}`);
+      if (r.warnings.length > 5) lines.push(`    … and ${r.warnings.length - 5} more`);
+    }
+    lines.push("");
+    lines.push("If the user says \"what is the error?\" or \"fix the error\", refer to the items above verbatim. Codes are real (C-class = concepts, F-class = forms/formMappings, R-class = rules, G-class = enums) — use them exactly as shown. Do not invent a code that is not in this list.");
+    text = lines.join("\n");
   }
-  const lines = ["CURRENT VALIDATOR STATE (server-truth — do not re-discover, do not guess error codes, do not fabricate codes):"];
-  if (r.errors.length) {
-    lines.push(`  errors (${r.errors.length}):`);
-    for (const e of r.errors.slice(0, 8)) lines.push(`    • ${e}`);
-    if (r.errors.length > 8) lines.push(`    … and ${r.errors.length - 8} more`);
-  }
-  if (r.warnings.length) {
-    lines.push(`  warnings (${r.warnings.length}):`);
-    for (const w of r.warnings.slice(0, 5)) lines.push(`    • ${w}`);
-    if (r.warnings.length > 5) lines.push(`    … and ${r.warnings.length - 5} more`);
-  }
-  lines.push("");
-  lines.push("If the user says \"what is the error?\" or \"fix the error\", refer to the items above verbatim. Codes are real (C-class = concepts, F-class = forms/formMappings, R-class = rules, G-class = enums) — use them exactly as shown. Do not invent a code that is not in this list.");
-  return lines.join("\n");
+  VALIDATOR_CACHE.set(id, { sha: headSha, text, ts: Date.now() });
+  return text;
 }
 
 export function listFiles(id) {
@@ -348,7 +377,7 @@ export async function commitWorkspaceChanges(id, summary) {
   const status = git(dir, "status", "-z", "--porcelain");
   if (!status) {
     const meta = readMeta(id);
-    return { turn: meta.currentTurn, sha: null, summary, validation: meta.validationAtCurrent, rulesValidation: meta.rulesValidationAtCurrent, changedFiles: [], noChanges: true };
+    return { turn: meta.currentTurn, sha: null, summary, agentActionSummary: "no changes", validation: meta.validationAtCurrent, rulesValidation: meta.rulesValidationAtCurrent, changedFiles: [], noChanges: true };
   }
   const changedFiles = status.split("\0").filter((e) => e.length >= 4).map((e) => e.slice(3));
 
@@ -402,7 +431,19 @@ export async function commitWorkspaceChanges(id, summary) {
   meta.validationAtCurrent = validation;
   meta.rulesValidationAtCurrent = rulesValidation;
   writeMeta(id, meta);
-  return { turn: newTurn, sha: sha.slice(0, 12), summary, validation, rulesValidation, changedFiles, noChanges: false };
+  const agentActionSummary = summariseAgentAction(changedFiles);
+  return { turn: newTurn, sha: sha.slice(0, 12), summary, agentActionSummary, validation, rulesValidation, changedFiles, noChanges: false };
+}
+
+// One-line description of what the agent actually did this turn, derived from
+// the changed-file list. The existing `summary` field is the (truncated) user
+// prompt — useful but not the same thing. ALPHA surfaces this in transcript
+// events so reviewers can see file-level intent at a glance.
+function summariseAgentAction(changedFiles) {
+  if (!changedFiles || changedFiles.length === 0) return "no changes";
+  if (changedFiles.length <= 3) return `edit: ${changedFiles.join(", ")}`;
+  const [first, second] = changedFiles;
+  return `edit: ${first}, ${second}, and ${changedFiles.length - 2} more`;
 }
 
 /**
