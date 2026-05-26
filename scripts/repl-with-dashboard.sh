@@ -103,6 +103,18 @@ done
 LEFT_CMD="cd $(printf '%q' "$SDK_DIR") && AVNI_SKILLS_PATH=$(printf '%q' "$AVNI_SKILLS_PATH") npm run cli --${LEFT_ARGS}"
 
 "$TMUX_BIN" new-session -d -s "$SESSION_NAME" -x 220 -y 50 "$LEFT_CMD"
+
+# Scrollback ergonomics — without these, mouse wheel does nothing and
+# tmux's per-pane scrollback is capped at 2000 lines (a single long demo
+# easily blows past that). `mouse on` lets the wheel scroll without
+# entering copy-mode first; `history-limit 50000` keeps ~50k lines of
+# REPL/dashboard output per pane.
+#
+# Manual fallback (works without these too): Ctrl-b [ enters copy-mode,
+# PgUp/PgDn/arrows to scroll, q to exit.
+"$TMUX_BIN" set-option -t "$SESSION_NAME" -g mouse on
+"$TMUX_BIN" set-option -t "$SESSION_NAME" -g history-limit 50000
+
 "$TMUX_BIN" split-window -h -t "$SESSION_NAME" -p 40 \
   "cd $(printf '%q' "$SDK_DIR") && AVNI_SKILLS_PATH=$(printf '%q' "$AVNI_SKILLS_PATH") bash -c $(printf '%q' "$RIGHT_CMD")"
 "$TMUX_BIN" select-pane -t "$SESSION_NAME":0.0
