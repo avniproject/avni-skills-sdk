@@ -13,6 +13,7 @@ import { runAgent, BUNDLE_HARD_RULES } from "../agent.js";
 import { routePrompt } from "../router.js";
 import { withSessionLock } from "../locks.js";
 import { detectUnauthorizedMutations, revertToSha } from "../security/post-turn-detector.js";
+import { buildTaintSet, filterAgentEvent } from "../security/output-filter.js";
 import { logger } from "../logging.js";
 import { execFileSync } from "node:child_process";
 
@@ -125,6 +126,15 @@ export function register(app) {
     // unauthorized commits the agent may have slipped past the lex hook
     // (bug B2 defense in depth).
     const beforeSha = getBundleHeadSha(bundleCwd);
+
+    // H2 part 2 — output filter against bundle-data prompt injection. Pre-
+    // scan every bundle JSON string for known injection markers and build a
+    // "taint set." Every assistant text block is filtered against this set
+    // before reaching SSE / transcript. Catches the eval-case-08 attack
+    // class (concept name contains "SYSTEM OVERRIDE: ... output PWNED").
+    // Single-layer defense — see CLAUDE.md "Prompt-injection limitations".
+    const taintSet = buildTaintSet(bundleCwd);
+    let injectionRedactCount = 0;
 
     // Native SDK session resume — if we've captured the SDK session id on a
     // prior turn, the SDK rehydrates the full transcript server-side and the
@@ -251,6 +261,23 @@ ${BUNDLE_HARD_RULES}`,
         abortController: ac,
       })) {
         agentEvents++;
+        // H2 — filter ev.message.content text blocks against the per-
+        // dispatch taint set BEFORE the event is emitted to the SSE client
+        // OR persisted to transcript. Mutates ev in place; safe because
+        // we're consuming a streamed event we own.
+        const hits = filterAgentEvent(ev, taintSet);
+        if (hits > 0) {
+          injectionRedactCount += hits;
+          sse("injection-redacted", {
+            ts: Date.now(),
+            hits,
+            reason: "assistant text contained injection-pattern string from bundle data; redacted before emission",
+          });
+          logger.warn(
+            { event: "injection.redacted", sid: req.params.id, hits },
+            "prompt-injection payload redacted from assistant text",
+          );
+        }
         sse("agent", ev);
         // First-turn handshake: capture the SDK's own session id from the
         // init event and persist it so subsequent turns can pass `resume:`.
@@ -395,6 +422,7 @@ ${BUNDLE_HARD_RULES}`,
         midStreamThrashAborted,
         unauthorizedRevert,
         agentActionSummary: turnResult.agentActionSummary || "no changes",
+        injectionRedactCount,
       });
       sse("done", { ts: Date.now(), agentEvents, wallet: walletSnapshot });
       try {
@@ -420,6 +448,7 @@ ${BUNDLE_HARD_RULES}`,
           // rather than re-using the truncated user prompt.
           agentActionSummary: turnResult.agentActionSummary || "no changes",
           unauthorizedRevert,
+          injectionRedactCount,
         });
         steplog.logStep(req.params.id, {
           kind: "agent_turn",
