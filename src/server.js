@@ -69,7 +69,13 @@ app.use((req, res, next) => {
 app.use(rateLimit({
   tokensPerMinute: Number(process.env.SDK_RATE_LIMIT_TOKENS_PER_MIN || 60),
   burst: Number(process.env.SDK_RATE_LIMIT_BURST || 30),
-  skip: (req) => req.path === "/health" || (req.method === "GET" && req.path === "/v1/skills"),
+  // Rate-limit MUTATIONS only. The REPL banner fires 6 reads in parallel
+  // on session create; the dashboard polls 3 endpoints every 2 s; :diff /
+  // :files / :transcript / :steps / :cost are all bursty. None of those
+  // can be abused (they're idempotent + per-session-scoped). Reads being
+  // rate-limited caused cosmetic "?" in the banner on freshly-booted
+  // servers (see issue surfaced 2026-05-27).
+  skip: (req) => req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS" || req.path === "/health",
 }));
 
 mountRoutes(app);
