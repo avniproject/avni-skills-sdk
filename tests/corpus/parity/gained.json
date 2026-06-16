@@ -1,0 +1,8 @@
+{
+  "_meta": {
+    "generated": "2026-06-16T06:31:07.991Z",
+    "note": "NEW \\ OLD — detections the new bundle_integrity_check adds over the two old detectors. Informational; never blocks the gate. Expect FE_CONCEPT_NOT_OBJECT and ALT_INVALID_NAME (the two new checks)."
+  },
+  "total": 0,
+  "orgs": {}
+}
