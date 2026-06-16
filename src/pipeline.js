@@ -211,7 +211,11 @@ function asArray(value, wrappedKey) {
   return [];
 }
 
-function checkIntegrityOnFileMap(files) {
+// Exported so the in-process MCP `bundle_integrity_check` tool can REUSE the
+// exact same FK / dangling-reference logic against a bundle directory (read
+// into a file map) instead of duplicating it. Deletion of this function is a
+// parity-gated follow-up — do NOT remove it.
+export function checkIntegrityOnFileMap(files) {
   const issues = [];
   const uuidIndex = new Map();    // uuid → kind
 

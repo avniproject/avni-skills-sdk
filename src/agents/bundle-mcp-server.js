@@ -20,6 +20,7 @@ import path from "node:path";
 import { z } from "zod";
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { validateBundle, zipBundle as zipBundleDir } from "../bundle.js";
+import { checkIntegrityOnFileMap } from "../pipeline.js";
 import { BUNDLE_TOOL_NAMES as FROZEN_BUNDLE_TOOL_NAMES } from "./bundle-mcp-tool-names.js";
 
 // MCP CallToolResult helper — wrap a JS value as a text content block.
@@ -264,6 +265,176 @@ function buildExportTool(bundleCwd) {
   );
 }
 
+// ─── deterministic data-integrity checks ────────────────────────────
+//
+// Two real shipped incidents motivated this tool — both slipped past BOTH the
+// local validator AND the model:
+//
+//   • Durga  — a "fix all errors" turn flattened formElement `concept` objects
+//     down to bare UUID strings. The local validator was happy; the AVNI
+//     server expects a nested ConceptContract object and Jackson crashed on
+//     deserialize. → FE_CONCEPT_NOT_OBJECT.
+//
+//   • Astitva — addressLevelType names carried URLs / arrow chains / empty
+//     strings copied from an SRS hierarchy diagram. The local validator never
+//     checked name chars; the AVNI LocationService rejected them on upload.
+//     → ALT_INVALID_NAME.
+//
+// These are deterministic structural checks, not heuristics. Findings are
+// returned as normal tool output (an array), NOT thrown.
+
+// Ported verbatim from src/agents/summarizer.js:invalidLocationLevelNameReason
+// (itself a mirror of the generator's check). AVNI's LocationService rejects
+// addressLevelType names that are empty or contain any of < > = " '.
+// Kept local (not imported) so this safety check has no cross-module coupling
+// to the advisory summarizer.
+function invalidLocationLevelNameReason(name) {
+  if (!name || typeof name !== "string") return "empty";
+  const t = name.trim();
+  if (!t) return "empty";
+  if (/[<>="']/.test(t)) return "contains a character AVNI rejects (< > = \" ')";
+  return null;
+}
+
+// Read a bundle directory into the file map shape checkIntegrityOnFileMap and
+// the new checks expect: { "concepts.json": [...], "forms/<f>.json": {...}, ... }.
+function readBundleFileMap(bundleCwd) {
+  const files = {};
+  const topLevel = [
+    "concepts.json",
+    "subjectTypes.json",
+    "programs.json",
+    "encounterTypes.json",
+    "formMappings.json",
+    "operationalSubjectTypes.json",
+    "operationalPrograms.json",
+    "operationalEncounterTypes.json",
+    "addressLevelTypes.json",
+  ];
+  for (const rel of topLevel) {
+    const fp = path.join(bundleCwd, rel);
+    if (fs.existsSync(fp)) {
+      try { files[rel] = JSON.parse(fs.readFileSync(fp, "utf8")); }
+      catch { /* malformed JSON is the validator's job, not ours */ }
+    }
+  }
+  const formsDir = path.join(bundleCwd, "forms");
+  if (fs.existsSync(formsDir)) {
+    for (const f of fs.readdirSync(formsDir)) {
+      if (!f.endsWith(".json")) continue;
+      const fp = path.join(formsDir, f);
+      try { files[`forms/${f}`] = JSON.parse(fs.readFileSync(fp, "utf8")); }
+      catch { /* malformed JSON is the validator's job */ }
+    }
+  }
+  return files;
+}
+
+/**
+ * Run deterministic data-integrity checks on a bundle directory.
+ *
+ * Combines:
+ *   (a) the existing FK / dangling-reference logic (REUSED from pipeline's
+ *       checkIntegrityOnFileMap), normalised into the structured finding shape;
+ *   (b) FE_CONCEPT_NOT_OBJECT — formElement.concept must be a nested object,
+ *       not a bare UUID string (Durga);
+ *   (c) ALT_INVALID_NAME — addressLevelType names must be non-empty and free of
+ *       the chars AVNI's LocationService rejects (Astitva).
+ *
+ * @param {string} bundleCwd Absolute path to the bundle directory.
+ * @returns {{ ok: boolean, findings: Array<{code,severity,file,locator,message}> }}
+ *   `ok` is false iff any finding has severity "error".
+ */
+export function runBundleIntegrityCheck(bundleCwd) {
+  const files = readBundleFileMap(bundleCwd);
+  const findings = [];
+
+  // (a) FK / dangling-reference integrity — reuse pipeline's logic verbatim,
+  // then map its issue shape into the structured finding shape.
+  const fk = checkIntegrityOnFileMap(files);
+  for (const issue of fk.issues) {
+    findings.push({
+      code: issue.code,                 // "DANGLING_REF"
+      severity: issue.severity,         // "error" | "warning"
+      file: issue.field || "(bundle)",
+      locator: issue.from ? `${issue.from} → ${issue.to}` : (issue.to || ""),
+      message: issue.message,
+    });
+  }
+
+  // (b) FE_CONCEPT_NOT_OBJECT — for every form's formElements, a `concept` that
+  // is a string (bare UUID) instead of a nested object will crash the server's
+  // Jackson deserialize (ConceptContract expected). The local validator misses it.
+  for (const [pathStr, form] of Object.entries(files)) {
+    if (!pathStr.startsWith("forms/") || !pathStr.endsWith(".json")) continue;
+    if (!form || typeof form !== "object") continue;
+    for (const grp of (form.formElementGroups || [])) {
+      for (const fe of (grp.formElements || [])) {
+        if (fe && typeof fe.concept === "string") {
+          findings.push({
+            code: "FE_CONCEPT_NOT_OBJECT",
+            severity: "error",
+            file: pathStr,
+            locator: `formElements["${fe.name ?? ""}"].concept`,
+            message:
+              `concept is a bare UUID string "${fe.concept}" — AVNI expects a nested ` +
+              `ConceptContract object and will fail to deserialize (Jackson). ` +
+              `Re-inline the full concept object (name/uuid/dataType/answers/media).`,
+          });
+        }
+      }
+    }
+  }
+
+  // (c) ALT_INVALID_NAME — for every addressLevelTypes.json entry, an empty name
+  // or one containing < > = " ' is rejected by AVNI's LocationService on upload.
+  const alts = files["addressLevelTypes.json"];
+  if (Array.isArray(alts)) {
+    alts.forEach((alt, i) => {
+      const name = alt && typeof alt === "object" ? alt.name : alt;
+      const reason = invalidLocationLevelNameReason(name);
+      if (reason) {
+        findings.push({
+          code: "ALT_INVALID_NAME",
+          severity: "error",
+          file: "addressLevelTypes.json",
+          locator: `[${i}].name`,
+          message:
+            `addressLevelType name ${JSON.stringify(name)} is invalid: ${reason}. ` +
+            `AVNI's LocationService rejects this on upload.`,
+        });
+      }
+    });
+  }
+
+  const ok = !findings.some((f) => f.severity === "error");
+  return { ok, findings };
+}
+
+function buildIntegrityCheckTool(bundleCwd) {
+  return tool(
+    "bundle_integrity_check",
+    "Run deterministic DATA-INTEGRITY checks on the current bundle that the validator and the model both miss. Covers: (1) FK / dangling references (formMappings, operational entities, form-element concepts, coded answers) pointing at UUIDs not present in the bundle; (2) FE_CONCEPT_NOT_OBJECT — a formElement whose `concept` is a bare UUID string instead of a nested object (AVNI server crashes on deserialize); (3) ALT_INVALID_NAME — an addressLevelType name that is empty or contains < > = \" ' (AVNI LocationService rejects it). Returns { ok, findings:[{code,severity,file,locator,message}], counts }. Run this BEFORE export — a clean validator does NOT guarantee a clean upload.",
+    {},
+    async () => {
+      try {
+        const { ok, findings } = runBundleIntegrityCheck(bundleCwd);
+        const counts = {};
+        for (const f of findings) counts[f.code] = (counts[f.code] || 0) + 1;
+        return textResult({
+          ok,
+          errorCount: findings.filter((f) => f.severity === "error").length,
+          warningCount: findings.filter((f) => f.severity === "warning").length,
+          counts,
+          findings,
+        });
+      } catch (e) {
+        return errorResult(e.message);
+      }
+    },
+  );
+}
+
 // ─── server factory ─────────────────────────────────────────────────
 
 /**
@@ -293,6 +464,7 @@ export function createBundleMcpServer(bundleCwd) {
       buildFindConceptTool(bundleCwd),
       buildSummaryTool(bundleCwd),
       buildExportTool(bundleCwd),
+      buildIntegrityCheckTool(bundleCwd),
     ],
     alwaysLoad: true,
   });
