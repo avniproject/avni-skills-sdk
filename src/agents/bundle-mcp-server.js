@@ -283,16 +283,32 @@ function buildExportTool(bundleCwd) {
 // These are deterministic structural checks, not heuristics. Findings are
 // returned as normal tool output (an array), NOT thrown.
 
-// Ported verbatim from src/agents/summarizer.js:invalidLocationLevelNameReason
-// (itself a mirror of the generator's check). AVNI's LocationService rejects
-// addressLevelType names that are empty or contain any of < > = " '.
-// Kept local (not imported) so this safety check has no cross-module coupling
-// to the advisory summarizer.
+// Mirrors avni-server ValidationUtil.COMMON_INVALID_CHARS_PATTERN
+// (^.*[<>="'].*$), enforced by LocationService.createAddressLevelTypes — NOT a
+// port of summarizer.js (the summarizer used different URL / arrow-chain
+// heuristics). This rejects addressLevelType names that are empty or contain
+// any of < > = " '. Kept local (not imported) so this safety check has no
+// cross-module coupling to the advisory summarizer.
 function invalidLocationLevelNameReason(name) {
   if (!name || typeof name !== "string") return "empty";
   const t = name.trim();
   if (!t) return "empty";
   if (/[<>="']/.test(t)) return "contains a character AVNI rejects (< > = \" ')";
+  return null;
+}
+
+// FE_CONCEPT_NOT_OBJECT shape predicate. The avni-server's
+// FormElementContract.validate() fails whenever the deserialized concept is
+// null, has no UUID, or (the Durga incident) was flattened to a bare UUID
+// string that Jackson can't map onto a ConceptContract object. This is a pure
+// SHAPE check — a well-shaped { uuid, ... } object is ACCEPTED here even if that
+// uuid is dangling; resolving dangling UUIDs is the FK check's separate job.
+// Returns a stable reason key (or null when the shape is valid).
+function invalidConceptShapeReason(concept) {
+  if (concept === null || concept === undefined) return "missing";      // server: "Concept UUID Not Provided"
+  if (typeof concept === "string") return "bare-string";                // Durga: bare UUID string → Jackson crash
+  if (typeof concept !== "object" || Array.isArray(concept)) return "not-object"; // number/bool/array etc.
+  if (typeof concept.uuid !== "string" || !concept.uuid.trim()) return "no-uuid"; // object without a real uuid
   return null;
 }
 
@@ -362,24 +378,46 @@ export function runBundleIntegrityCheck(bundleCwd) {
     });
   }
 
-  // (b) FE_CONCEPT_NOT_OBJECT — for every form's formElements, a `concept` that
-  // is a string (bare UUID) instead of a nested object will crash the server's
-  // Jackson deserialize (ConceptContract expected). The local validator misses it.
+  // (b) FE_CONCEPT_NOT_OBJECT — for every form's formElements, the `concept`
+  // must be a nested object carrying a non-empty `uuid`. The avni-server's
+  // FormElementContract.validate() rejects ANY other shape: a missing/null
+  // concept ("Concept UUID Not Provided"), a bare UUID string (Durga — Jackson
+  // crashes mapping a string onto ConceptContract), a non-object scalar, or an
+  // object that lacks a real uuid. This is a pure SHAPE check; a well-shaped
+  // { uuid, ... } whose uuid happens to be dangling is left to the FK check (a).
+  const conceptShapeMessage = {
+    "missing": (uuid) =>
+      `formElement concept is missing/null — AVNI's FormElementContract.validate() ` +
+      `rejects it ("Concept UUID Not Provided"). Inline the full concept object ` +
+      `(name/uuid/dataType/answers/media).`,
+    "bare-string": (uuid) =>
+      `formElement concept is a bare UUID string "${uuid}" — AVNI expects a nested ` +
+      `ConceptContract object and will fail to deserialize (Jackson). ` +
+      `Re-inline the full concept object (name/uuid/dataType/answers/media).`,
+    "not-object": (uuid) =>
+      `formElement concept is a ${typeof uuid === "object" ? "non-object value" : typeof uuid} ` +
+      `instead of a nested ConceptContract object — AVNI will fail to deserialize it. ` +
+      `Re-inline the full concept object (name/uuid/dataType/answers/media).`,
+    "no-uuid": (uuid) =>
+      `formElement concept object has no uuid — AVNI's FormElementContract.validate() ` +
+      `rejects a concept without a UUID ("Concept UUID Not Provided"). ` +
+      `Restore the concept's uuid (and the rest of the ConceptContract).`,
+  };
   for (const [pathStr, form] of Object.entries(files)) {
     if (!pathStr.startsWith("forms/") || !pathStr.endsWith(".json")) continue;
     if (!form || typeof form !== "object") continue;
     for (const grp of (form.formElementGroups || [])) {
       for (const fe of (grp.formElements || [])) {
-        if (fe && typeof fe.concept === "string") {
+        if (!fe || typeof fe !== "object") continue;
+        const reason = invalidConceptShapeReason(fe.concept);
+        if (reason) {
+          const msgFor = conceptShapeMessage[reason];
           findings.push({
             code: "FE_CONCEPT_NOT_OBJECT",
             severity: "error",
             file: pathStr,
             locator: `formElements["${fe.name ?? ""}"].concept`,
-            message:
-              `concept is a bare UUID string "${fe.concept}" — AVNI expects a nested ` +
-              `ConceptContract object and will fail to deserialize (Jackson). ` +
-              `Re-inline the full concept object (name/uuid/dataType/answers/media).`,
+            message: msgFor ? msgFor(fe.concept) : `formElement concept has an invalid shape (${reason}).`,
           });
         }
       }

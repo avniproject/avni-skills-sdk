@@ -83,6 +83,135 @@ test("does NOT flag a formElement whose concept is a proper nested object", asyn
   cleanup(dir);
 });
 
+// The avni-server's FormElementContract.validate() rejects MORE shapes than a
+// bare string. Server-reject parity: null / missing / non-object / uuid-less
+// concepts all crash the upload, so the SHAPE check must flag them all.
+
+test("flags a null concept (server: Concept UUID Not Provided)", async () => {
+  const { runBundleIntegrityCheck } = await loadServer();
+  const dir = tmpBundle({
+    forms: [{
+      name: "F", uuid: "fff", formType: "IndividualProfile",
+      formElementGroups: [{ formElements: [{ name: "null-el", concept: null }] }],
+    }],
+  });
+  const { ok, findings } = runBundleIntegrityCheck(dir);
+  const fe = findings.filter((f) => f.code === "FE_CONCEPT_NOT_OBJECT");
+  assert.equal(fe.length, 1, "exactly one FE_CONCEPT_NOT_OBJECT finding for null concept");
+  assert.equal(fe[0].severity, "error");
+  assert.match(fe[0].locator, /null-el/);
+  assert.match(fe[0].message, /missing\/null/, "message names the missing/null shape");
+  assert.equal(ok, false);
+  cleanup(dir);
+});
+
+test("flags a formElement that is MISSING the concept key entirely", async () => {
+  const { runBundleIntegrityCheck } = await loadServer();
+  const dir = tmpBundle({
+    forms: [{
+      name: "F", uuid: "fff", formType: "IndividualProfile",
+      // No `concept` key at all (undefined) — same server reject as null.
+      formElementGroups: [{ formElements: [{ name: "no-concept-key" }] }],
+    }],
+  });
+  const { ok, findings } = runBundleIntegrityCheck(dir);
+  const fe = findings.filter((f) => f.code === "FE_CONCEPT_NOT_OBJECT");
+  assert.equal(fe.length, 1, "missing concept key is flagged");
+  assert.match(fe[0].locator, /no-concept-key/);
+  assert.match(fe[0].message, /missing\/null/);
+  assert.equal(ok, false);
+  cleanup(dir);
+});
+
+test("flags a concept object that has no uuid (concept: {})", async () => {
+  const { runBundleIntegrityCheck } = await loadServer();
+  const dir = tmpBundle({
+    forms: [{
+      name: "F", uuid: "fff", formType: "IndividualProfile",
+      formElementGroups: [{ formElements: [
+        { name: "uuidless-el", concept: { name: "Age", dataType: "Numeric" } }, // object, but no uuid
+      ] }],
+    }],
+  });
+  const { ok, findings } = runBundleIntegrityCheck(dir);
+  const fe = findings.filter((f) => f.code === "FE_CONCEPT_NOT_OBJECT");
+  assert.equal(fe.length, 1, "uuid-less concept object is flagged");
+  assert.match(fe[0].locator, /uuidless-el/);
+  assert.match(fe[0].message, /no uuid/i, "message names the no-uuid shape");
+  assert.equal(ok, false);
+  cleanup(dir);
+});
+
+test("flags a concept whose uuid is an empty / whitespace string", async () => {
+  const { runBundleIntegrityCheck } = await loadServer();
+  const dir = tmpBundle({
+    forms: [{
+      name: "F", uuid: "fff", formType: "IndividualProfile",
+      formElementGroups: [{ formElements: [
+        { name: "blank-uuid-el", concept: { name: "Age", uuid: "   ", dataType: "Numeric" } },
+      ] }],
+    }],
+  });
+  const { findings } = runBundleIntegrityCheck(dir);
+  const fe = findings.filter((f) => f.code === "FE_CONCEPT_NOT_OBJECT");
+  assert.equal(fe.length, 1, "blank-uuid concept object is flagged");
+  assert.match(fe[0].message, /no uuid/i);
+  cleanup(dir);
+});
+
+test("flags a non-object scalar concept (number)", async () => {
+  const { runBundleIntegrityCheck } = await loadServer();
+  const dir = tmpBundle({
+    forms: [{
+      name: "F", uuid: "fff", formType: "IndividualProfile",
+      formElementGroups: [{ formElements: [{ name: "num-el", concept: 42 }] }],
+    }],
+  });
+  const { findings } = runBundleIntegrityCheck(dir);
+  const fe = findings.filter((f) => f.code === "FE_CONCEPT_NOT_OBJECT");
+  assert.equal(fe.length, 1, "numeric concept is flagged");
+  assert.match(fe[0].message, /number/, "message names the scalar type");
+  cleanup(dir);
+});
+
+test("does NOT throw on a form missing formElementGroups", async () => {
+  const { runBundleIntegrityCheck } = await loadServer();
+  const dir = tmpBundle({
+    forms: [{ name: "F", uuid: "fff", formType: "IndividualProfile" }], // no formElementGroups
+  });
+  // The whole point: traversal must be defensive, not crash.
+  const { ok, findings } = runBundleIntegrityCheck(dir);
+  assert.equal(findings.filter((f) => f.code === "FE_CONCEPT_NOT_OBJECT").length, 0);
+  assert.equal(ok, true);
+  cleanup(dir);
+});
+
+test("does NOT flag a well-shaped {uuid} concept even when that uuid is DANGLING (shape check stays silent; only the FK check speaks)", async () => {
+  const { runBundleIntegrityCheck } = await loadServer();
+  const DANGLING = "99999999-9999-9999-9999-999999999999";
+  const dir = tmpBundle({
+    // concepts.json deliberately does NOT contain DANGLING — the uuid is dangling.
+    concepts: [{ name: "Age", uuid: UUID, dataType: "Numeric" }],
+    forms: [{
+      name: "F", uuid: "fff", formType: "IndividualProfile",
+      formElementGroups: [{ formElements: [
+        // A perfectly well-SHAPED concept object whose uuid is not in concepts.json.
+        { name: "dangle-el", concept: { name: "Ghost", uuid: DANGLING, dataType: "Numeric", answers: [], media: [] } },
+      ] }],
+    }],
+  });
+  const { findings } = runBundleIntegrityCheck(dir);
+  // SHAPE check: silent — the object is well-formed.
+  assert.equal(
+    findings.filter((f) => f.code === "FE_CONCEPT_NOT_OBJECT").length, 0,
+    "a well-shaped concept object is NOT a shape violation even if its uuid dangles",
+  );
+  // The FK check is the one that may speak about the dangling uuid (separate job).
+  // We do not assert it MUST fire (FK coverage of FE concepts is the FK check's
+  // concern); we only assert the SHAPE check did not false-positive.
+  cleanup(dir);
+});
+
 // ─── ALT_INVALID_NAME (Astitva) ─────────────────────────────────────
 
 test("flags an addressLevelType named like a Google-Drive URL", async () => {
