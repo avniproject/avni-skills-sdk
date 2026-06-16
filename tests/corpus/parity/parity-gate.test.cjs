@@ -144,6 +144,130 @@ test("synthetic flattened concept appears ONLY in NEW surface (GAINED) and never
   }
 });
 
+// ─── 2b. Graph-ONLY dangling ref (encounterType.conceptUuid) → LOST ──
+//
+// REGRESSION PIN for the false-green dedup-key bug. encounterType.conceptUuid is
+// a graph-ONLY edge: graph.integrityCheck walks it, but checkIntegrityOnFileMap
+// (the surface the NEW detector reuses) does NOT. So a dangling
+// encounterType.conceptUuid is in OLD but NOT in NEW → it MUST surface as LOST.
+// Before the key fix this was already correct in ISOLATION; case 2c is the one
+// the old `class|locator` key got wrong.
+
+test("an isolated graph-only dangling ref (encounterType.conceptUuid) is LOST (≥1) — gate must FAIL", async () => {
+  const ET_UUID = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+  const dir = tmpBundle({
+    subjectTypes: [{ name: "Individual", uuid: ST_UUID }],
+    encounterTypes: [{
+      name: "Visit", uuid: ET_UUID,
+      conceptUuid: MISSING_UUID, // ← dangling, graph-only edge (file-map ignores it)
+    }],
+  });
+  try {
+    const OLD = await oldSurface(dir);
+    const NEW = await newSurface(dir);
+
+    // OLD has it, and ONLY via the graph detector.
+    const oldGraphOnly = OLD.triples.filter(
+      (t) => t.class === CLASS.DANGLING_REF && t.locator === MISSING_UUID,
+    );
+    assert.ok(oldGraphOnly.length >= 1, "OLD surface should contain the graph-only dangling ref");
+    assert.ok(
+      oldGraphOnly.every((t) => t._origin === "graph.integrityCheck"),
+      "the encounterType.conceptUuid dangling ref is graph-only (file-map does not check it)",
+    );
+
+    // NEW (file-map reuse) does NOT have it.
+    const newHas = NEW.triples.filter(
+      (t) => t.class === CLASS.DANGLING_REF && t.locator === MISSING_UUID,
+    );
+    assert.equal(newHas.length, 0, "NEW surface (file-map reuse) does NOT detect encounterType.conceptUuid");
+
+    // The gate's verdict: LOST = OLD \ NEW must be NON-empty → gate FAILS (correct).
+    const lost = diff(OLD.set, NEW.set);
+    assert.ok(lost.length >= 1,
+      `LOST must be ≥1 for a graph-only dangling ref. Got: ${JSON.stringify(lost)}`);
+    assert.ok(
+      lost.some((t) => t.class === CLASS.DANGLING_REF && t.locator === MISSING_UUID
+        && t._field === "encounterType.conceptUuid"),
+      "the LOST entry is the encounterType.conceptUuid edge",
+    );
+  } finally {
+    cleanup(dir);
+  }
+});
+
+// ─── 2c. CO-REFERENCED missing uuid (covered + graph-only) → still LOST ─
+//
+// THE false-green the dedup-key fix closes. ONE missing uuid is referenced by
+// BOTH a COVERED edge (formMapping.subjectTypeUUID — re-checked by the NEW
+// file-map surface) AND a GRAPH-ONLY edge (encounterType.conceptUuid — only the
+// graph detector walks it). With the OLD `class|locator` key both collapsed to a
+// single member that NEW satisfied via the covered edge → OLD\NEW empty → the
+// graph-only loss was MASKED (false green). With the `class|fromKind|field|to`
+// key the two edges are distinct members: the covered one matches OLD↔NEW (NOT
+// lost), and the graph-only one correctly shows as LOST.
+
+test("a missing uuid co-referenced by a COVERED and a GRAPH-ONLY edge → graph-only edge is LOST; covered edge is NOT falsely lost", async () => {
+  const ET_UUID = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+  const dir = tmpBundle({
+    subjectTypes: [{ name: "Individual", uuid: ST_UUID }],
+    encounterTypes: [{
+      name: "Visit", uuid: ET_UUID,
+      conceptUuid: MISSING_UUID,           // graph-only edge → MISSING_UUID
+    }],
+    forms: [{ name: "F", uuid: FORM_UUID, formType: "IndividualProfile", formElementGroups: [] }],
+    formMappings: [{
+      uuid: "mmmmmmmm-mmmm-mmmm-mmmm-mmmmmmmmmmmm",
+      formType: "IndividualProfile",
+      formUUID: FORM_UUID,
+      subjectTypeUUID: MISSING_UUID,       // COVERED edge → SAME MISSING_UUID
+    }],
+  });
+  try {
+    const OLD = await oldSurface(dir);
+    const NEW = await newSurface(dir);
+
+    // OLD has BOTH edges to MISSING_UUID: the covered one (file-map + graph) and
+    // the graph-only one (graph). Keyed by field, they are distinct members.
+    const oldFields = new Set(
+      OLD.triples
+        .filter((t) => t.class === CLASS.DANGLING_REF && t.locator === MISSING_UUID)
+        .map((t) => t._field),
+    );
+    assert.ok(oldFields.has("formMapping.subjectTypeUUID"), "OLD has the covered edge");
+    assert.ok(oldFields.has("encounterType.conceptUuid"), "OLD has the graph-only edge");
+
+    // NEW has ONLY the covered edge.
+    const newFields = new Set(
+      NEW.triples
+        .filter((t) => t.class === CLASS.DANGLING_REF && t.locator === MISSING_UUID)
+        .map((t) => t._field),
+    );
+    assert.ok(newFields.has("formMapping.subjectTypeUUID"), "NEW has the covered edge");
+    assert.ok(!newFields.has("encounterType.conceptUuid"), "NEW does NOT have the graph-only edge");
+
+    const lost = diff(OLD.set, NEW.set);
+
+    // The graph-only edge is LOST (this is what the false-green key hid).
+    assert.ok(lost.length >= 1, `LOST must be ≥1. Got: ${JSON.stringify(lost)}`);
+    assert.ok(
+      lost.some((t) => t.class === CLASS.DANGLING_REF
+        && t.locator === MISSING_UUID
+        && t._field === "encounterType.conceptUuid"),
+      "the graph-only encounterType.conceptUuid edge to the shared uuid is LOST",
+    );
+
+    // The COVERED edge must NOT be falsely lost (NEW does cover it).
+    assert.ok(
+      !lost.some((t) => t.class === CLASS.DANGLING_REF
+        && t._field === "formMapping.subjectTypeUUID"),
+      "the covered formMapping.subjectTypeUUID edge is NOT falsely lost",
+    );
+  } finally {
+    cleanup(dir);
+  }
+});
+
 // ─── 3. Clean bundle → both surfaces empty, no LOST, no GAINED ───────
 
 test("a clean synthetic bundle yields empty OLD and NEW surfaces (no LOST, no GAINED)", async () => {

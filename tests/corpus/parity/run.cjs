@@ -29,8 +29,12 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { listOrgs, corpusRoot } = require("../registry.cjs");
-const { oldSurface, newSurface, AVNI_SKILLS_PATH } = require("./detectors.cjs");
 const { diff } = require("./normalize.cjs");
+
+// NOTE: ./detectors.cjs is required LAZILY (inside main, after the corpus check)
+// because loading it eagerly loads the brain (graph.js), which FAILS LOUD when
+// the brain is missing. We want a missing corpus to SKIP (exit 0) even if the
+// brain is also absent, but a present corpus with a missing brain to ERROR.
 
 const GAINED_PATH = path.join(__dirname, "gained.json");
 const LOST_PATH = path.join(__dirname, "lost.json");
@@ -41,7 +45,8 @@ function yellow(s) { return process.stdout.isTTY ? `\x1b[33m${s}\x1b[0m` : s; }
 function dim(s)    { return process.stdout.isTTY ? `\x1b[2m${s}\x1b[0m` : s; }
 function bold(s)   { return process.stdout.isTTY ? `\x1b[1m${s}\x1b[0m` : s; }
 
-async function runOrg(o) {
+async function runOrg(o, detectors) {
+  const { oldSurface, newSurface } = detectors || require("./detectors.cjs");
   const OLD = await oldSurface(o.bundleDir);
   const NEW = await newSurface(o.bundleDir);
   const lost = diff(OLD.set, NEW.set);   // OLD \ NEW
@@ -67,6 +72,12 @@ async function main() {
     process.exit(0);
   }
 
+  // Corpus is present → the brain MUST load. require detectors now; if the brain
+  // is missing this throws a clear, loud error (caught by main().catch → exit 2),
+  // rather than silently shrinking the OLD surface and passing as false parity.
+  const detectors = require("./detectors.cjs");
+  const { AVNI_SKILLS_PATH } = detectors; // surfaces accessed via runOrg(o, detectors)
+
   console.log("─".repeat(86));
   console.log(bold(`corpus:parity gate`) + ` — ${orgs.length} org(s) at ${root}`);
   console.log(dim(`brain: ${AVNI_SKILLS_PATH}`));
@@ -84,7 +95,7 @@ async function main() {
   const results = [];
   let totalLost = 0, totalGained = 0;
   for (const o of orgs) {
-    const r = await runOrg(o);
+    const r = await runOrg(o, detectors);
     results.push(r);
     totalLost += r.lost.length;
     totalGained += r.gained.length;

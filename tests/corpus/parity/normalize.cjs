@@ -20,18 +20,43 @@
 //               key for DANGLING_REF (see below) precisely because the graph
 //               half can't supply it — keying on it would manufacture false LOST.
 //   • locator — keyed on the REFERENCED UUID (the dangling `to` uuid), NEVER on
-//               message text or array index. For a dangling ref the thing that
-//               uniquely identifies the problem is "which uuid is missing", and
-//               both file-map and graph detectors expose that as `to`.
+//               message text or array index. For a dangling ref the `to` uuid is
+//               WHICH uuid is missing; the edge SOURCE (fromKind+field) is also
+//               part of the DANGLING_REF key so a covered edge and a graph-only
+//               edge to the SAME missing uuid stay distinct (see SET-MEMBERSHIP
+//               KEY below). Both file-map and graph detectors expose `to`+`field`.
 //
 // SET-MEMBERSHIP KEY
 // ------------------
-// Findings are compared as a SET. The key is `class|locator` for DANGLING_REF
-// (file deliberately excluded — the graph detector is directory-based and emits
-// file="(bundle)", so including file would make every graph dangling-ref look
-// "lost" vs the file-map detector that DOES know the file). For the two NEW-only
-// classes the key includes file+locator because both are file-anchored and we
-// want each distinct site reported.
+// Findings are compared as a SET. For DANGLING_REF the key is
+// `class|fromKind|field|to` — it includes the edge SOURCE (fromKind + field),
+// NOT just the referenced `to` uuid.
+//
+//   WHY the `to`-only key was a FALSE-GREEN bug: one missing uuid can be
+//   referenced by BOTH a covered edge (e.g. formMapping.subjectTypeUUID, which
+//   the NEW file-map surface re-checks) AND a graph-only edge (e.g.
+//   encounterType.conceptUuid, which only graph.integrityCheck walks). Keyed on
+//   the `to` uuid alone, both collapse to one member `DANGLING_REF|<uuid>`. The
+//   NEW surface has that member via the covered edge, so OLD\NEW is empty and the
+//   LOST graph-only coverage is masked → the gate passes when it should fail.
+//
+//   The key is built from the SAME logical fields (class, fromKind, field, to)
+//   for ALL THREE surfaces. `field` is the symmetric anchor: the graph detector,
+//   the OLD file-map detector, and the NEW detector all spell a given edge's
+//   field identically (e.g. "formMapping.subjectTypeUUID",
+//   "encounterType.conceptUuid", "form.formElementGroups[].formElements[...]").
+//   `fromKind` is derived from the field prefix so it is identical across
+//   surfaces even though the NEW finding doesn't carry a node-kind directly. With
+//   this key a COVERED dangling edge matches between OLD and NEW (not LOST), and a
+//   genuinely graph-only edge surfaces as LOST.
+//
+//   `file` is still NOT in the key — the graph detector is directory-based and
+//   emits file="(bundle)", so keying on it would manufacture false LOST. The
+//   field already carries the entity prefix, so source disambiguation is intact
+//   without it.
+//
+// For the two NEW-only classes the key includes file+locator because both are
+// file-anchored and we want each distinct site reported.
 //
 // CODE → CLASS MAPPING (documented in README.md):
 //
@@ -60,6 +85,19 @@ const CLASS = Object.freeze({
 // C3, D1, …); the point is to make the scope boundary executable, not exhaustive.
 const VALIDATOR_CODE_RE = /^[A-Z][0-9]+$/; // A1, B12, C3, D1, … — validator's coded scheme
 
+// The edge SOURCE kind for a DANGLING_REF, derived from the field's entity
+// prefix. Every detector spells the field with the same leading entity token
+// ("formMapping.subjectTypeUUID", "encounterType.conceptUuid",
+// "operationalProgram.program.uuid", "form.formElementGroups[]…concept.uuid",
+// "concept.answers[].uuid", "addressLevelType.parentUuid"), so taking the token
+// before the first "." or "[" yields a fromKind that is IDENTICAL across the
+// graph, file-map, and new surfaces. This makes the dedup key symmetric.
+function fromKindOf(field) {
+  const f = String(field || "");
+  const m = f.match(/^[A-Za-z0-9_]+/);
+  return m ? m[0] : "(unknown)";
+}
+
 /**
  * A finding from the graph.integrityCheck DETECTOR is dangling iff edge.to is
  * unknown. Reduce it to a canonical triple. The graph is directory-based and
@@ -73,8 +111,10 @@ function fromGraphIssue(issue) {
     class: CLASS.DANGLING_REF,
     file: "(bundle)",
     locator: edge.to || "", // the referenced (missing) uuid
-    // diagnostic context — NOT part of the set key
+    // edge SOURCE — part of the DANGLING_REF set key (with class + locator).
     _field: edge.field || null,
+    _fromKind: fromKindOf(edge.field),
+    // diagnostic context — NOT part of the set key
     _from: edge.from || null,
     _severity: issue.severity || null,
     _origin: "graph.integrityCheck",
@@ -96,7 +136,9 @@ function fromFileMapIssue(issue) {
     class: CLASS.DANGLING_REF,
     file: fileFromField(issue.field),
     locator: issue.to || "", // the referenced (missing) uuid
+    // edge SOURCE — part of the DANGLING_REF set key (with class + locator).
     _field: issue.field || null,
+    _fromKind: fromKindOf(issue.field),
     _from: issue.from || null,
     _severity: issue.severity || null,
     _origin: "checkIntegrityOnFileMap",
@@ -116,18 +158,25 @@ function fromNewFinding(finding) {
     );
   }
   switch (finding.code) {
-    case "DANGLING_REF":
+    case "DANGLING_REF": {
       // The NEW detector's DANGLING_REF locator is "from → to"; extract the
       // referenced uuid (the `to`) so it keys identically to the OLD detectors.
+      // The NEW finding carries the edge `field` in its `file` slot (see
+      // bundle-mcp-server.js: `file: issue.field`), so we recover the same
+      // canonical _field / _fromKind the OLD surfaces expose — this is what makes
+      // a COVERED dangling edge match between OLD and NEW (no false LOST).
+      const newField = finding.file && finding.file !== "(bundle)" ? finding.file : null;
       return {
         class: CLASS.DANGLING_REF,
-        file: finding.file && finding.file !== "(bundle)" ? finding.file : "(bundle)",
+        file: newField || "(bundle)",
         locator: danglingToUuid(finding),
-        _field: finding.file || null,
+        _field: newField,
+        _fromKind: fromKindOf(newField),
         _from: null,
         _severity: finding.severity || null,
         _origin: "runBundleIntegrityCheck",
       };
+    }
     case "FE_CONCEPT_NOT_OBJECT":
       return {
         class: CLASS.FE_CONCEPT_NOT_OBJECT,
@@ -181,13 +230,22 @@ function fileFromField(field) {
 
 // ─── set-membership key ─────────────────────────────────────────────
 //
-// DANGLING_REF: key on class|locator ONLY (file excluded — the graph detector
-//   can't supply a file, so including it would manufacture false LOST).
+// DANGLING_REF: key on class|fromKind|field|to (the `to` uuid is `locator`).
+//   Includes the edge SOURCE so a covered edge and a graph-only edge to the SAME
+//   missing uuid stay distinct members — without this a graph-only LOST is masked
+//   by a co-referenced covered edge (the false-green bug). `file` is still
+//   excluded (the graph detector can't supply it → would manufacture false LOST);
+//   `field` carries the entity prefix, so source disambiguation is intact. The
+//   key is built from the same fields on every surface (fromKind+field derived
+//   identically), so a COVERED edge matches OLD↔NEW and only a genuinely
+//   graph-only edge shows as LOST.
 // NEW-only classes: key on class|file|locator (both are file-anchored; we want
 //   each distinct site to be its own member).
 function keyOf(triple) {
   if (triple.class === CLASS.DANGLING_REF) {
-    return `${triple.class}|${triple.locator}`;
+    const fromKind = triple._fromKind != null ? triple._fromKind : fromKindOf(triple._field);
+    const field = triple._field != null ? triple._field : "";
+    return `${triple.class}|${fromKind}|${field}|${triple.locator}`;
   }
   return `${triple.class}|${triple.file}|${triple.locator}`;
 }
@@ -225,6 +283,7 @@ function assertNoValidatorCodes(rawFindings, label) {
 module.exports = {
   CLASS,
   VALIDATOR_CODE_RE,
+  fromKindOf,
   fromGraphIssue,
   fromFileMapIssue,
   fromNewFinding,

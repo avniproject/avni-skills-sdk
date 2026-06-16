@@ -28,9 +28,33 @@ const {
 const AVNI_SKILLS_PATH = process.env.AVNI_SKILLS_PATH ||
   path.resolve(__dirname, "..", "..", "..", "..", "avni-skills");
 const SPEC = path.join(AVNI_SKILLS_PATH, "srs-bundle-generator", "spec");
+const GRAPH_JS = path.join(SPEC, "graph.js");
 
-// Brain graph detector (CommonJS).
-const { buildBundleGraph, integrityCheck } = require(path.join(SPEC, "graph.js"));
+// Brain graph detector (CommonJS). FAIL LOUD if it cannot load: a half-loaded
+// OLD surface would silently shrink (graph.integrityCheck contributes nothing)
+// and could pass as parity while actually losing every graph-only detection.
+// This is NOT a "skip when no corpus" condition — that is handled separately in
+// run.cjs (a missing $SDK_CORPUS_PATH exits 0). A missing/broken brain is a hard
+// error: the gate cannot be trusted without it.
+let buildBundleGraph, integrityCheck;
+try {
+  if (!fs.existsSync(GRAPH_JS)) {
+    throw new Error(`brain graph.js not found at ${GRAPH_JS}`);
+  }
+  ({ buildBundleGraph, integrityCheck } = require(GRAPH_JS));
+  if (typeof buildBundleGraph !== "function" || typeof integrityCheck !== "function") {
+    throw new Error(
+      `brain graph.js at ${GRAPH_JS} did not export buildBundleGraph + integrityCheck functions`,
+    );
+  }
+} catch (e) {
+  throw new Error(
+    `corpus:parity gate cannot load the avni-skills brain (graph.integrityCheck detector). ` +
+    `Without it the OLD detection surface is incomplete and the gate would FALSELY pass. ` +
+    `Set AVNI_SKILLS_PATH to a valid avni-skills checkout (tried: ${AVNI_SKILLS_PATH}). ` +
+    `Underlying error: ${e.message}`,
+  );
+}
 
 // SDK detectors are ESM — memoise the dynamic imports.
 let _esm = null;
