@@ -6,22 +6,35 @@
 
 The epic consolidates three deterministic data-integrity detectors into one
 (`bundle_integrity_check`, in `src/agents/bundle-mcp-server.js`) so the two OLD
-ones can be deleted. Before deleting `checkIntegrityOnFileMap`, we must **prove**
-the new detector loses nothing the old ones caught — over the **real org corpus**,
-not just synthetic fixtures.
+ones can be deleted. Before deleting `checkIntegrityOnFileMap`, we proved the new
+detector loses nothing the old ones caught — over the **real org corpus**, not
+just synthetic fixtures.
 
 This gate is the proof. It is **pure deterministic detection — zero LLM calls,
 zero API spend.** As of SDK #15 / brain #3 the proof is **GREEN and meaningful**:
 NEW drives its FK half off the same yaml-driven brain graph as the OLD graph
 detector, so it covers the formerly graph-only kinds — Σ LOST = 0 over the real
-17-org corpus is now a genuine **superset proof**, and the precondition for
-deleting `checkIntegrityOnFileMap` is **SATISFIED** (see "Coverage status" below).
+17-org corpus is a genuine **superset proof**, and the precondition for deleting
+`checkIntegrityOnFileMap` was **SATISFIED** (see "Coverage status" below).
+
+**As of story #10 (SDK #15), `checkIntegrityOnFileMap` is DELETED from
+production** (`src/pipeline.js`) — its last production consumer (`applySpec`) was
+migrated to the brain graph too. So the gate can no longer import the OLD-a
+detector from `src/pipeline.js`. Instead it compares against a **FROZEN, verbatim
+copy** of the deleted checker in `tests/corpus/parity/legacy-checkers.cjs`
+(byte-identical to `src/pipeline.js` @ `3d28deb`, the pre-deletion tip). This
+makes the gate **permanently** prove
+`bundle_integrity_check (NEW) ⊇ (frozen legacy checkIntegrityOnFileMap ∪ graph.integrityCheck) (OLD)`
+even though the legacy checker no longer ships in the product — guarding forever
+against any future regression of the NEW detector below the original
+deterministic coverage. The frozen file is a baseline: it is NEVER updated to
+"track" new behavior; if NEW ever shrinks below it, the gate goes red on purpose.
 
 The three detectors:
 
 | Role | Detector | Source | Shape |
 |------|----------|--------|-------|
-| OLD-a | `checkIntegrityOnFileMap(fileMap)` | `src/pipeline.js` | file-map based; `{severity,code:"DANGLING_REF",message,from,to,field}` |
+| OLD-a | `checkIntegrityOnFileMap(fileMap)` | `tests/corpus/parity/legacy-checkers.cjs` (**FROZEN** verbatim copy of the deleted `src/pipeline.js` checker) | file-map based; `{severity,code:"DANGLING_REF",message,from,to,field}` |
 | OLD-b | `buildBundleGraph(dir)` + `integrityCheck(graph)` | `$AVNI_SKILLS_PATH/srs-bundle-generator/spec/graph.js` | directory based; `{ok,issues:[{severity,code:"DANGLING_REF",message,edge}]}` |
 | NEW | `runBundleIntegrityCheck(dir)` | `src/agents/bundle-mcp-server.js` | directory based; `{ok,findings:[{code,severity,file,locator,message}]}` |
 
@@ -187,18 +200,23 @@ non-zero-exit condition). This proves the gate WOULD catch a future regression w
 `bundle_integrity_check` loses a detection — independent of the (now-closed)
 graph-only gap.
 
-### Precondition for deleting `checkIntegrityOnFileMap` — SATISFIED
+### Deletion of `checkIntegrityOnFileMap` — DONE (story #10)
 
 Deleting `checkIntegrityOnFileMap` (relying on `bundle_integrity_check` as the sole
 integrity detector) was gated on the NEW surface actually covering the graph-only
-edge kinds. **That precondition is now SATISFIED:** SDK #15 ported the FK half onto
-the yaml-driven brain graph, and this gate proves Σ LOST = 0 over the real 17-org
-corpus as a meaningful superset proof (not a data accident). The deletion is now
-**safe and ready for story #10**.
+edge kinds. **That precondition was SATISFIED:** SDK #15 ported the FK half onto
+the yaml-driven brain graph, and this gate proved Σ LOST = 0 over the real 17-org
+corpus as a meaningful superset proof (not a data accident).
 
-`checkIntegrityOnFileMap` is still present in `src/pipeline.js` pending that explicit
-deletion step. Keeping this gate wired into CI permanently remains good practice so
-the consolidation can never silently regress on a future corpus.
+**The deletion is now complete.** `checkIntegrityOnFileMap` (and its private
+`asArray` helper) has been removed from `src/pipeline.js`, and its last production
+consumer — `applySpec` — was migrated to derive integrity from the brain graph
+(same brain-resolution + file-map pattern `bundle_integrity_check` uses). To keep
+this gate honest after the deletion, OLD-a now compares against a **FROZEN verbatim
+copy** of the deleted checker (`tests/corpus/parity/legacy-checkers.cjs`), so the
+superset proof survives forever. Keeping this gate wired into CI permanently
+remains good practice so the consolidation can never silently regress on a future
+corpus — the divergence guard above ensures it retains teeth.
 
 ### Fail-loud on a missing brain
 
@@ -212,6 +230,7 @@ present corpus with a missing/broken brain is a **hard error** (exit 2).
 
 | File | Role |
 |------|------|
+| `legacy-checkers.cjs` | **FROZEN** verbatim copy of the deleted `src/pipeline.js` `checkIntegrityOnFileMap` (story #10). The OLD-a baseline. Do NOT edit the logic — it is a frozen reference, not living code |
 | `normalize.cjs` | code→class mapping, canonical triple, set key, diff |
 | `detectors.cjs` | loads all three detectors; computes OLD / NEW surfaces per org |
 | `snapshot.cjs` | freezes OLD surface → `baseline-detections.json` (committed witness) |

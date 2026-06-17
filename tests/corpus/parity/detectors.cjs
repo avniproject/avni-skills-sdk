@@ -2,16 +2,27 @@
 // surfaces for a single bundle directory, normalised to canonical triples.
 //
 // Three detectors:
-//   OLD-a  src/pipeline.js              checkIntegrityOnFileMap(fileMap)   (ESM)
+//   OLD-a  ./legacy-checkers.cjs        checkIntegrityOnFileMap(fileMap)   (FROZEN CJS)
 //   OLD-b  $AVNI_SKILLS_PATH/.../graph  buildBundleGraph(dir)+integrityCheck (CJS)
 //   NEW    src/agents/bundle-mcp-server runBundleIntegrityCheck(dir)        (ESM)
 //
 //   OLD detection surface = normalize(OLD-a) ∪ normalize(OLD-b)
 //   NEW detection surface = normalize(NEW)
 //
+// OLD-a CHANGE (story #10): `checkIntegrityOnFileMap` was DELETED from
+// production (`src/pipeline.js`) in avni-skills-sdk#15 — its coverage is a proven
+// subset of the brain graph. The gate must keep comparing against it, so the OLD
+// file-map detector now comes from the FROZEN VERBATIM copy in
+// `./legacy-checkers.cjs` (byte-identical to src/pipeline.js @ 3d28deb, the
+// pre-deletion tip) rather than from `src/pipeline.js` (which no longer exports
+// it). This makes the gate permanently prove
+//     bundle_integrity_check (NEW) ⊇ (frozen legacy checkIntegrityOnFileMap ∪ graph.integrityCheck) (OLD)
+// even though the legacy checker no longer ships in the product.
+//
 // The SDK's src/*.js are ESM ("type":"module"); these test files are CJS (.cjs).
-// We bridge with dynamic import() behind a tiny memoised loader. The brain's
-// graph.js is CommonJS and loads via require().
+// We bridge the remaining ESM detector (NEW) with dynamic import() behind a tiny
+// memoised loader. The brain's graph.js and the frozen legacy checker are both
+// CommonJS and load via require().
 
 "use strict";
 
@@ -24,6 +35,9 @@ const {
   toSet,
   assertNoValidatorCodes,
 } = require("./normalize.cjs");
+
+// OLD-a: FROZEN verbatim copy of the deleted src/pipeline.js checker (story #10).
+const { checkIntegrityOnFileMap } = require("./legacy-checkers.cjs");
 
 const AVNI_SKILLS_PATH = process.env.AVNI_SKILLS_PATH ||
   path.resolve(__dirname, "..", "..", "..", "..", "avni-skills");
@@ -56,26 +70,26 @@ try {
   );
 }
 
-// SDK detectors are ESM — memoise the dynamic imports.
+// The NEW detector is ESM (src/agents/bundle-mcp-server.js) — memoise the
+// dynamic import. The OLD file-map detector (checkIntegrityOnFileMap) is NO
+// LONGER imported here: it was deleted from src/pipeline.js in #15 and now lives
+// as the frozen CJS copy required at module top (./legacy-checkers.cjs).
 let _esm = null;
 async function loadEsm() {
   if (_esm) return _esm;
   const mcp = await import(
     path.resolve(__dirname, "..", "..", "..", "src", "agents", "bundle-mcp-server.js")
   );
-  const pipeline = await import(
-    path.resolve(__dirname, "..", "..", "..", "src", "pipeline.js")
-  );
   _esm = {
     runBundleIntegrityCheck: mcp.runBundleIntegrityCheck,
-    checkIntegrityOnFileMap: pipeline.checkIntegrityOnFileMap,
   };
   return _esm;
 }
 
-// Read a bundle directory into the file-map shape checkIntegrityOnFileMap wants.
-// (Mirrors readBundleFileMap in bundle-mcp-server.js — kept local so the OLD
-// file-map detector can be exercised directly without going through the NEW tool.)
+// Read a bundle directory into the file-map shape the frozen
+// checkIntegrityOnFileMap wants. (Mirrors readBundleFileMap in
+// bundle-mcp-server.js — kept local so the OLD file-map detector can be
+// exercised directly without going through the NEW tool.)
 function readBundleFileMap(bundleDir) {
   const files = {};
   const topLevel = [
@@ -111,11 +125,12 @@ function readBundleFileMap(bundleDir) {
 /**
  * OLD detection surface for a bundle dir = normalize(checkIntegrityOnFileMap)
  * ∪ normalize(graph.integrityCheck). Returns { triples, set, raw }.
+ *
+ * OLD-a (checkIntegrityOnFileMap) is the FROZEN copy from ./legacy-checkers.cjs
+ * (deleted from production in #15) — required at module top, not via loadEsm.
  */
 async function oldSurface(bundleDir) {
-  const { checkIntegrityOnFileMap } = await loadEsm();
-
-  // OLD-a: file-map detector
+  // OLD-a: file-map detector (frozen legacy copy, required at module top)
   const fileMap = readBundleFileMap(bundleDir);
   const fmRes = checkIntegrityOnFileMap(fileMap);
   assertNoValidatorCodes(fmRes.issues, "checkIntegrityOnFileMap");
