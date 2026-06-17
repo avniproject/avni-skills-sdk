@@ -60,11 +60,18 @@
 //
 // CODE → CLASS MAPPING (documented in README.md):
 //
-//   OLD  pipeline.checkIntegrityOnFileMap : code "DANGLING_REF"            → DANGLING_REF
-//   OLD  graph.integrityCheck             : code "DANGLING_REF" (edge.*)   → DANGLING_REF
-//   NEW  runBundleIntegrityCheck          : code "DANGLING_REF"            → DANGLING_REF
-//   NEW  runBundleIntegrityCheck          : code "FE_CONCEPT_NOT_OBJECT"   → FE_CONCEPT_NOT_OBJECT (NEW-only → GAINED)
-//   NEW  runBundleIntegrityCheck          : code "ALT_INVALID_NAME"        → ALT_INVALID_NAME      (NEW-only → GAINED)
+//   OLD  pipeline.checkIntegrityOnFileMap : code "DANGLING_REF"                       → DANGLING_REF
+//   OLD  graph.integrityCheck             : "MISSING_REQUIRED_REF"|"DANGLING_REF"     → DANGLING_REF (reads edge.*)
+//   NEW  runBundleIntegrityCheck          : "MISSING_REQUIRED_REF"|"DANGLING_REF"     → DANGLING_REF
+//   NEW  runBundleIntegrityCheck          : code "FE_CONCEPT_NOT_OBJECT"              → FE_CONCEPT_NOT_OBJECT (NEW-only → GAINED)
+//   NEW  runBundleIntegrityCheck          : code "ALT_INVALID_NAME"                   → ALT_INVALID_NAME      (NEW-only → GAINED)
+//
+// Since SDK #15 / brain #3 the NEW detector and the OLD graph detector both run
+// the SAME yaml-driven `integrityCheck`, which splits a dangling edge into
+// MISSING_REQUIRED_REF (required edge → error) vs DANGLING_REF (optional → warning).
+// BOTH codes collapse to the single canonical class DANGLING_REF here (the
+// required/optional split is severity, not class), so the now-COVERED graph-only
+// kinds match OLD↔NEW and are no longer LOST. This is the gap-closure from #14.
 //
 // The 28-code validator (`bundle_validator.js`) is OUT OF SCOPE — it is KEPT, not
 // consolidated. None of these three detectors emit validator codes, so nothing to
@@ -158,13 +165,25 @@ function fromNewFinding(finding) {
     );
   }
   switch (finding.code) {
+    // Both yaml-driven dangling-edge codes collapse to the SAME canonical
+    // DANGLING_REF class. Since SDK #15 the NEW detector drives its FK half off
+    // the brain's yaml graph (the SAME integrityCheck the OLD graph surface
+    // uses), so a dangling REQUIRED edge surfaces as MISSING_REQUIRED_REF (error)
+    // and a dangling OPTIONAL edge as DANGLING_REF (warning). The OLD graph
+    // surface emits the identical two codes (fromGraphIssue maps BOTH to
+    // DANGLING_REF regardless of code). Mapping MISSING_REQUIRED_REF here too is
+    // what keeps the comparison symmetric: without it the new required-edge
+    // finding would hit `default` and THROW, or (if silently dropped) manufacture
+    // false LOST/GAINED. The required/optional distinction is severity, not class.
+    case "MISSING_REQUIRED_REF":
     case "DANGLING_REF": {
-      // The NEW detector's DANGLING_REF locator is "from → to"; extract the
-      // referenced uuid (the `to`) so it keys identically to the OLD detectors.
-      // The NEW finding carries the edge `field` in its `file` slot (see
-      // bundle-mcp-server.js: `file: issue.field`), so we recover the same
-      // canonical _field / _fromKind the OLD surfaces expose — this is what makes
-      // a COVERED dangling edge match between OLD and NEW (no false LOST).
+      // The NEW detector's locator is "<fromKind> \"<name>\" .<field> → <to>
+      // (not found)"; extract the referenced uuid (the `to`) so it keys
+      // identically to the OLD detectors, which expose a bare `to`. The NEW
+      // finding carries the edge `field` in its `file` slot (see
+      // bundle-mcp-server.js: `file: e.field`), so we recover the same canonical
+      // _field / _fromKind the OLD surfaces expose — this is what makes a COVERED
+      // dangling edge match between OLD and NEW (no false LOST).
       const newField = finding.file && finding.file !== "(bundle)" ? finding.file : null;
       return {
         class: CLASS.DANGLING_REF,
@@ -201,15 +220,21 @@ function fromNewFinding(finding) {
   }
 }
 
-// The NEW detector packs the dangling reference as locator = "<from> → <to>"
-// (built in bundle-mcp-server.js from issue.from/issue.to). Extract the `to`
-// uuid so it keys identically to the OLD file-map / graph detectors. If the
-// arrow form isn't present, fall back to the whole locator string.
+// The NEW detector packs the dangling reference as
+//   locator = '<fromKind> "<name>" .<field> → <to> (not found)'
+// (built in bundle-mcp-server.js from the brain graph edge). Extract the bare
+// `to` uuid so it keys identically to the OLD file-map / graph detectors, which
+// expose a clean `to`. We take the text AFTER the arrow and strip the trailing
+// " (not found)" annotation the brain appends — keying on the polluted string
+// would manufacture false LOST/GAINED against the OLD surfaces' bare `to`.
+// If the arrow form isn't present, fall back to the whole (trimmed) string.
 function danglingToUuid(finding) {
   const loc = String(finding.locator || "");
-  const arrow = loc.split("→");
-  if (arrow.length === 2) return arrow[1].trim();
-  return loc.trim();
+  const arrowIdx = loc.indexOf("→");
+  let to = arrowIdx >= 0 ? loc.slice(arrowIdx + "→".length) : loc;
+  // Drop a trailing parenthetical annotation, e.g. " (not found)".
+  to = to.replace(/\s*\([^)]*\)\s*$/, "");
+  return to.trim();
 }
 
 // Best-effort file attribution from a checkIntegrityOnFileMap `field` string.

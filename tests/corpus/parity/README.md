@@ -11,7 +11,11 @@ the new detector loses nothing the old ones caught — over the **real org corpu
 not just synthetic fixtures.
 
 This gate is the proof. It is **pure deterministic detection — zero LLM calls,
-zero API spend.**
+zero API spend.** As of SDK #15 / brain #3 the proof is **GREEN and meaningful**:
+NEW drives its FK half off the same yaml-driven brain graph as the OLD graph
+detector, so it covers the formerly graph-only kinds — Σ LOST = 0 over the real
+17-org corpus is now a genuine **superset proof**, and the precondition for
+deleting `checkIntegrityOnFileMap` is **SATISFIED** (see "Coverage status" below).
 
 The three detectors:
 
@@ -31,9 +35,13 @@ GAINED = NEW \ OLD   → logged, NEVER blocks    (expect the 2 new checks here)
 PARITY PASS  iff  Σ_orgs |LOST| == 0.
 ```
 
-`bundle_integrity_check` **reuses** `checkIntegrityOnFileMap` verbatim for its FK
-half, so OLD-a ⊆ NEW by construction. The meaningful diff is the **OLD-b
-(graph.integrityCheck) half** — that's where a real gap can hide.
+Since SDK #15 / brain #3, `bundle_integrity_check` drives its FK / dangling-ref
+half off the **same yaml-driven brain graph** the OLD graph detector uses
+(`buildBundleGraph` + `integrityCheck`), so it now covers BOTH the file-map kinds
+AND the edge kinds that were previously **graph-only**. OLD-a ⊆ NEW and OLD-b ⊆ NEW
+by construction. The gap that used to hide in the OLD-b (graph) half is **CLOSED**
+— and this gate now proves NEW is a genuine superset of OLD over the real corpus,
+which is the precondition for deleting `checkIntegrityOnFileMap`.
 
 ## Run it
 
@@ -67,9 +75,11 @@ by the set key (`normalize.cjs`):
   key** — keying on it would mark every graph dangling-ref "lost" vs the file-map
   detector that *does* know the file. False LOST avoided.
 - **`locator`** — the **referenced (dangling) UUID** — the `to` uuid — NEVER
-  message text or array index. Both file-map and graph detectors expose the
-  missing uuid as `to` (the NEW detector packs it as `"<from> → <to>"`, from which
-  we extract `to`).
+  message text or array index. The file-map and graph detectors expose the missing
+  uuid as a bare `to`; the NEW detector packs it as
+  `'<fromKind> "<name>" .<field> → <to> (not found)'`, from which `normalize.cjs`
+  extracts the bare `to` (text after the arrow, trailing ` (not found)` stripped)
+  so it keys identically to the OLD surfaces.
 - **`_field` + `_fromKind`** — the edge **SOURCE**. `_field` is the detector-spelled
   field (e.g. `formMapping.subjectTypeUUID`, `encounterType.conceptUuid`), which is
   **identical across all three surfaces** for a given edge. `_fromKind` is derived
@@ -84,10 +94,19 @@ by the set key (`normalize.cjs`):
 | Detector | Raw code / signal | → `class` | Appears in |
 |----------|-------------------|-----------|------------|
 | `checkIntegrityOnFileMap` | `DANGLING_REF` | `DANGLING_REF` | OLD |
-| `graph.integrityCheck` | `DANGLING_REF` (any `edge.kind`: mappingForm, mappingSubjectType, mappingProgram, mappingEncounterType, mappingTaskType, conceptAnswer, formElementConcept, decisionConcept, displayConcept, operationalMirror, hierarchy, groupRole) | `DANGLING_REF` | OLD |
-| `runBundleIntegrityCheck` | `DANGLING_REF` (reused from `checkIntegrityOnFileMap`) | `DANGLING_REF` | NEW |
+| `graph.integrityCheck` | `MISSING_REQUIRED_REF` (required edge → error) **or** `DANGLING_REF` (optional → warning), any edge kind: mappingForm, mappingSubjectType, mappingProgram, mappingEncounterType, mappingTaskType, conceptAnswer, formElementConcept, decisionConcept, displayConcept, operationalMirror, hierarchy, groupRole | `DANGLING_REF` | OLD |
+| `runBundleIntegrityCheck` | `MISSING_REQUIRED_REF` **or** `DANGLING_REF` (same yaml-driven `integrityCheck` as OLD-b) | `DANGLING_REF` | NEW |
 | `runBundleIntegrityCheck` | `FE_CONCEPT_NOT_OBJECT` | `FE_CONCEPT_NOT_OBJECT` *(NEW class)* | NEW only → GAINED |
 | `runBundleIntegrityCheck` | `ALT_INVALID_NAME` | `ALT_INVALID_NAME` *(NEW class)* | NEW only → GAINED |
+
+Since SDK #15 / brain #3 the yaml-driven `integrityCheck` splits a dangling edge
+into `MISSING_REQUIRED_REF` (required edge, error) vs `DANGLING_REF` (optional,
+warning). **Both** OLD-b and NEW emit this pair, and **both codes collapse to the
+single canonical class `DANGLING_REF`** here — the required/optional split is
+*severity*, not class. `normalize.cjs` maps `MISSING_REQUIRED_REF` and
+`DANGLING_REF` identically and extracts the bare `to` uuid from the NEW detector's
+`"<fromKind> \"<name>\" .<field> → <to> (not found)"` locator, so a now-covered
+edge keys IDENTICALLY on both surfaces (no false LOST/GAINED).
 
 The two NEW classes can ONLY appear in GAINED, never LOST — they have no OLD
 counterpart by definition.
@@ -98,20 +117,23 @@ counterpart by definition.
   Includes the edge **SOURCE** (`fromKind`+`field`), not just the `to` uuid.
   `file` is still excluded (graph can't supply it). Built from the **same logical
   fields on every surface** — `field` is the symmetric anchor, `fromKind` is
-  derived identically from it — so a COVERED dangling edge matches OLD↔NEW (not
-  LOST) and only a genuinely graph-only edge shows as LOST.
+  derived identically from it — so each dangling edge matches its OWN OLD↔NEW
+  counterpart, and two distinct edges to the same missing uuid stay distinct
+  members.
 - NEW-only classes → key is `class|file|locator` (both file-anchored; each
   distinct site is its own member).
 
-> **Why `to`-only was a FALSE-GREEN bug.** One missing uuid can be referenced by
-> BOTH a COVERED edge (e.g. `formMapping.subjectTypeUUID`, re-checked by the NEW
-> file-map surface) AND a GRAPH-ONLY edge (e.g. `encounterType.conceptUuid`, only
-> the graph detector walks it). Keyed on the `to` uuid alone, both collapse to one
-> member `DANGLING_REF|<uuid>`; the NEW surface satisfies it via the covered edge,
-> so `OLD\NEW` is empty and the lost graph-only coverage is **masked** — the gate
-> passes when it should fail. Including the edge source in the key keeps the two
-> edges distinct, so the graph-only loss surfaces as LOST. Pinned by the committed
-> RED tests `2b` (isolated) and `2c` (co-referenced) in `parity-gate.test.cjs`.
+> **Why the key includes the edge source (not just `to`).** One missing uuid can be
+> referenced by BOTH a covered edge (e.g. `formMapping.subjectTypeUUID`) AND a
+> formerly-graph-only edge (e.g. `encounterType.conceptUuid`). Keyed on the `to`
+> uuid alone, both would collapse to one member `DANGLING_REF|<uuid>` — so a single
+> NEW finding could mask whether the OTHER edge is genuinely matched. Now that NEW
+> covers both kinds the gate is green either way, but keeping the two edges as
+> DISTINCT members makes the match HONEST and per-edge: each edge must be satisfied
+> on its own, so the gate cannot be fooled by a key collapse if a future regression
+> drops one edge but not the other. This per-edge distinctness is pinned by the
+> co-referenced gap-closure test `2c`, and the gate's general loss-detection power
+> by the synthetic divergence guard `2d` (see "Coverage status" below).
 
 ## SCOPE — what is NOT here
 
@@ -123,10 +145,10 @@ comparison. The runner prints a confirming log line each run.
 
 This gate is ONLY about the integrity/graph detectors being deleted/merged.
 
-## Known coverage observation (the gate's reason to exist)
+## Coverage status — the graph-only gap is CLOSED
 
-`graph.integrityCheck` walks several edge kinds that
-`checkIntegrityOnFileMap`/`bundle_integrity_check` do **not**:
+`graph.integrityCheck` walks several edge kinds that the OLD `checkIntegrityOnFileMap`
+did **not** — these were the "graph-only" kinds:
 
 - `encounterType.conceptUuid` (display concept)
 - `form.decisionConcepts[].uuid`
@@ -134,36 +156,49 @@ This gate is ONLY about the integrity/graph detectors being deleted/merged.
 - `groupRoles.json` → `groupSubjectTypeUUID` / `memberSubjectTypeUUID`
 - `formMapping.taskTypeUUID`
 
-On the **current real corpus none of these dangle**, so parity holds (Σ LOST = 0).
-But if a future bundle has a dangling ref of one of these kinds, **the graph
-detector would catch it and the NEW detector would not — and THIS GATE WOULD GO
-RED**, correctly blocking the deletion of `checkIntegrityOnFileMap` until the gap
-is closed. The gate is verified to fail on exactly this case, in two committed
-RED tests:
+**Since SDK #15 / brain #3, `bundle_integrity_check` drives its FK half off the
+SAME yaml-driven brain graph (`buildBundleGraph` + `integrityCheck`), so it now
+COVERS all of these kinds too.** A dangling ref of any of them is detected by the
+NEW surface identically to the OLD graph surface — the graph-only coverage gap is
+**CLOSED**, proven a strict superset (9/9, zero loss) by SDK #15. This gate is now
+a **MEANINGFUL superset proof**, not a trivially-green check: it proves NEW loses
+nothing OLD catches, over the real corpus.
 
-- **`2b` (isolated):** a synthetic `encounterType.conceptUuid → <missing>`
-  produces `LOST≥1` (exit 1).
+The gap-closure is pinned by two committed **coverage-now-closed** regression tests
+in `parity-gate.test.cjs` (formerly RED `LOST≥1` tests, now flipped honestly):
+
+- **`2b` (isolated):** a synthetic dangling `encounterType.conceptUuid → <missing>`
+  is now detected by BOTH OLD (graph) and NEW (yaml-driven graph) → `LOST = 0`.
 - **`2c` (co-referenced):** the SAME missing uuid referenced by BOTH a covered
-  edge (`formMapping.subjectTypeUUID`) AND a graph-only edge
-  (`encounterType.conceptUuid`) still produces `LOST≥1`, with the covered edge NOT
-  falsely lost. This is the case the old `class|locator` key got WRONG (false
-  green) — the dedup key now includes the edge source (`class|fromKind|field|to`).
+  edge (`formMapping.subjectTypeUUID`) AND the formerly-graph-only edge
+  (`encounterType.conceptUuid`) → both are covered by NEW → `LOST = 0`, AND the two
+  edges remain DISTINCT set members (the dedup key includes the edge source,
+  `class|fromKind|field|to`), so this is an honest per-edge match and not a key
+  collapse that could mask a loss.
 
-### Precondition for deleting `checkIntegrityOnFileMap` — HARD, not a suggestion
+### Divergence guard — the gate still has teeth
 
-Deleting `checkIntegrityOnFileMap` (or otherwise relying on `bundle_integrity_check`
-as the sole integrity detector) is **gated on ONE of**:
+Because NEW is now a genuine superset, **real data can no longer produce LOST**, so
+every honest run is green. To stop the gate rotting into an always-green no-op, a
+**synthetic divergence guard** (`2d` in `parity-gate.test.cjs`) feeds the gate's
+real diff logic (`run.cjs` `runOrg`) a deliberately-crippled NEW surface that drops
+a finding OLD legitimately has, and asserts the gate reports `LOST ≥ 1` (the
+non-zero-exit condition). This proves the gate WOULD catch a future regression where
+`bundle_integrity_check` loses a detection — independent of the (now-closed)
+graph-only gap.
 
-1. **Port the graph-only edge kinds** (`encounterType.conceptUuid`,
-   `form.decisionConcepts[].uuid`, `addressLevelType.parentUuid`,
-   `groupRoles.*SubjectTypeUUID`, `formMapping.taskTypeUUID`) into
-   `bundle_integrity_check` so the NEW surface actually covers them; **OR**
-2. **Keep this gate wired into CI permanently**, so the consolidation can never
-   silently regress on a future corpus.
+### Precondition for deleting `checkIntegrityOnFileMap` — SATISFIED
 
-This is a HARD precondition. Do NOT delete the file on the strength of a single
-green run — Σ LOST = 0 today only because nothing of those kinds dangles on the
-current corpus, which is a property of the data, not of the NEW detector.
+Deleting `checkIntegrityOnFileMap` (relying on `bundle_integrity_check` as the sole
+integrity detector) was gated on the NEW surface actually covering the graph-only
+edge kinds. **That precondition is now SATISFIED:** SDK #15 ported the FK half onto
+the yaml-driven brain graph, and this gate proves Σ LOST = 0 over the real 17-org
+corpus as a meaningful superset proof (not a data accident). The deletion is now
+**safe and ready for story #10**.
+
+`checkIntegrityOnFileMap` is still present in `src/pipeline.js` pending that explicit
+deletion step. Keeping this gate wired into CI permanently remains good practice so
+the consolidation can never silently regress on a future corpus.
 
 ### Fail-loud on a missing brain
 
@@ -181,7 +216,7 @@ present corpus with a missing/broken brain is a **hard error** (exit 2).
 | `detectors.cjs` | loads all three detectors; computes OLD / NEW surfaces per org |
 | `snapshot.cjs` | freezes OLD surface → `baseline-detections.json` (committed witness) |
 | `run.cjs` | the gate (`npm run corpus:parity`) — LOST/GAINED, verdict, exit code |
-| `parity-gate.test.cjs` | synthetic unit test of the gate logic (runs in `npm test`) |
+| `parity-gate.test.cjs` | synthetic unit tests of the gate logic (runs in `npm test`): always-green dangling/flattened/clean cases, the two coverage-now-closed gap tests (`2b`/`2c`), and the divergence guard (`2d`) that pins the gate's loss-detection power |
 | `baseline-detections.json` | committed OLD-surface witness (empty per org on current corpus) |
 | `gained.json` | NEW\OLD, regenerated each run (informational) |
 | `lost.json` | OLD\NEW, written ONLY when the gate fails |
