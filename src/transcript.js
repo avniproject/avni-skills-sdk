@@ -11,7 +11,10 @@
 //   tool_use           — agent called a tool (Edit, Read, Bash, workflow)
 //   tool_result        — tool returned (success or error)
 //   turn_commit        — git commit landed (filesystem turn boundary)
-//   workflow_invoke    — CLI :rename / :add-form / :add-subject-type fired
+//   workflow_invoke    — a deterministic workflow fired (the :rename / :add-form /
+//                        :add-subject-type REPL commands that emitted these were
+//                        retired in story #11; the kind survives so OLD transcripts
+//                        still replay — do not repurpose the string)
 //   system             — meta events (resume, model switch, wallet reset)
 //
 // On resume, callers replay events to rebuild user-visible context.

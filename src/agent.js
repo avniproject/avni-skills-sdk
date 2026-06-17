@@ -11,7 +11,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { ensureAgentWorkspace } from "./workspace.js";
 import { listSkills, listBundleAuthoringSkills } from "./skills.js";
-import { createBundleMcpServer, BUNDLE_TOOL_NAMES } from "./agents/bundle-mcp-server.js";
+import { createBundleMcpServer } from "./agents/bundle-mcp-server.js";
 
 // Bash commands the agent is forbidden from running. The server is the sole
 // committer (it runs `git add -A && git commit` after each turn ends), so
@@ -68,8 +68,23 @@ function checkForbiddenBash(command) {
   return null;
 }
 
-// Hard rules — agents that produce bundles MUST follow these. Distilled from
-// real failure modes observed against multi-org SRS runs:
+// Hard rules — LEGACY prose ruleset, retired as the default in story #11.
+//
+// As of #11 these are NO LONGER the default agent rules. The slim
+// BUNDLE_OUTCOME_CONTRACT below is the active block; this 1,181-word prose
+// is kept ONLY behind the SDK_LEGACY_RULES=1 backout flag (Himesh-style
+// reversible escape hatch — the prose equivalent of keeping default.realm.bak).
+// It is safe to demote because every invariant these rules described is now
+// enforced by a deterministic GATE, not by prose the model may ignore:
+//   • formElement.concept shape + addressLevelType name chars → bundle_integrity_check
+//       (FE_CONCEPT_NOT_OBJECT + ALT_INVALID_NAME)
+//   • dangling UUID refs / FK coherence → the yaml-driven bundle graph + validator
+//   • C3/D1 concept-name collisions → the concept-collision interceptor
+//   • no agent-initiated git writes → PreToolUse bash hook + post-turn detector
+//   • out-of-scope mutations → post-turn detector + path-jail
+// See CLAUDE.md §8 (code-enforced rules vs prompt rules) for the full matrix.
+//
+// Distilled from real failure modes observed against multi-org SRS runs:
 //   • agents inventing UUIDs that aren't v4-shaped, then references break
 //   • agents adding a form-element with a concept UUID that's never added
 //     to concepts.json (F5 errors)
@@ -77,8 +92,6 @@ function checkForbiddenBash(command) {
 //     consulting the canonical PrivilegeType list (G2 errors)
 //   • agents creating a duplicate "Other" concept rather than reusing the
 //     existing one (C3/D1 errors)
-// Embedded into both DEFAULT_SYSTEM_PROMPT (for /v1/agent/query) and the
-// session-messages system prompt (for /v1/sessions/:id/messages).
 //
 // ENFORCEMENT MATRIX — read before trusting any rule below at face value.
 // Rules 1–9 are GUIDANCE: the model is asked to follow them, but nothing
@@ -151,17 +164,19 @@ export const BUNDLE_HARD_RULES = `HARD RULES — do NOT violate any of these. Th
 
 12. CURRENT VALIDATOR STATE is provided to you at the top of every turn. Trust it. If the user asks "what is the error" → quote the items listed verbatim. If the user asks "fix the error" → fix EXACTLY the errors listed; do NOT speculate about other issues you might find. If your prompt does NOT include a "CURRENT VALIDATOR STATE" section, run the validator yourself before answering.`;
 
-// SLIM OUTCOME CONTRACT — opt-in alternative to BUNDLE_HARD_RULES.
+// SLIM OUTCOME CONTRACT — the DEFAULT agent rules block as of story #11.
 //
-// Gated behind SDK_DISCOVERY_PROMPT=1 so it changes NOTHING by default (env
-// unset → the full hard rules above are used, byte-for-byte unchanged). Story
-// #11 makes the slim contract the DEFAULT; until then it exists ONLY so the
-// observe-only discovery harness (tests/discovery/) can measure how a model
-// reaches for tools when it is given OUTCOMES instead of procedures.
-//
+// This is now the active rules block injected into every agent system prompt.
 // It states the end-state the bundle must reach + the two server-only
 // invariants, and points at the avni-bundle-spec skill for the "how". It does
-// NOT enumerate procedures. ~210 words (vs the ~1,181-word hard rules).
+// NOT enumerate procedures. ~250 words (vs the ~1,181-word legacy hard rules).
+//
+// Backout: set SDK_LEGACY_RULES=1 to restore the full BUNDLE_HARD_RULES prose
+// (reversible escape hatch — see activeRulesBlock() below). The slim contract
+// is safe as the default because every invariant the prose protected is now
+// enforced by a deterministic gate (integrity check, yaml-driven graph,
+// concept-collision interceptor, PreToolUse bash hook + post-turn detector),
+// not by prose the model may ignore.
 export const BUNDLE_OUTCOME_CONTRACT = `OUTCOME CONTRACT — what a correct bundle must achieve. Consult the avni-bundle-spec skill for HOW; this contract states only the required end-state.
 
 The bundle you produce or edit MUST satisfy ALL of these, or the AVNI server rejects the whole upload:
@@ -182,20 +197,44 @@ The bundle you produce or edit MUST satisfy ALL of these, or the AVNI server rej
 
 HOW to satisfy these — entity shapes, the closed enum sets, the FK matrix, the review checklist — lives in the avni-bundle-spec skill. Consult it before authoring or editing. Answer the user's explicit request only; do not do opportunistic cleanup in the same turn.`;
 
-// Opt-in: SDK_DISCOVERY_PROMPT=1 swaps the full hard rules for the slim
-// outcome contract. DEFAULT (env unset) is the full hard rules — the discovery
-// flag exists ONLY for the observe-only discovery harness to measure tool-reach
-// under the slim prompt. Story #11 flips slim to the default.
-export function discoveryPromptEnabled() {
-  const v = process.env.SDK_DISCOVERY_PROMPT;
+// Backout flag (story #11): SDK_LEGACY_RULES=1 restores the full legacy
+// BUNDLE_HARD_RULES prose. DEFAULT (env unset) is the slim BUNDLE_OUTCOME_CONTRACT.
+// This is the reversible escape hatch Himesh asks for ("where's the backout?") —
+// the prose ruleset is demoted, not deleted, so a regression can be diagnosed
+// against the old behaviour without a code change.
+export function legacyRulesEnabled() {
+  const v = process.env.SDK_LEGACY_RULES;
   return v === "1" || v === "true";
 }
 
-// The rules block injected into the system prompt: hard rules by default, the
-// slim outcome contract when SDK_DISCOVERY_PROMPT is set. Evaluated per-call so
-// a test (or a single discovery scenario) can toggle the env without a reload.
+// Back-compat alias — the discovery harness (tests/discovery/run.cjs) used to
+// set SDK_DISCOVERY_PROMPT=1 to opt INTO the slim contract. Slim is now the
+// default, so the flag is a no-op for prompt selection; the predicate is kept
+// so any caller that still reads it doesn't break. Always reflects "is the slim
+// contract active", which is now true unless SDK_LEGACY_RULES is set.
+export function discoveryPromptEnabled() {
+  return !legacyRulesEnabled();
+}
+
+// The rules block injected into the system prompt: the slim outcome contract by
+// default, the full legacy hard rules iff SDK_LEGACY_RULES is set. Evaluated
+// per-call so a test can toggle the env without a module reload.
 export function activeRulesBlock() {
-  return discoveryPromptEnabled() ? BUNDLE_OUTCOME_CONTRACT : BUNDLE_HARD_RULES;
+  return legacyRulesEnabled() ? BUNDLE_HARD_RULES : BUNDLE_OUTCOME_CONTRACT;
+}
+
+// Default model for live agent dispatch. Replaces the deleted keyword router
+// (src/router.js) with a single explicit default — capable enough for the
+// slim/open-tools setup — that callers can override per-turn (the `model`
+// field in the /messages payload) or globally via the SDK_MODEL env var.
+//
+// TODO(#13): replace this fixed default with the evidence-based
+// model-qualification matrix (model-qualification.json) once P5 produces real
+// per-model numbers; until then a safe explicit default beats a keyword guess.
+export const DEFAULT_MODEL = "claude-sonnet-4-6";
+export function defaultModel() {
+  const v = process.env.SDK_MODEL;
+  return (typeof v === "string" && v.trim()) ? v.trim() : DEFAULT_MODEL;
 }
 
 function buildDefaultSystemPrompt() {
@@ -216,27 +255,6 @@ Be concise. Cite skill files when consulting them.
 
 ${activeRulesBlock()}`;
 }
-
-// Back-compat constant — the full default prompt with the hard rules. Existing
-// callers that import DEFAULT_SYSTEM_PROMPT keep the unchanged (hard-rules)
-// behaviour. The discovery flag is honoured by callers that build the prompt
-// via buildDefaultSystemPrompt() (the runAgent default below does).
-const DEFAULT_SYSTEM_PROMPT = `You are the Avni bundle authoring agent.
-
-Your job: take an Avni implementation problem (typically: "convert this SRS to a bundle and refine it"), use the skills available in this workspace to solve it, and explain what you did.
-
-The skills in this workspace are the canonical AVNI knowledge base, exposed at .claude/skills/<name>/SKILL.md. Always consult the relevant SKILL.md before writing code, generating bundles, or applying edits.
-
-Workflow:
-1. Identify which skill(s) apply (read SKILL.md files via the Skill tool, or directly)
-2. Use Read / Glob / Bash / Edit / Write tools as needed
-3. For SRS → bundle: the deterministic generator script is at the avni-skills root the skills point to
-4. For mechanical fixes: apply via Edit/Write
-5. For semantic decisions: explain the choice and apply
-
-Be concise. Cite skill files when consulting them.
-
-${BUNDLE_HARD_RULES}`;
 
 /**
  * Run a one-shot agent query and yield events.
@@ -260,8 +278,9 @@ export async function* runAgent(opts) {
     apiKey,
     model = "claude-haiku-4-5-20251001",
     workspace,
-    // Built per-call so SDK_DISCOVERY_PROMPT=1 (opt-in) swaps in the slim
-    // outcome contract; env unset → the full hard rules, unchanged.
+    // Built per-call so the rules block reflects the active selection: the
+    // slim outcome contract by default, or the legacy hard rules iff
+    // SDK_LEGACY_RULES=1 (story #11 backout). See activeRulesBlock().
     systemPrompt = buildDefaultSystemPrompt(),
     allowedTools,
     permissionMode = "bypassPermissions",
@@ -274,13 +293,21 @@ export async function* runAgent(opts) {
   if (!prompt) throw new Error("prompt is required");
 
   const cwd = workspace || ensureAgentWorkspace();
-  // Default allowedTools depend on whether a real bundle workspace is in
-  // play. Bundle MCP tools are only registered when `workspace` is passed
-  // (see mcpServers below), so don't advertise them when they're absent —
-  // the agent would try to call them and get a "tool not found" error.
-  const effectiveAllowedTools = allowedTools ?? (workspace
-    ? ["Read", "Glob", "Grep", "Bash", "Edit", "Write", "Skill", ...BUNDLE_TOOL_NAMES]
-    : ["Read", "Glob", "Grep", "Bash", "Edit", "Write", "Skill"]);
+  // Open MCP tool set (story #11). We no longer hand the SDK a hardcoded
+  // allowlist — the agent gets the full built-in tool set + every registered
+  // MCP tool. This is SAFE because the real guardrails are deterministic and
+  // independent of which tools are advertised:
+  //   • PreToolUse bash blocklist hook (below)   — blocks git writes / rm -rf / sudo
+  //   • post-turn unauthorized-mutation detector — reverts out-of-scope writes
+  //   • path-jail on bundle_export_to_path       — confines exports to an allowlist
+  //   • concept-collision interceptor + bundle_integrity_check + validator
+  //       — catch any bad mutation the agent makes via Write/Edit
+  // Built-in Write/Edit stay available on purpose: the agent edits the bundle
+  // via files and the gates catch bad mutations. (The tools:[] / spec_apply-only
+  // write path is #12 agent-mode, not here.) A caller MAY still pass an explicit
+  // `allowedTools` to narrow the set; when omitted we leave it undefined so the
+  // SDK exposes everything.
+  const effectiveAllowedTools = allowedTools;  // undefined ⇒ open tool set
   const skillNames = (
     skillScope === "bundle-authoring"
       ? listBundleAuthoringSkills()
@@ -295,7 +322,10 @@ export async function* runAgent(opts) {
       cwd,
       model,
       systemPrompt,
-      allowedTools: effectiveAllowedTools,
+      // Only constrain the tool set if a caller explicitly narrowed it.
+      // Omitting the key entirely ⇒ open tool set (story #11). The deterministic
+      // gates — not an allowlist — are the guardrails.
+      ...(effectiveAllowedTools ? { allowedTools: effectiveAllowedTools } : {}),
       permissionMode,
       // Isolate from the host's ~/.claude/* settings so we don't leak the
       // user's personal skills/settings into this session. Empty array =

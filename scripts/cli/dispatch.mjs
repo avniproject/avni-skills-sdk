@@ -6,15 +6,36 @@
 //
 // Returns "quit" when the loop should exit, "continue" otherwise.
 
-import { cyan, dim, red, rule, startSpinner } from "./ui.mjs";
+import { cyan, dim, green, red, rule, startSpinner } from "./ui.mjs";
 import { buildHelp } from "./help.mjs";
+
+// Model aliases for the `:model` REPL command. The keyword model-router was
+// deleted in #11; `:model` remains a per-session override for free-text turns
+// (it mutates state.MODEL, which sse.mjs sends on every /messages call).
+const MODEL_ALIASES = {
+  haiku:  "claude-haiku-4-5-20251001",
+  sonnet: "claude-sonnet-4-6",
+  opus:   "claude-opus-4-7",
+};
 
 export function makeDispatcher({ commands, sendMessage, state }) {
   // Flatten the command bundles into a single name → handler map. Each value
   // is `(sid, arg1?, rest?) => Promise<void>`; we wrap to normalise calling.
   const {
-    turns, rules, audit, workflows, observability, agents, sessions,
+    turns, rules, audit, workflows, observability, sessions,
   } = commands;
+
+  // `:model [name|alias]` — show or change the model used for free-text turns.
+  function cmdModel(arg) {
+    if (!arg) {
+      console.log(`  current: ${cyan(state.MODEL)}`);
+      console.log(dim("  aliases: " + Object.entries(MODEL_ALIASES).map(([k, v]) => `${k}→${v}`).join(", ")));
+      console.log(dim("  usage:   :model sonnet"));
+      return;
+    }
+    state.MODEL = MODEL_ALIASES[arg.toLowerCase()] || arg;
+    console.log(`  ${green("✓")} model set to ${cyan(state.MODEL)}`);
+  }
 
   async function handleLine(input, sid) {
     if (input.startsWith(":")) {
@@ -38,9 +59,6 @@ export function makeDispatcher({ commands, sendMessage, state }) {
                         await rules.cmdRuleValidate(sid); break;
         case "refs": case "references":
                         await rules.cmdRefs(sid, rest.join(" ")); break;
-        case "rename":  await rules.cmdRename(sid, rest); break;
-        case "add-form": case "addform":
-                        await rules.cmdAddForm(sid, rest); break;
         case "apply":   await workflows.cmdApply(sid, arg1); break;
 
         // audit
@@ -60,9 +78,8 @@ export function makeDispatcher({ commands, sendMessage, state }) {
         case "diag": case "diagnostics":
                         await observability.cmdDiag(sid); break;
 
-        // agents
-        case "agent":   await agents.cmdAgent(sid, rest); break;
-        case "model":   agents.cmdModel(arg1); break;
+        // model override for free-text turns
+        case "model":   cmdModel(arg1); break;
 
         // session management — list / resume / info (Claude Code /resume style)
         case "session": case "sessions": case "s":

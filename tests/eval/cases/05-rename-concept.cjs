@@ -3,17 +3,17 @@
 // What this case WILL prove once implemented: renaming a concept (changing
 // its `name` field, NOT its UUID) is a cross-file operation — the new name
 // has to be reflected in (a) concepts.json, (b) every forms/*.json that
-// embeds the concept inside a formElement.concept block (BUNDLE_HARD_RULES
-// rule #8 mandates the NESTED OBJECT shape, so the name lives in two
+// embeds the concept inside a formElement.concept block (the slim outcome
+// contract requires the NESTED OBJECT shape, so the name lives in two
 // places). The validator should stay green throughout.
 //
 // Why it's stubbed:
-//   The agent has a deterministic primitive — `scripts/workflows/rename-concept-uuid.mjs`
-//   — but that's for UUID swaps, not name changes. A name-only rename
-//   without breaking the validator is a multi-file Edit that the agent has
-//   to coordinate by reading all forms first. The assertion needs to walk
-//   every forms/*.json and check the embedded concept.name in any
-//   formElement that references the target UUID.
+//   Since story #11 there is NO deterministic rename primitive — adding,
+//   renaming and reshaping entities is the agent's job (Read + Edit/Write;
+//   the gates catch bad mutations). A name-only rename without breaking the
+//   validator is a multi-file Edit the agent coordinates by reading all forms
+//   first. The assertion needs to walk every forms/*.json and check the
+//   embedded concept.name in any formElement that references the target UUID.
 //
 // Implementation sketch:
 //   setupFixture: buildBaseSrsBuffers (has Religion + Beneficiary Registration)
