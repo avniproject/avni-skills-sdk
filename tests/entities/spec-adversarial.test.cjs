@@ -230,7 +230,7 @@ test('applySpec: very small spec — minimum viable YAML succeeds', async () => 
   assert.equal(r.integrity.ok, true);
 });
 
-test('applySpec: integrity warns on dangling concept-answer (optional edge)', async () => {
+test('applySpec: integrity flags dangling concept-answer (brain-graph required edge)', async () => {
   const { applySpec } = await loadPipeline();
   const r = applySpec({
     existingBundleFiles: {
@@ -241,11 +241,21 @@ test('applySpec: integrity warns on dangling concept-answer (optional edge)', as
     },
     specYaml: 'org: T',
   });
-  // concept-answer is a WARNING edge — integrity.ok still true
-  assert.equal(r.integrity.ok, true);
-  const warn = r.integrity.issues.find((i) => i.field.includes('answers'));
-  assert.ok(warn);
-  assert.equal(warn.severity, 'warning');
+  // As of #10 applySpec drives integrity off the brain's yaml-driven graph
+  // (the single source of truth), replacing the deleted SDK-local
+  // checkIntegrityOnFileMap. The brain's spec/fk-matrix.yaml marks the
+  // concept.answers[].uuid edge `presence: required` (graph.js addEdge default),
+  // so a dangling answer surfaces as a REQUIRED reference (severity "error",
+  // code MISSING_REQUIRED_REF) — STRICTER than the old SDK-local checker, which
+  // classified it as a warning. This is not a coverage loss: the corpus:parity
+  // gate keys detections on (class|fromKind|field|to) and treats the
+  // required/optional split as severity-only, so the same dangling ref is still
+  // detected (Σ LOST=0). The test asserts the brain's authoritative severity.
+  const issue = r.integrity.issues.find((i) => i.field && i.field.includes('answers'));
+  assert.ok(issue, 'dangling concept-answer should be detected');
+  assert.equal(issue.severity, 'error');
+  assert.equal(issue.code, 'MISSING_REQUIRED_REF');
+  assert.equal(r.integrity.ok, false);
 });
 
 test('applySpec: ZIP buffer round-trip preserves declarative IR alongside compiled JS', async () => {
