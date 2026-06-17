@@ -132,6 +132,7 @@ function writeResultJsonl(result) {
     cost: result.cost,
     validatorBefore: result.validatorBefore,
     validatorAfter: result.validatorAfter,
+    observations: result.observations || undefined,
     durationMs: result.durationMs,
     error: result.error || undefined,
   }) + "\n";

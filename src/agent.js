@@ -174,6 +174,12 @@ The bundle you produce or edit MUST satisfy ALL of these, or the AVNI server rej
 
 4. Every UUID you reference resolves to an entity that exists in the same bundle, in the same turn. No dangling references. No invented UUIDs (v4-shaped only) and no invented enum values.
 
+5. Concept names are unique CASE-INSENSITIVELY (C3/D1). Before creating a concept, search existing concepts with \`bundle_find_concept\` and reuse a match's UUID — never add a duplicate name under a new UUID.
+
+6. Every Coded concept's answer also exists as a standalone concept in concepts.json with a matching UUID (C5) — an answer is itself a concept, not just a label.
+
+7. NEVER run git or any destructive shell — the server is the sole committer (it runs \`git add -A && git commit\` after your turn). Read-only git (status/log/diff) is fine; you are not the committer.
+
 HOW to satisfy these — entity shapes, the closed enum sets, the FK matrix, the review checklist — lives in the avni-bundle-spec skill. Consult it before authoring or editing. Answer the user's explicit request only; do not do opportunistic cleanup in the same turn.`;
 
 // Opt-in: SDK_DISCOVERY_PROMPT=1 swaps the full hard rules for the slim

@@ -167,6 +167,16 @@ async function runScenario({ scenarioDef, http, apiKey, sessionsDir, log = () =>
     }
   }
 
+  // A scenario's safetyFloor may record observe-only signals on ctx as
+  // `_`-prefixed keys (e.g. d3 sets ctx._altFindings = <count of ALT_INVALID_NAME
+  // entries>). Surface them as `observations` (stripping the `_`) so they reach
+  // the JSONL result and the discovery report — the whole point of an
+  // observe-only scenario is that the observation is emitted, not dropped.
+  const observations = {};
+  for (const k of Object.keys(ctx)) {
+    if (k.startsWith("_") && ctx[k] !== undefined) observations[k.slice(1)] = ctx[k];
+  }
+
   const durationMs = Date.now() - start;
   const base = {
     name: scenarioDef.name,
@@ -182,6 +192,7 @@ async function runScenario({ scenarioDef, http, apiKey, sessionsDir, log = () =>
     outputTokens: dispatch.outputTokens || 0,
     validatorBefore,
     validatorAfter,
+    observations: Object.keys(observations).length ? observations : undefined,
     durationMs,
   };
 

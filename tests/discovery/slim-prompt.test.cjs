@@ -50,11 +50,16 @@ test("SDK_DISCOVERY_PROMPT=true is also accepted", async () => {
   }
 });
 
-test("the outcome contract is ~210 words and states the required outcomes", async () => {
+test("the outcome contract is slim (~250 words) and states the required outcomes", async () => {
   const m = await load();
   const c = m.BUNDLE_OUTCOME_CONTRACT;
   const words = wc(c);
-  assert.ok(words >= 150 && words <= 280, `outcome contract should be ~210 words, got ${words}`);
+  // Completeness over exact count: the contract carries the integrity+validator
+  // gates, the two server-only traps, and the C3/C5/committer invariants the
+  // hard rules enforce — so it sits ~250 words. Still far below the ~1,181-word
+  // hard rules. The bound guards "slim", not a magic number.
+  assert.ok(words >= 150 && words <= 340, `outcome contract should be slim (~250 words), got ${words}`);
+  assert.ok(words < wc(m.BUNDLE_HARD_RULES), "the slim contract must stay well under the full hard rules");
   // States the two gates (outcome, not procedure).
   assert.match(c, /bundle_integrity_check/);
   assert.match(c, /validator/);
@@ -63,6 +68,13 @@ test("the outcome contract is ~210 words and states the required outcomes", asyn
   assert.match(c, /nested object/i);
   assert.match(c, /addressLevelType/);
   assert.match(c, /< > = " '/);
+  // The invariants the hard rules enforce that the slim contract must also carry
+  // (M1 from #9): case-insensitive concept search before create (C3/D1 via
+  // bundle_find_concept), coded answers exist as standalone concepts (C5), and
+  // the no-git / server-is-the-committer rule.
+  assert.match(c, /bundle_find_concept/, "must carry the C3/D1 case-insensitive concept-search invariant");
+  assert.match(c, /\bC5\b/, "must carry the C5 coded-answer-is-a-standalone-concept invariant");
+  assert.match(c, /committer/, "must carry the server-is-the-sole-committer / no-git invariant");
   // Points at the skill for the "how".
   assert.match(c, /avni-bundle-spec/);
   // Does NOT re-enumerate the long procedural rules (no rule-numbering 1..12 prose).

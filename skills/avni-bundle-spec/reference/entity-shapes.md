@@ -6,6 +6,15 @@ server-contract validator (`bundle_validator.js`, 28 codes) and the avni-server
 JPA models. When in doubt, copy the field shape of an existing neighbour in the
 same file verbatim — never invent keys the generator doesn't emit.
 
+> The closed enum blocks marked `GENERATED` below (`dataType`, `privilegeType`)
+> are extracted **verbatim from the brain validator's `VALID_*` sets** by
+> `scripts/build-bundle-spec-skill.mjs` at build time, with a provenance comment
+> (source path + git sha + a sha256 of the value set). They are NOT hand-written.
+> A unit test (`tests/discovery/entity-shapes-enums.test.cjs`) byte-asserts they
+> equal the validator's sets, so the banner above stays honest and the lists can
+> never silently drift. Do not edit the generated blocks by hand — re-run
+> `npm run build:bundle-spec-skill`.
+
 > All UUIDs are v4-shaped: `8-4-4-4-12` lowercase hex. NEVER invent short tokens
 > like `c-cancel-001` or `ans-other`. Use `crypto.randomUUID()` or copy an
 > existing UUID when referencing one.
@@ -35,11 +44,21 @@ same file verbatim — never invent keys the generator doesn't emit.
 
 ### Concept `dataType` — closed enum (C4)
 
+<!-- GENERATED:dataType — from brain validator VALID_DATA_TYPES. DO NOT EDIT BY HAND. Run: npm run build:bundle-spec-skill -->
 ```
 Numeric, Text, Notes, Coded, NA, Date, DateTime, Time, Duration, Image,
-ImageV2, Id, Video, Subject, Location, PhoneNumber, GroupAffiliation,
-Audio, File, QuestionGroup, Encounter
+ImageV2, Id, Video, Subject, Location, PhoneNumber, GroupAffiliation, Audio,
+File, QuestionGroup, Encounter
 ```
+<!-- /GENERATED:dataType -->
+<!-- provenance:dataType
+     source-repo:  avniproject/avni-skills
+     source-path:  srs-bundle-generator/validators/bundle_validator.js
+     source-sha:   393efb0366763068284f42f8658fb700ee0c9621
+     value-sha256: 1b583a1389f7e60da21490a16ee0a64ba681072ce3231b3ce782fc18721f0147
+     staged-by:    scripts/build-bundle-spec-skill.mjs (do not edit by hand)
+-->
+<!-- /provenance:dataType -->
 
 ---
 
@@ -182,12 +201,38 @@ must reference a base entity that exists.
   member's). Both must resolve (graph-only edges).
 - `groupPrivilege.privilegeType` — closed enum (G2):
 
+<!-- GENERATED:privilegeType — from brain validator VALID_PRIVILEGE_TYPES. DO NOT EDIT BY HAND. Run: npm run build:bundle-spec-skill -->
 ```
-ViewSubject, RegisterSubject, VoidSubject, EditSubject, EnrolSubject,
-UnVoidSubject, ExitEnrolment, VoidEnrolment, UnVoidEnrolment, ViewVisit,
-PerformVisit, EditVisit, CancelVisit, ScheduleVisit, VoidVisit, UnVoidVisit,
-ViewChecklist, EditChecklist
+AddMember, ApproveChecklistitem, ApproveEncounter, ApproveEnrolment,
+ApproveSubject, CancelVisit, DeleteOrganisationConfiguration, DeleteTask,
+DownloadBundle, EditApplicationMenu, EditCatchment, EditChecklist,
+EditChecklistConfiguration, EditConcept, EditDocumentation,
+EditEncounterType, EditEnrolmentDetails, EditExtension,
+EditIdentifierSource, EditIdentifierUserAssignment, EditLanguage,
+EditLocation, EditLocationType, EditMember,
+EditOfflineDashboardAndReportCard, EditOrganisationConfiguration,
+EditProgram, EditRelation, EditRuleFailure, EditSubject, EditSubjectType,
+EditTask, EditUserConfiguration, EditUserGroup, EditVideo, EditVisit,
+EnrolSubject, ExitEnrolment, PerformVisit, PhoneVerification,
+RegisterSubject, RejectChecklistitem, RejectEncounter, RejectEnrolment,
+RejectSubject, RemoveMember, Analytics, MultiTxEntityTypeUpdate,
+ScheduleVisit, UploadMetadataAndData, ViewChecklist, ViewEnrolmentDetails,
+ViewSubject, ViewVisit, VoidSubject, VoidVisit, EditNews, AssignSubject,
+Messaging, EditTaskType, ViewEditEntitiesOnDataEntryApp
 ```
+<!-- /GENERATED:privilegeType -->
+<!-- provenance:privilegeType
+     source-repo:  avniproject/avni-skills
+     source-path:  srs-bundle-generator/validators/bundle_validator.js
+     source-sha:   393efb0366763068284f42f8658fb700ee0c9621
+     value-sha256: 5ef9e692c5a5954e8230b13ae476a608066184df074232b8d5906429d452951b
+     staged-by:    scripts/build-bundle-spec-skill.mjs (do not edit by hand)
+-->
+<!-- /provenance:privilegeType -->
+
+> There is NO `UnVoidSubject` / `UnVoidEnrolment` / `UnVoidVisit` / `VoidEnrolment`
+> privilege — those are NOT in the server's enum and will trip G2. Use the exact
+> values above (the brain validator's `VALID_PRIVILEGE_TYPES`, generated here).
 
 ---
 

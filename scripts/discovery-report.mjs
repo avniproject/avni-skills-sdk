@@ -67,6 +67,9 @@ function buildReport(records) {
       skillReachRate: runs.length ? reachedSkill / runs.length : 0,
       flounderRate: runs.length ? flounderedCount / runs.length : 0,
       byClass: h.byClass || {},
+      // Observe-only signals a scenario's safetyFloor recorded (e.g. d3 emits
+      // altFindings = count of ALT_INVALID_NAME entries the model wrote).
+      observations: latest.observations || null,
     });
   }
   return rows;
@@ -111,6 +114,16 @@ function printTable(rows) {
       dim(`    ${r.scenario.padEnd(34)} integrity ${(r.integrityReachRate * 100).toFixed(0)}%  ` +
       `skill ${(r.skillReachRate * 100).toFixed(0)}%  flounder ${(r.flounderRate * 100).toFixed(0)}%\n`),
     );
+  }
+
+  // Observe-only signals recorded by scenario safetyFloors (e.g. d3 altFindings).
+  const withObs = rows.filter((r) => r.observations && Object.keys(r.observations).length);
+  if (withObs.length) {
+    process.stderr.write("\n  Scenario observations (latest run):\n");
+    for (const r of withObs) {
+      const pairs = Object.entries(r.observations).map(([k, v]) => `${k}=${v}`).join("  ");
+      process.stderr.write(dim(`    ${r.scenario.padEnd(34)} ${pairs}\n`));
+    }
   }
   process.stderr.write("\n");
 }
