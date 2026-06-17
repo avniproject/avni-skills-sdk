@@ -30,6 +30,7 @@ function tmpBundle({
   encounterTypes = [],
   formMappings = [],
   addressLevelTypes = [],
+  groupRoles = [],
 } = {}) {
   const dir = path.join(os.tmpdir(), "integrity-test-" + crypto.randomBytes(4).toString("hex"));
   fs.mkdirSync(path.join(dir, "forms"), { recursive: true });
@@ -39,6 +40,7 @@ function tmpBundle({
   fs.writeFileSync(path.join(dir, "encounterTypes.json"), JSON.stringify(encounterTypes));
   fs.writeFileSync(path.join(dir, "formMappings.json"), JSON.stringify(formMappings));
   fs.writeFileSync(path.join(dir, "addressLevelTypes.json"), JSON.stringify(addressLevelTypes));
+  fs.writeFileSync(path.join(dir, "groupRoles.json"), JSON.stringify(groupRoles));
   for (const f of forms) fs.writeFileSync(path.join(dir, "forms", `${f.name}.json`), JSON.stringify(f));
   return dir;
 }
@@ -271,9 +273,16 @@ test("a clean bundle produces no FE_CONCEPT_NOT_OBJECT / ALT_INVALID_NAME findin
   cleanup(dir);
 });
 
-// ─── FK / dangling-reference reuse from pipeline ────────────────────
+// ─── FK / dangling-reference via the brain's yaml-driven graph ──────
+//
+// #14 (slice 2): the tool now drives FK integrity off the brain's
+// buildBundleGraph + integrityCheck (yaml-driven, single source of truth).
+// A dangling REQUIRED edge is MISSING_REQUIRED_REF (error); a dangling OPTIONAL
+// edge is DANGLING_REF (warning). The dangling formMapping.formUUID edge is
+// REQUIRED, so it surfaces as MISSING_REQUIRED_REF (was DANGLING_REF under the
+// old local checker — the code rename is the brain's, not a behaviour change).
 
-test("reuses the FK integrity check — dangling formMapping.formUUID is reported", async () => {
+test("FK graph — dangling formMapping.formUUID is reported as MISSING_REQUIRED_REF (error)", async () => {
   const { runBundleIntegrityCheck } = await loadServer();
   const dir = tmpBundle({
     subjectTypes: [{ name: "Person", uuid: "st-1" }],
@@ -283,10 +292,136 @@ test("reuses the FK integrity check — dangling formMapping.formUUID is reporte
     }],
   });
   const { ok, findings } = runBundleIntegrityCheck(dir);
-  const dangling = findings.filter((f) => f.code === "DANGLING_REF");
-  assert.ok(dangling.length >= 1, "dangling formUUID reported");
-  assert.ok(dangling.some((f) => /formUUID/.test(f.file)), "the finding names the formUUID field");
+  const missing = findings.filter((f) => f.code === "MISSING_REQUIRED_REF");
+  assert.ok(missing.length >= 1, "dangling required formUUID reported");
+  assert.ok(missing.some((f) => /formUUID/.test(f.file)), "the finding names the formUUID field");
+  assert.ok(missing.every((f) => f.severity === "error"), "MISSING_REQUIRED_REF is error severity");
   assert.equal(ok, false);
+  cleanup(dir);
+});
+
+// ─── #14 slice 2: the 5 previously-graph-only edge kinds ────────────
+//
+// These FK edges live ONLY in the brain's yaml-driven graph — the SDK's old
+// local checkIntegrityOnFileMap never walked them, so a dangling ref slipped
+// through. Each test below proves bundle_integrity_check now flags them.
+
+test("graph-only #1: dangling encounterType.conceptUuid (optional) → DANGLING_REF warning", async () => {
+  const { runBundleIntegrityCheck } = await loadServer();
+  const dir = tmpBundle({
+    // The encounterType's display concept points at a uuid not in concepts.json.
+    encounterTypes: [{ name: "ANC Visit", uuid: "enc-1", conceptUuid: "GHOST-CONCEPT" }],
+  });
+  const { findings } = runBundleIntegrityCheck(dir);
+  const hit = findings.filter((f) => /encounterType\.conceptUuid/.test(f.file));
+  assert.equal(hit.length, 1, "exactly one encounterType.conceptUuid finding");
+  assert.equal(hit[0].code, "DANGLING_REF", "optional edge → DANGLING_REF");
+  assert.equal(hit[0].severity, "warning");
+  assert.match(hit[0].locator, /GHOST-CONCEPT/);
+  cleanup(dir);
+});
+
+test("graph-only #2: dangling form.decisionConcepts[].uuid (optional) → DANGLING_REF warning", async () => {
+  const { runBundleIntegrityCheck } = await loadServer();
+  const dir = tmpBundle({
+    forms: [{
+      name: "F", uuid: "form-1", formType: "IndividualProfile",
+      formElementGroups: [],
+      // A decision concept M:M ref to a uuid absent from concepts.json.
+      decisionConcepts: [{ uuid: "GHOST-DECISION-CONCEPT", name: "Risk" }],
+    }],
+  });
+  const { findings } = runBundleIntegrityCheck(dir);
+  const hit = findings.filter((f) => /decisionConcepts/.test(f.file));
+  assert.equal(hit.length, 1, "exactly one decisionConcepts finding");
+  assert.equal(hit[0].code, "DANGLING_REF", "optional edge → DANGLING_REF");
+  assert.equal(hit[0].severity, "warning");
+  assert.match(hit[0].locator, /GHOST-DECISION-CONCEPT/);
+  cleanup(dir);
+});
+
+test("graph-only #3: dangling addressLevelType.parentUuid (optional) → DANGLING_REF warning", async () => {
+  const { runBundleIntegrityCheck } = await loadServer();
+  const dir = tmpBundle({
+    addressLevelTypes: [
+      // A child level whose parent uuid is not present among the levels.
+      { name: "Block", uuid: "alt-child", level: 1, parentUuid: "GHOST-PARENT" },
+    ],
+  });
+  const { findings } = runBundleIntegrityCheck(dir);
+  const hit = findings.filter((f) => /addressLevelType\.parentUuid/.test(f.file));
+  assert.equal(hit.length, 1, "exactly one parentUuid finding");
+  assert.equal(hit[0].code, "DANGLING_REF", "optional edge → DANGLING_REF");
+  assert.equal(hit[0].severity, "warning");
+  assert.match(hit[0].locator, /GHOST-PARENT/);
+  cleanup(dir);
+});
+
+test("graph-only #4: dangling groupRole.*SubjectTypeUUID (required) → MISSING_REQUIRED_REF error", async () => {
+  const { runBundleIntegrityCheck } = await loadServer();
+  const dir = tmpBundle({
+    subjectTypes: [{ name: "Household", uuid: "st-group" }],
+    // memberSubjectTypeUUID points at a subjectType not in the bundle.
+    groupRoles: [{
+      uuid: "gr-1", role: "Member",
+      groupSubjectTypeUUID: "st-group",
+      memberSubjectTypeUUID: "GHOST-SUBJECT-TYPE",
+    }],
+  });
+  const { ok, findings } = runBundleIntegrityCheck(dir);
+  const hit = findings.filter((f) => /groupRole\.memberSubjectTypeUUID/.test(f.file));
+  assert.equal(hit.length, 1, "exactly one groupRole.memberSubjectTypeUUID finding");
+  assert.equal(hit[0].code, "MISSING_REQUIRED_REF", "required edge → MISSING_REQUIRED_REF");
+  assert.equal(hit[0].severity, "error");
+  assert.match(hit[0].locator, /GHOST-SUBJECT-TYPE/);
+  assert.equal(ok, false, "a required dangling ref makes ok=false");
+  cleanup(dir);
+});
+
+test("graph-only #5: dangling formMapping.taskTypeUUID (optional) → DANGLING_REF warning", async () => {
+  const { runBundleIntegrityCheck } = await loadServer();
+  const dir = tmpBundle({
+    subjectTypes: [{ name: "Person", uuid: "st-1" }],
+    forms: [{ name: "F", uuid: "form-1", formType: "IndividualProfile", formElementGroups: [] }],
+    formMappings: [{
+      uuid: "map-1", formType: "IndividualProfile",
+      formUUID: "form-1", subjectTypeUUID: "st-1",
+      // taskType is not noded by the graph yet, so any taskTypeUUID dangles —
+      // here it is explicitly absent from the bundle.
+      taskTypeUUID: "GHOST-TASK-TYPE",
+    }],
+  });
+  const { findings } = runBundleIntegrityCheck(dir);
+  const hit = findings.filter((f) => /formMapping\.taskTypeUUID/.test(f.file));
+  assert.equal(hit.length, 1, "exactly one formMapping.taskTypeUUID finding");
+  assert.equal(hit[0].code, "DANGLING_REF", "optional edge → DANGLING_REF");
+  assert.equal(hit[0].severity, "warning");
+  assert.match(hit[0].locator, /GHOST-TASK-TYPE/);
+  cleanup(dir);
+});
+
+// One explicit assertion contrasting the two severities side by side: a
+// required-edge dangling ref is MISSING_REQUIRED_REF (error) and an optional
+// one is DANGLING_REF (warning), in the SAME bundle.
+test("required dangling ref ⇒ MISSING_REQUIRED_REF(error), optional ⇒ DANGLING_REF(warning)", async () => {
+  const { runBundleIntegrityCheck } = await loadServer();
+  const dir = tmpBundle({
+    subjectTypes: [{ name: "Person", uuid: "st-1" }],
+    encounterTypes: [{ name: "Visit", uuid: "enc-1", conceptUuid: "GHOST-CONCEPT" }], // optional → warning
+    formMappings: [{
+      uuid: "map-1", formType: "IndividualProfile",
+      formUUID: "GHOST-FORM", subjectTypeUUID: "st-1",                                 // required → error
+    }],
+  });
+  const { findings } = runBundleIntegrityCheck(dir);
+  const req = findings.find((f) => /formMapping\.formUUID/.test(f.file));
+  const opt = findings.find((f) => /encounterType\.conceptUuid/.test(f.file));
+  assert.ok(req, "required dangling formUUID present");
+  assert.equal(req.code, "MISSING_REQUIRED_REF");
+  assert.equal(req.severity, "error");
+  assert.ok(opt, "optional dangling conceptUuid present");
+  assert.equal(opt.code, "DANGLING_REF");
+  assert.equal(opt.severity, "warning");
   cleanup(dir);
 });
 

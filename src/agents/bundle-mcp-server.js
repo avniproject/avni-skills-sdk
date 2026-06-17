@@ -17,11 +17,61 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { z } from "zod";
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { validateBundle, zipBundle as zipBundleDir } from "../bundle.js";
-import { checkIntegrityOnFileMap } from "../pipeline.js";
 import { BUNDLE_TOOL_NAMES as FROZEN_BUNDLE_TOOL_NAMES } from "./bundle-mcp-tool-names.js";
+
+// ─── brain dependency-graph loader (yaml-driven, single source of truth) ──
+//
+// The FK / edge integrity logic lives in the BRAIN (avni-skills), not here.
+// As of #14 the brain's spec/graph.js is a generic interpreter that emits one
+// edge per rule declared in spec/fk-matrix.yaml — so it is the single source
+// of truth for EVERY edge kind, including the graph-only ones the SDK's old
+// local `checkIntegrityOnFileMap` never covered (encounterType.conceptUuid,
+// form.decisionConcepts[], addressLevelType.parentUuid, groupRoles,
+// formMapping.taskTypeUUID). `bundle_integrity_check` builds the graph in
+// memory from a file map and runs the brain's `integrityCheck`, so it inherits
+// full, yaml-driven edge coverage with zero duplicated FK logic.
+//
+// Resolve the brain the SAME way the rest of the SDK does (env var or sibling
+// clone) — mirrors src/pipeline.js + tests/entities/spec-graph.test.cjs.
+const require = createRequire(import.meta.url);
+
+function resolveBrainPath() {
+  if (process.env.AVNI_SKILLS_PATH) return process.env.AVNI_SKILLS_PATH;
+  return path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "..", "..", "avni-skills");
+}
+
+// Load buildBundleGraph + integrityCheck from the brain. FAIL LOUD if the brain
+// is missing or is an OLD build without the file-map-capable buildBundleGraph
+// (#14) — we must NOT silently fall back to partial coverage, because that
+// would re-open exactly the graph-only-edge gap this tool exists to close.
+function loadBrainGraph() {
+  const brainPath = resolveBrainPath();
+  const graphModulePath = path.join(brainPath, "srs-bundle-generator/spec/graph.js");
+  let mod;
+  try {
+    mod = require(graphModulePath);
+  } catch (e) {
+    throw new Error(
+      `bundle_integrity_check could not load the avni-skills dependency graph from ` +
+      `"${graphModulePath}". Set AVNI_SKILLS_PATH to a checkout of avni-skills that ` +
+      `includes the yaml-driven graph (buildBundleGraph(fileMap) + MISSING_REQUIRED_REF). ` +
+      `Underlying error: ${e.message}`,
+    );
+  }
+  const { buildBundleGraph, integrityCheck } = mod;
+  if (typeof buildBundleGraph !== "function" || typeof integrityCheck !== "function") {
+    throw new Error(
+      `bundle_integrity_check loaded "${graphModulePath}" but it does not export ` +
+      `buildBundleGraph + integrityCheck. AVNI_SKILLS_PATH points at an incompatible ` +
+      `avni-skills build — it must be one with the #14 yaml-driven graph.`,
+    );
+  }
+  return { buildBundleGraph, integrityCheck };
+}
 
 // MCP CallToolResult helper — wrap a JS value as a text content block.
 function textResult(obj) {
@@ -312,8 +362,15 @@ function invalidConceptShapeReason(concept) {
   return null;
 }
 
-// Read a bundle directory into the file map shape checkIntegrityOnFileMap and
-// the new checks expect: { "concepts.json": [...], "forms/<f>.json": {...}, ... }.
+// Read a bundle directory into the file map shape the brain's buildBundleGraph
+// and the shape checks expect: { "concepts.json": [...], "forms/<f>.json": {...}, ... }
+// (POSIX-slash keys). The top-level list MUST cover every source the brain's
+// fk-matrix.yaml `nodeKinds` loads from — otherwise an entity present on disk
+// is invisible to the graph and its edges silently vanish. In particular
+// groupRoles.json is REQUIRED here: groupRole is a noded kind whose two FKs to
+// subjectType are graph-only edges (the old local checker never saw them).
+// groups/groupPrivilege/taskTypes are listed for completeness; the brain does
+// not node them yet (#14 follow-up) so they only appear as dangling targets.
 function readBundleFileMap(bundleCwd) {
   const files = {};
   const topLevel = [
@@ -326,6 +383,10 @@ function readBundleFileMap(bundleCwd) {
     "operationalPrograms.json",
     "operationalEncounterTypes.json",
     "addressLevelTypes.json",
+    "groupRoles.json",
+    "groups.json",
+    "groupPrivilege.json",
+    "taskTypes.json",
   ];
   for (const rel of topLevel) {
     const fp = path.join(bundleCwd, rel);
@@ -350,12 +411,18 @@ function readBundleFileMap(bundleCwd) {
  * Run deterministic data-integrity checks on a bundle directory.
  *
  * Combines:
- *   (a) the existing FK / dangling-reference logic (REUSED from pipeline's
- *       checkIntegrityOnFileMap), normalised into the structured finding shape;
+ *   (a) FK / dangling-reference integrity — built from the BRAIN's yaml-driven
+ *       dependency graph (buildBundleGraph + integrityCheck). Because the graph
+ *       emits one edge per rule in spec/fk-matrix.yaml, this covers EVERY edge
+ *       kind — including the graph-only ones the old local checker missed
+ *       (encounterType.conceptUuid, form.decisionConcepts[],
+ *       addressLevelType.parentUuid, groupRole FKs, formMapping.taskTypeUUID).
+ *       A dangling REQUIRED edge surfaces as MISSING_REQUIRED_REF (error); a
+ *       dangling OPTIONAL edge as DANGLING_REF (warning);
  *   (b) FE_CONCEPT_NOT_OBJECT — formElement.concept must be a nested object,
- *       not a bare UUID string (Durga);
+ *       not a bare UUID string (Durga). NOT a graph edge — run alongside;
  *   (c) ALT_INVALID_NAME — addressLevelType names must be non-empty and free of
- *       the chars AVNI's LocationService rejects (Astitva).
+ *       the chars AVNI's LocationService rejects (Astitva). NOT a graph edge.
  *
  * @param {string} bundleCwd Absolute path to the bundle directory.
  * @returns {{ ok: boolean, findings: Array<{code,severity,file,locator,message}> }}
@@ -365,15 +432,30 @@ export function runBundleIntegrityCheck(bundleCwd) {
   const files = readBundleFileMap(bundleCwd);
   const findings = [];
 
-  // (a) FK / dangling-reference integrity — reuse pipeline's logic verbatim,
-  // then map its issue shape into the structured finding shape.
-  const fk = checkIntegrityOnFileMap(files);
-  for (const issue of fk.issues) {
+  // (a) FK / dangling-reference integrity — drive it off the brain's
+  // yaml-driven dependency graph so this tool inherits FULL edge coverage from
+  // the single source of truth (spec/fk-matrix.yaml). buildBundleGraph accepts
+  // the in-memory file map directly (no disk I/O); integrityCheck walks every
+  // emitted edge and flags the ones whose target uuid is absent. We map each
+  // graph issue into the structured finding shape. Loading the brain graph
+  // FAILS LOUD (loadBrainGraph) rather than degrading to partial coverage.
+  const { buildBundleGraph, integrityCheck } = loadBrainGraph();
+  const graph = buildBundleGraph(files);
+  const { issues } = integrityCheck(graph);
+  for (const issue of issues) {
+    const e = issue.edge || {};
+    const fromNode = e.from ? graph.nodes.get(e.from) : null;
+    const fromKind = fromNode ? fromNode.kind : "?";
+    const fromName = fromNode ? (fromNode.name || e.from) : e.from;
     findings.push({
-      code: issue.code,                 // "DANGLING_REF"
+      code: issue.code,                 // "MISSING_REQUIRED_REF" | "DANGLING_REF"
       severity: issue.severity,         // "error" | "warning"
-      file: issue.field || "(bundle)",
-      locator: issue.from ? `${issue.from} → ${issue.to}` : (issue.to || ""),
+      file: e.field || "(bundle)",      // the FK field that dangles
+      // locator names the FROM record (kind + name/uuid), the field, and the
+      // dangling TO uuid — enough for the agent to find and fix the ref.
+      locator: e.from
+        ? `${fromKind} "${fromName}" .${e.field || "?"} → ${e.to} (not found)`
+        : (e.to || ""),
       message: issue.message,
     });
   }

@@ -211,10 +211,14 @@ function asArray(value, wrappedKey) {
   return [];
 }
 
-// Exported so the in-process MCP `bundle_integrity_check` tool can REUSE the
-// exact same FK / dangling-reference logic against a bundle directory (read
-// into a file map) instead of duplicating it. Deletion of this function is a
-// parity-gated follow-up — do NOT remove it.
+// Local SDK-side FK / dangling-reference checker. As of #14 (slice 2) the
+// in-process MCP `bundle_integrity_check` tool NO LONGER calls this — it drives
+// FK integrity off the brain's yaml-driven dependency graph (buildBundleGraph +
+// integrityCheck), which covers every edge kind incl. the graph-only ones this
+// local checker never saw. This function is kept ONLY as the OLD baseline the
+// parity gate compares against; its deletion is story #10's explicit,
+// parity-gated final step — do NOT remove it here. Still consumed by applySpec
+// above (production patch path) pending that same parity-gated migration.
 export function checkIntegrityOnFileMap(files) {
   const issues = [];
   const uuidIndex = new Map();    // uuid → kind
