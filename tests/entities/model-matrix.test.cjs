@@ -229,11 +229,11 @@ test("tool tiers: deriveToolTiers grants structural iff qualified for a structur
 
 // ─── eval-case category contract (feeds the regenerator) ────────────
 
-test("eval cases: all 21 declare a valid category the regenerator can group by", async () => {
+test("eval cases: all 23 declare a valid category the regenerator can group by", async () => {
   const M = await loadMatrixMod();
   const CASES_DIR = path.resolve(__dirname, "..", "eval", "cases");
   const files = fs.readdirSync(CASES_DIR).filter((f) => f.endsWith(".cjs")).sort();
-  assert.equal(files.length, 21);
+  assert.equal(files.length, 23);
   const valid = new Set(M.CATEGORIES);
   for (const f of files) {
     const mod = require(path.join(CASES_DIR, f));

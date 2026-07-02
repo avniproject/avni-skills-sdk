@@ -206,6 +206,8 @@ function poisonBundleForCode(bundleDir, code) {
   if (code === "M3") return seedM3(bundleDir);
   if (code === "G2") return seedG2(bundleDir);
   if (code === "NAJunk") return seedNAJunk(bundleDir);
+  if (code === "FE_CONCEPT_NOT_OBJECT") return seedFEConceptNotObject(bundleDir);
+  if (code === "ALT_INVALID_NAME") return seedALTInvalidName(bundleDir);
   throw new Error(`unknown poison code: ${code}`);
 }
 
@@ -394,6 +396,70 @@ function seedNAJunk(bundleDir) {
   };
 }
 
+// FE_CONCEPT_NOT_OBJECT (Durga class): a formElement's `concept` is FLATTENED
+// from the required nested ConceptContract object down to a bare UUID string.
+// The local validator PASSES (the UUID still resolves) but AVNI's server-side
+// Jackson deserializer crashes mapping a string onto ConceptContract — an
+// integrity-only trap. We flatten the FIRST nested-concept form element we find;
+// the standalone concept stays in concepts.json, so the correct fix is to
+// RE-INLINE the full nested object (name/uuid/dataType/…), not invent anything.
+function seedFEConceptNotObject(bundleDir) {
+  const formsDir = path.join(bundleDir, "forms");
+  if (!fs.existsSync(formsDir)) throw new Error("seedFEConceptNotObject: no forms/ dir");
+  for (const f of fs.readdirSync(formsDir).filter((n) => n.endsWith(".json"))) {
+    const fp = path.join(formsDir, f);
+    const form = JSON.parse(fs.readFileSync(fp, "utf8"));
+    for (const grp of form.formElementGroups || []) {
+      for (const fe of grp.formElements || []) {
+        if (fe && fe.concept && typeof fe.concept === "object" && fe.concept.uuid) {
+          const uuid = fe.concept.uuid;
+          const conceptName = fe.concept.name;
+          fe.concept = uuid; // FLATTEN → bare UUID string → FE_CONCEPT_NOT_OBJECT
+          fs.writeFileSync(fp, JSON.stringify(form, null, 2));
+          return {
+            poisonedCode: "FE_CONCEPT_NOT_OBJECT",
+            formFile: `forms/${f}`,
+            feName: fe.name || "",
+            conceptName,
+            uuid,
+          };
+        }
+      }
+    }
+  }
+  throw new Error("seedFEConceptNotObject: no formElement with a nested concept object found");
+}
+
+// ALT_INVALID_NAME (Astitva class): an addressLevelType name contains a
+// character AVNI's LocationService rejects (< > = " ') or is empty. The local
+// validator does NOT check ALT name chars — integrity-only. The generator does
+// not emit addressLevelTypes.json for these small SRSes, so we introduce a
+// single top-level ALT whose name carries a '>' (mutating an existing entry in
+// place if the bundle already has one). Correct fix: rename to a clean name;
+// nothing else in the bundle references it, so no FK repair is required.
+function seedALTInvalidName(bundleDir) {
+  const fp = path.join(bundleDir, "addressLevelTypes.json");
+  const badName = "Sub>District"; // '>' is rejected by LocationService
+  let alts = null;
+  if (fs.existsSync(fp)) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(fp, "utf8"));
+      alts = Array.isArray(raw) ? raw : (Array.isArray(raw?.addressLevelTypes) ? raw.addressLevelTypes : (Array.isArray(raw?.data) ? raw.data : null));
+    } catch { /* fall through to create */ }
+  }
+  if (Array.isArray(alts) && alts.length > 0 && alts[0] && typeof alts[0] === "object") {
+    const originalName = alts[0].name;
+    alts[0].name = badName;
+    fs.writeFileSync(fp, JSON.stringify(alts, null, 2));
+    return { poisonedCode: "ALT_INVALID_NAME", file: "addressLevelTypes.json", badName, originalName, index: 0 };
+  }
+  // No ALTs in the bundle → introduce one top-level entry with an invalid name.
+  const uuid = crypto.randomUUID();
+  const entry = { name: badName, uuid, level: 1, parentUuid: null };
+  fs.writeFileSync(fp, JSON.stringify([entry], null, 2));
+  return { poisonedCode: "ALT_INVALID_NAME", file: "addressLevelTypes.json", badName, uuid, index: 0, created: true };
+}
+
 // ─── location/subject-type trap SRS (Astitva class, org-agnostic) ──────
 //
 // The trap: the registration form is named after an ACTIVITY ("Household
@@ -482,5 +548,7 @@ module.exports = {
   seedM3,
   seedG2,
   seedNAJunk,
+  seedFEConceptNotObject,
+  seedALTInvalidName,
   AVNI_SKILLS_PATH,
 };
