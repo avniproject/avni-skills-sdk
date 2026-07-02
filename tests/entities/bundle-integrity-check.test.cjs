@@ -451,22 +451,26 @@ test("every finding has the {code, severity, file, locator, message} shape", asy
 
 // ─── frozen tool names: append-only, originals byte-identical ───────
 
-test("frozen tool-name file still carries the original 4 names unchanged + appends the new one", async () => {
+test("frozen tool-name file still carries the original names unchanged + appends the new ones", async () => {
   const { BUNDLE_TOOL_NAME, BUNDLE_TOOL_NAMES } = await import("../../src/agents/bundle-mcp-tool-names.js?t=" + Date.now());
-  // The four original names must be byte-identical (CLAUDE.md §7).
+  // The original names must be byte-identical (CLAUDE.md §7).
   assert.equal(BUNDLE_TOOL_NAME.VALIDATOR_RUN, "mcp__avni-bundle__bundle_validator_run");
   assert.equal(BUNDLE_TOOL_NAME.FIND_CONCEPT, "mcp__avni-bundle__bundle_find_concept");
   assert.equal(BUNDLE_TOOL_NAME.SUMMARY, "mcp__avni-bundle__bundle_summary");
   assert.equal(BUNDLE_TOOL_NAME.EXPORT_TO_PATH, "mcp__avni-bundle__bundle_export_to_path");
-  // The new name is appended.
   assert.equal(BUNDLE_TOOL_NAME.INTEGRITY_CHECK, "mcp__avni-bundle__bundle_integrity_check");
-  // The list preserves the original four in order, then the new one.
+  // The spec round-trip names appended in story #11 (part B).
+  assert.equal(BUNDLE_TOOL_NAME.SPEC_APPLY, "mcp__avni-bundle__spec_apply");
+  assert.equal(BUNDLE_TOOL_NAME.SPEC_EMIT, "mcp__avni-bundle__spec_emit");
+  // The list preserves the originals in order, then the appended ones.
   assert.deepEqual(BUNDLE_TOOL_NAMES, [
     "mcp__avni-bundle__bundle_validator_run",
     "mcp__avni-bundle__bundle_find_concept",
     "mcp__avni-bundle__bundle_summary",
     "mcp__avni-bundle__bundle_export_to_path",
     "mcp__avni-bundle__bundle_integrity_check",
+    "mcp__avni-bundle__spec_apply",
+    "mcp__avni-bundle__spec_emit",
   ]);
   // Still frozen.
   assert.ok(Object.isFrozen(BUNDLE_TOOL_NAME));

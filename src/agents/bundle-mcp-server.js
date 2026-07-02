@@ -21,6 +21,7 @@ import { createRequire } from "node:module";
 import { z } from "zod";
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { validateBundle, zipBundle as zipBundleDir } from "../bundle.js";
+import { applySpec, emitSpec } from "../pipeline.js";
 import { BUNDLE_TOOL_NAMES as FROZEN_BUNDLE_TOOL_NAMES } from "./bundle-mcp-tool-names.js";
 
 // ─── brain dependency-graph loader (yaml-driven, single source of truth) ──
@@ -555,6 +556,139 @@ function buildIntegrityCheckTool(bundleCwd) {
   );
 }
 
+// ─── spec round-trip tools (spec_apply / spec_emit) ─────────────────
+//
+// These wrap the pipeline's applySpec / emitSpec (the SAME code the
+// /v1/sessions/:id/apply-spec HTTP route drives) as in-process MCP tools so
+// the agent can (a) apply a canonical YAML spec onto the bundle in one shot
+// and (b) round-trip the current bundle back into the canonical spec to diff
+// INTENT vs ARTIFACT. The HTTP route + POST /:id/edit are KEPT (demote-not-
+// delete: they remain the deterministic, LLM-free backout path).
+
+/**
+ * Apply a canonical YAML spec onto the bundle at `bundleCwd`.
+ * Reads the bundle → applySpec (parse spec → materialise rules → patch) → writes
+ * the changed files back → runs the deterministic integrity check AFTER.
+ * Returns an MCP CallToolResult. A bad spec is surfaced as an isError result —
+ * it NEVER throws (the agent loop keeps running and can correct the spec).
+ * Exported for direct unit testing (mirrors runBundleIntegrityCheck).
+ */
+export function specApplyOnDir(bundleCwd, spec) {
+  if (typeof spec !== "string" || !spec.trim()) {
+    return errorResult("spec is required — a canonical YAML spec string (the format applySpec consumes).");
+  }
+  let result;
+  try {
+    const files = readBundleFileMap(bundleCwd);
+    result = applySpec({ existingBundleFiles: files, specYaml: spec });
+  } catch (e) {
+    return errorResult(
+      `spec_apply could not apply the spec: ${e.message}. ` +
+      `Fix the spec (valid YAML mapping, correct entity shapes) and try again.`,
+    );
+  }
+
+  // Persist the changed files so subsequent tools (validator / integrity_check)
+  // and the post-turn commit see the edit. Only filesChanged are written.
+  const written = [];
+  try {
+    for (const rel of result.filesChanged) {
+      const fp = path.join(bundleCwd, rel);
+      fs.mkdirSync(path.dirname(fp), { recursive: true });
+      fs.writeFileSync(fp, JSON.stringify(result.patchedFiles[rel], null, 2));
+      written.push(rel);
+    }
+  } catch (e) {
+    return errorResult(`spec_apply patched the bundle in memory but failed to write files: ${e.message}`);
+  }
+
+  // Run the deterministic integrity check AFTER applying (a clean validator does
+  // not guarantee a clean upload — same rationale as bundle_integrity_check).
+  let integrityCheck;
+  try {
+    const { ok, findings } = runBundleIntegrityCheck(bundleCwd);
+    const counts = {};
+    for (const f of findings) counts[f.code] = (counts[f.code] || 0) + 1;
+    integrityCheck = {
+      ok,
+      errorCount: findings.filter((f) => f.severity === "error").length,
+      warningCount: findings.filter((f) => f.severity === "warning").length,
+      counts,
+      findings,
+    };
+  } catch (e) {
+    integrityCheck = { ok: null, error: e.message };
+  }
+
+  return textResult({
+    ok: result.integrity.ok !== false && integrityCheck.ok !== false,
+    filesChanged: written,
+    diffSummary: result.diffSummary,
+    diff: result.diff,
+    ruleCompilation: result.ruleCompilation,
+    specIntegrity: result.integrity,   // FK/graph integrity (from applySpec)
+    integrityCheck,                    // deterministic shape/name checks (bundle_integrity_check)
+    note:
+      "Spec applied. Review integrityCheck.findings before export — a clean validator " +
+      "does not guarantee a clean upload. Emitted concept UUIDs inside forms are resolved " +
+      "by name (the spec format is name-keyed), so re-check FE_CONCEPT_NOT_OBJECT.",
+  });
+}
+
+/**
+ * Emit the bundle at `bundleCwd` as the canonical YAML spec.
+ * Returns an MCP CallToolResult whose text is the YAML spec. Never throws.
+ * Exported for direct unit testing.
+ */
+export function specEmitOnDir(bundleCwd) {
+  try {
+    const files = readBundleFileMap(bundleCwd);
+    let org = "";
+    try {
+      const metaFp = path.join(bundleCwd, "..", "meta.json");
+      if (fs.existsSync(metaFp)) org = JSON.parse(fs.readFileSync(metaFp, "utf8")).org || "";
+    } catch {}
+    const spec = emitSpec({ existingBundleFiles: files, org });
+    return textResult(spec);
+  } catch (e) {
+    return errorResult(`spec_emit could not emit the bundle as a spec: ${e.message}`);
+  }
+}
+
+function buildSpecApplyTool(bundleCwd) {
+  return tool(
+    "spec_apply",
+    "Apply a canonical YAML spec onto the current bundle in one shot: parses the spec, " +
+      "materialises any declarative rules to JS, patches the bundle (upsert by UUID then " +
+      "case-insensitive name — never duplicates), writes the changed files, and runs the " +
+      "deterministic integrity check AFTER. Use this when you have a whole desired end-state " +
+      "as a spec rather than hand-editing individual JSON files. A malformed spec is returned " +
+      "as an actionable error (the turn continues) — it never crashes the loop. Returns " +
+      "{ ok, filesChanged, diffSummary, specIntegrity, integrityCheck }.",
+    {
+      spec: z.string().describe(
+        "The canonical YAML spec (the same format the /apply-spec route consumes): top-level " +
+          "org / subjectTypes / programs / encounterTypes / concepts / forms, etc.",
+      ),
+    },
+    async ({ spec }) => specApplyOnDir(bundleCwd, spec),
+  );
+}
+
+function buildSpecEmitTool(bundleCwd) {
+  return tool(
+    "spec_emit",
+    "Emit the CURRENT bundle back as the canonical YAML spec, so you can round-trip and DIFF " +
+      "intent vs artifact (what the spec says vs what the bundle actually contains). Returns the " +
+      "spec as YAML text. Note: this is a human-readable intent view, not a byte-lossless dump — " +
+      "concept UUIDs embedded in form elements are name-resolved (the spec format is name-keyed). " +
+      "Re-applying the emitted spec with spec_apply is a no-op for top-level entities (updates in " +
+      "place, never duplicates).",
+    {},
+    async () => specEmitOnDir(bundleCwd),
+  );
+}
+
 // ─── server factory ─────────────────────────────────────────────────
 
 /**
@@ -585,6 +719,8 @@ export function createBundleMcpServer(bundleCwd) {
       buildSummaryTool(bundleCwd),
       buildExportTool(bundleCwd),
       buildIntegrityCheckTool(bundleCwd),
+      buildSpecApplyTool(bundleCwd),
+      buildSpecEmitTool(bundleCwd),
     ],
     alwaysLoad: true,
   });
