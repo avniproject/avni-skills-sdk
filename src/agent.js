@@ -151,6 +151,76 @@ export const BUNDLE_HARD_RULES = `HARD RULES — do NOT violate any of these. Th
 
 12. CURRENT VALIDATOR STATE is provided to you at the top of every turn. Trust it. If the user asks "what is the error" → quote the items listed verbatim. If the user asks "fix the error" → fix EXACTLY the errors listed; do NOT speculate about other issues you might find. If your prompt does NOT include a "CURRENT VALIDATOR STATE" section, run the validator yourself before answering.`;
 
+// SLIM OUTCOME CONTRACT — opt-in alternative to BUNDLE_HARD_RULES.
+//
+// Gated behind SDK_DISCOVERY_PROMPT=1 so it changes NOTHING by default (env
+// unset → the full hard rules above are used, byte-for-byte unchanged). Story
+// #11 makes the slim contract the DEFAULT; until then it exists ONLY so the
+// observe-only discovery harness (tests/discovery/) can measure how a model
+// reaches for tools when it is given OUTCOMES instead of procedures.
+//
+// It states the end-state the bundle must reach + the two server-only
+// invariants, and points at the avni-bundle-spec skill for the "how". It does
+// NOT enumerate procedures. ~210 words (vs the ~1,181-word hard rules).
+export const BUNDLE_OUTCOME_CONTRACT = `OUTCOME CONTRACT — what a correct bundle must achieve. Consult the avni-bundle-spec skill for HOW; this contract states only the required end-state.
+
+The bundle you produce or edit MUST satisfy ALL of these, or the AVNI server rejects the whole upload:
+
+1. Zero errors from \`mcp__avni-bundle__bundle_integrity_check\` AND zero errors from the validator (\`mcp__avni-bundle__bundle_validator_run\` / validator.js). A clean validator alone does NOT guarantee a clean upload — always run the integrity check before you finish.
+
+2. Every \`formElement.concept\` is a NESTED OBJECT ({ name, uuid, dataType, ... }), never a bare UUID string. The server's Jackson deserializer crashes on a flattened concept and the validator does not catch it.
+
+3. Every \`addressLevelType\` name is non-empty and contains none of the characters \`< > = " '\`. The server's LocationService rejects these and the validator does not catch it.
+
+4. Every UUID you reference resolves to an entity that exists in the same bundle, in the same turn. No dangling references. No invented UUIDs (v4-shaped only) and no invented enum values.
+
+5. Concept names are unique CASE-INSENSITIVELY (C3/D1). Before creating a concept, search existing concepts with \`bundle_find_concept\` and reuse a match's UUID — never add a duplicate name under a new UUID.
+
+6. Every Coded concept's answer also exists as a standalone concept in concepts.json with a matching UUID (C5) — an answer is itself a concept, not just a label.
+
+7. NEVER run git or any destructive shell — the server is the sole committer (it runs \`git add -A && git commit\` after your turn). Read-only git (status/log/diff) is fine; you are not the committer.
+
+HOW to satisfy these — entity shapes, the closed enum sets, the FK matrix, the review checklist — lives in the avni-bundle-spec skill. Consult it before authoring or editing. Answer the user's explicit request only; do not do opportunistic cleanup in the same turn.`;
+
+// Opt-in: SDK_DISCOVERY_PROMPT=1 swaps the full hard rules for the slim
+// outcome contract. DEFAULT (env unset) is the full hard rules — the discovery
+// flag exists ONLY for the observe-only discovery harness to measure tool-reach
+// under the slim prompt. Story #11 flips slim to the default.
+export function discoveryPromptEnabled() {
+  const v = process.env.SDK_DISCOVERY_PROMPT;
+  return v === "1" || v === "true";
+}
+
+// The rules block injected into the system prompt: hard rules by default, the
+// slim outcome contract when SDK_DISCOVERY_PROMPT is set. Evaluated per-call so
+// a test (or a single discovery scenario) can toggle the env without a reload.
+export function activeRulesBlock() {
+  return discoveryPromptEnabled() ? BUNDLE_OUTCOME_CONTRACT : BUNDLE_HARD_RULES;
+}
+
+function buildDefaultSystemPrompt() {
+  return `You are the Avni bundle authoring agent.
+
+Your job: take an Avni implementation problem (typically: "convert this SRS to a bundle and refine it"), use the skills available in this workspace to solve it, and explain what you did.
+
+The skills in this workspace are the canonical AVNI knowledge base, exposed at .claude/skills/<name>/SKILL.md. Always consult the relevant SKILL.md before writing code, generating bundles, or applying edits.
+
+Workflow:
+1. Identify which skill(s) apply (read SKILL.md files via the Skill tool, or directly)
+2. Use Read / Glob / Bash / Edit / Write tools as needed
+3. For SRS → bundle: the deterministic generator script is at the avni-skills root the skills point to
+4. For mechanical fixes: apply via Edit/Write
+5. For semantic decisions: explain the choice and apply
+
+Be concise. Cite skill files when consulting them.
+
+${activeRulesBlock()}`;
+}
+
+// Back-compat constant — the full default prompt with the hard rules. Existing
+// callers that import DEFAULT_SYSTEM_PROMPT keep the unchanged (hard-rules)
+// behaviour. The discovery flag is honoured by callers that build the prompt
+// via buildDefaultSystemPrompt() (the runAgent default below does).
 const DEFAULT_SYSTEM_PROMPT = `You are the Avni bundle authoring agent.
 
 Your job: take an Avni implementation problem (typically: "convert this SRS to a bundle and refine it"), use the skills available in this workspace to solve it, and explain what you did.
@@ -190,7 +260,9 @@ export async function* runAgent(opts) {
     apiKey,
     model = "claude-haiku-4-5-20251001",
     workspace,
-    systemPrompt = DEFAULT_SYSTEM_PROMPT,
+    // Built per-call so SDK_DISCOVERY_PROMPT=1 (opt-in) swaps in the slim
+    // outcome contract; env unset → the full hard rules, unchanged.
+    systemPrompt = buildDefaultSystemPrompt(),
     allowedTools,
     permissionMode = "bypassPermissions",
     skillScope = "all",
