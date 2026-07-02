@@ -893,6 +893,32 @@ export function resolveInputPath(inputDir, fileArg) {
   return { ok: true, path: resolved, name };
 }
 
+// MINOR-2: cap a JSON-serialisable SRS value (whole doc, a section, or a
+// top-level array) so a big one can't flood the agent's context. Returns either
+// `{ content }` (small enough) or `{ truncated, totalChars, preview, note }`
+// (too big) — a size-bounded preview + guidance to narrow the request.
+function capJsonValue(value) {
+  const full = JSON.stringify(value);
+  if (full.length <= MAX_SRS_INLINE) return { content: value };
+  let preview;
+  if (Array.isArray(value)) {
+    preview = { items: value.length, first: value.slice(0, 20) };
+  } else if (value && typeof value === "object") {
+    preview = Object.fromEntries(
+      Object.keys(value).slice(0, 30).map((k) => [k, Array.isArray(value[k]) ? `[${value[k].length} items]` : typeof value[k]]),
+    );
+  } else {
+    preview = String(value).slice(0, MAX_SRS_INLINE);
+  }
+  return {
+    truncated: true,
+    totalChars: full.length,
+    preview,
+    note: `This content is large (${full.length} chars) and was truncated to fit context. ` +
+      `Narrow the request (a specific section, or a specific sheet via file/sheet) to read it fully.`,
+  };
+}
+
 // Markdown-style heading extraction for prose SRS section navigation.
 function extractHeadings(text) {
   const out = [];
@@ -1035,16 +1061,15 @@ export function readSrsOnDir(bundleCwd, opts = {}) {
       if (!(section in doc)) {
         return textResult({ ...head, format: "json", section, error: `section "${section}" not found`, sections: Object.keys(doc) });
       }
-      return textResult({ ...head, format: "json", section, content: doc[section] });
+      // MINOR-2: a single section can itself be huge (a concepts array with
+      // thousands of entries) — cap it too, not just the whole doc.
+      return textResult({ ...head, format: "json", section, ...capJsonValue(doc[section]) });
     }
-    const full = JSON.stringify(doc);
-    if (full.length > MAX_SRS_INLINE && isObj) {
-      return textResult({
-        ...head, format: "json", truncated: true, totalChars: full.length,
-        sections: Object.keys(doc),
-        note: `SRS is large (${full.length} chars). Pass { section: "<key>" } to read one section.`,
-        preview: Object.fromEntries(Object.keys(doc).slice(0, 30).map((k) => [k, Array.isArray(doc[k]) ? `[${doc[k].length} items]` : typeof doc[k]])),
-      });
+    // MINOR-2: cap BOTH a large top-level object AND a large top-level array
+    // (the array branch previously fell through and dumped everything).
+    const capped = capJsonValue(doc);
+    if (capped.truncated) {
+      return textResult({ ...head, format: "json", ...(isObj ? { sections: Object.keys(doc) } : {}), ...capped });
     }
     return textResult({ ...head, format: "json", content: doc });
   }
@@ -1058,6 +1083,14 @@ export function readSrsOnDir(bundleCwd, opts = {}) {
     if (section) {
       const sec = sliceSection(text, section);
       if (sec == null) return textResult({ ...head, format: "text", section, error: `section "${section}" not found`, headings });
+      // MINOR-2: a matched section can be larger than the cap — truncate it too.
+      if (sec.length > MAX_SRS_INLINE) {
+        return textResult({
+          ...head, format: "text", section, truncated: true, totalChars: sec.length,
+          note: `Section "${section}" is large (${sec.length} chars) and was truncated to fit context.`,
+          preview: sec.slice(0, MAX_SRS_INLINE),
+        });
+      }
       return textResult({ ...head, format: "text", section, content: sec });
     }
     if (text.length > MAX_SRS_INLINE) {

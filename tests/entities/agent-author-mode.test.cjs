@@ -334,6 +334,46 @@ test("bundle_read_srs: returns structured JSON and honours a section arg", async
   assert.deepEqual(sec.content, [{ name: "ANC" }]);
 });
 
+// ─── bundle_read_srs output caps (MINOR-2) ───────────────────────────
+
+test("bundle_read_srs (MINOR-2): a large JSON section is truncated, not dumped", async () => {
+  freshRoot();
+  const sessions = await loadSessions();
+  const { readSrsOnDir } = await loadMcp();
+  const big = { concepts: Array.from({ length: 2000 }, (_, i) => ({ name: `Concept ${i}`, uuid: `u-${i}`, dataType: "Text" })) };
+  const created = sessions.createSession({ mode: "agent", org: "X", srs: JSON.stringify(big) });
+  const out = jsonOf(readSrsOnDir(sessions.bundleDir(created.sessionId), { section: "concepts" }));
+  assert.equal(out.section, "concepts");
+  assert.equal(out.truncated, true, "a huge section must be truncated");
+  assert.equal(out.preview.items, 2000, "preview reports the true item count");
+  assert.equal(out.content, undefined, "the full section must NOT be inlined");
+});
+
+test("bundle_read_srs (MINOR-2): a large top-level JSON array is truncated, not dumped", async () => {
+  freshRoot();
+  const sessions = await loadSessions();
+  const { readSrsOnDir } = await loadMcp();
+  const arr = Array.from({ length: 2000 }, (_, i) => ({ name: `Row ${i}`, uuid: `u-${i}` }));
+  const created = sessions.createSession({ mode: "agent", org: "X", srs: JSON.stringify(arr) });
+  const out = jsonOf(readSrsOnDir(sessions.bundleDir(created.sessionId), {}));
+  assert.equal(out.truncated, true, "a huge top-level array must be truncated");
+  assert.equal(out.preview.items, 2000);
+  assert.equal(out.content, undefined, "the full array must NOT be inlined");
+});
+
+test("bundle_read_srs (MINOR-2): a large text section is truncated, not dumped", async () => {
+  freshRoot();
+  const sessions = await loadSessions();
+  const { readSrsOnDir } = await loadMcp();
+  const srs = `# Small\nhi\n# Big\n${"x".repeat(20000)}`;
+  const created = sessions.createSession({ mode: "agent", org: "X", srs });
+  const out = jsonOf(readSrsOnDir(sessions.bundleDir(created.sessionId), { section: "Big" }));
+  assert.equal(out.section, "Big");
+  assert.equal(out.truncated, true);
+  assert.equal(out.content, undefined, "the full section must NOT be inlined");
+  assert.ok(out.preview.length <= 8100, "preview is size-bounded");
+});
+
 // ─── bundle_generate_baseline ────────────────────────────────────────
 
 test("bundle_generate_baseline: agent session with XLSX inputs bootstraps a CLEAN bundle via the brain generator", async () => {
