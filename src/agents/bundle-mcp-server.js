@@ -842,7 +842,7 @@ function buildSpecEmitTool(bundleCwd) {
 // ─── agent mode: SRS reader + baseline bootstrap (story #12) ────────
 //
 // Agent mode builds a bundle FROM requirements (an SRS) rather than editing an
-// uploaded one. The SRS is persisted by createSession under <session>/srs/; the
+// uploaded one. The SRS is persisted by createSession under <session>/input/; the
 // tools reach it via the session dir (the parent of bundleCwd) — the SAME
 // sibling-access pattern bundle_export_to_path uses to read ../meta.json.
 
@@ -911,7 +911,7 @@ export function readSrsOnDir(bundleCwd, opts = {}) {
     );
   }
   const srs = meta.srs;
-  const srsDir = path.join(sessionDirOf(bundleCwd), "srs");
+  const srsDir = path.join(sessionDirOf(bundleCwd), "input");
   const head = {
     kind: srs.kind,
     externalPath: srs.externalPath || null,
@@ -957,7 +957,7 @@ export function readSrsOnDir(bundleCwd, opts = {}) {
     if (text.length > MAX_SRS_INLINE) {
       return textResult({
         ...head, format: "text", truncated: true, totalChars: text.length, headings,
-        note: `SRS is large (${text.length} chars). Pass { section: "<heading>" } to read one section, or Read ../srs/srs.txt directly.`,
+        note: `SRS is large (${text.length} chars). Pass { section: "<heading>" } to read one section, or Read ../input/srs.txt directly.`,
         preview: text.slice(0, MAX_SRS_INLINE),
       });
     }
@@ -968,7 +968,7 @@ export function readSrsOnDir(bundleCwd, opts = {}) {
   // generate_baseline (XLSX) or the external path (a doc to Read).
   const notes = [];
   if (srs.files && (srs.files.forms || srs.files.modelling)) {
-    notes.push("The SRS was provided as XLSX generator input(s) under ../srs/. Call generate_baseline to bootstrap a deterministic bundle from them, then refine.");
+    notes.push("The SRS was provided as XLSX generator input(s) under ../input/. Call generate_baseline to bootstrap a deterministic bundle from them, then refine.");
   }
   if (srs.externalPath) {
     notes.push(`An external SRS path is recorded: ${srs.externalPath} — Read it directly for the requirements.`);
@@ -1043,7 +1043,7 @@ export function generateBaselineOnDir(bundleCwd) {
     );
   }
 
-  const srsDir = path.join(sessionDirOf(bundleCwd), "srs");
+  const srsDir = path.join(sessionDirOf(bundleCwd), "input");
   const srs = meta.srs || {};
   let source;
   let filesWritten;

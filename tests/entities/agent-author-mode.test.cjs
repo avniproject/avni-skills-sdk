@@ -100,8 +100,8 @@ test("session mode: author creates a session around an SRS with an EMPTY bundle 
   const files = sessions.listFiles(created.sessionId);
   assert.ok(!files.includes("subjectTypes.json"), "author bundle starts empty (no generated entities)");
   assert.ok(!files.some((f) => f.startsWith("forms/")), "author bundle has no forms yet");
-  // The SRS is persisted so the tools can reach it via ../srs/.
-  const srsFile = path.join(sessions.bundleDir(created.sessionId), "..", "srs", "srs.txt");
+  // The SRS is persisted so the tools can reach it via ../input/.
+  const srsFile = path.join(sessions.bundleDir(created.sessionId), "..", "input", "srs.txt");
   assert.ok(fs.existsSync(srsFile), "SRS text persisted alongside the session");
 });
 

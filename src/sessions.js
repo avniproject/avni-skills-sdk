@@ -257,20 +257,21 @@ export function createSession({ formsBuffer, formsFilename, modellingBuffer, mod
 // git has a HEAD to commit turns against); the agent reads the SRS
 // (bundle_read_srs), optionally bootstraps a baseline, then refines to clean.
 //
-// The SRS is persisted under <session>/srs/ so the tools (which run with cwd =
-// <session>/bundle) can reach it as ../srs/ — the same sibling-access pattern
-// bundle_export_to_path uses to read ../meta.json.
+// The SRS/Excel binaries are persisted under <session>/input/ (a SIBLING of
+// <session>/bundle/, kept OUT of git) so the tools (which run with cwd =
+// <session>/bundle) can reach them as ../input/ — the same sibling-access
+// pattern bundle_export_to_path uses to read ../meta.json.
 function createAgentSession({ formsBuffer, modellingBuffer, org, srs, srsPath }) {
   const id = newId();
   const dir = path.join(SESSIONS_DIR, id);
-  const srsDir = path.join(dir, "srs");
+  const inputDir = path.join(dir, "input");
   const bDir = path.join(dir, "bundle");
-  fs.mkdirSync(srsDir, { recursive: true });
+  fs.mkdirSync(inputDir, { recursive: true });
   fs.mkdirSync(bDir, { recursive: true });
 
-  // Persist the SRS in whatever form(s) the caller supplied. All are optional;
-  // an agent session may start from pure prose, from structured JSON, from
-  // XLSX generator inputs, from an external path, or any combination.
+  // Persist the SRS in whatever form(s) the caller supplied under input/. All
+  // are optional; an agent session may start from pure prose, from structured
+  // JSON, from XLSX generator inputs, from an external path, or any combination.
   const srsMeta = { kind: "none", files: {}, hasGeneratorInputs: false, externalPath: null };
 
   if (typeof srs === "string" && srs.trim()) {
@@ -278,30 +279,30 @@ function createAgentSession({ formsBuffer, modellingBuffer, org, srs, srsPath })
     let parsed = null;
     try { parsed = JSON.parse(srs); } catch { /* not JSON — treat as prose */ }
     if (parsed !== null && typeof parsed === "object") {
-      fs.writeFileSync(path.join(srsDir, "srs.json"), JSON.stringify(parsed, null, 2));
-      srsMeta.files.json = "srs/srs.json";
+      fs.writeFileSync(path.join(inputDir, "srs.json"), JSON.stringify(parsed, null, 2));
+      srsMeta.files.json = "input/srs.json";
       srsMeta.kind = "json";
     } else {
-      fs.writeFileSync(path.join(srsDir, "srs.txt"), srs);
-      srsMeta.files.text = "srs/srs.txt";
+      fs.writeFileSync(path.join(inputDir, "srs.txt"), srs);
+      srsMeta.files.text = "input/srs.txt";
       srsMeta.kind = "text";
     }
   } else if (srs && typeof srs === "object") {
     // Already-parsed structured SRS object.
-    fs.writeFileSync(path.join(srsDir, "srs.json"), JSON.stringify(srs, null, 2));
-    srsMeta.files.json = "srs/srs.json";
+    fs.writeFileSync(path.join(inputDir, "srs.json"), JSON.stringify(srs, null, 2));
+    srsMeta.files.json = "input/srs.json";
     srsMeta.kind = "json";
   }
 
   if (formsBuffer) {
-    fs.writeFileSync(path.join(srsDir, "forms.xlsx"), formsBuffer);
-    srsMeta.files.forms = "srs/forms.xlsx";
+    fs.writeFileSync(path.join(inputDir, "forms.xlsx"), formsBuffer);
+    srsMeta.files.forms = "input/forms.xlsx";
     srsMeta.hasGeneratorInputs = true;
     if (srsMeta.kind === "none") srsMeta.kind = "xlsx";
   }
   if (modellingBuffer) {
-    fs.writeFileSync(path.join(srsDir, "modelling.xlsx"), modellingBuffer);
-    srsMeta.files.modelling = "srs/modelling.xlsx";
+    fs.writeFileSync(path.join(inputDir, "modelling.xlsx"), modellingBuffer);
+    srsMeta.files.modelling = "input/modelling.xlsx";
   }
   if (typeof srsPath === "string" && srsPath.trim()) {
     srsMeta.externalPath = srsPath.trim();
@@ -310,14 +311,15 @@ function createAgentSession({ formsBuffer, modellingBuffer, org, srs, srsPath })
     if (/\.xlsx?$/i.test(srsMeta.externalPath)) srsMeta.hasGeneratorInputs = true;
   }
 
-  // .gitignore keeps agent-staging artifacts out of the bundle git history +
-  // gives git a first tracked file so turn 0 is a real (non-empty) commit.
-  fs.writeFileSync(path.join(bDir, ".gitignore"), ".claude/\n");
+  // .gitignore keeps the input/ binaries + agent-staging artifacts out of the
+  // bundle git history, and gives git a first tracked file so turn 0 is a real
+  // (near-empty) commit against which later turns diff.
+  fs.writeFileSync(path.join(bDir, ".gitignore"), ".claude/\ninput/\n");
   git(bDir, "init", "-b", "main");
   git(bDir, "config", "user.email", "agent@avni-skills-sdk");
   git(bDir, "config", "user.name", "avni-skills-sdk");
   git(bDir, "add", "-A");
-  git(bDir, "commit", "-m", "turn 0: agent session initialised (empty bundle — awaiting baseline/authoring)");
+  git(bDir, "commit", "-m", "turn 0: empty workspace (agent mode)");
 
   // The empty bundle is expected to be dirty; the agent authors it clean. Guard
   // against the validator throwing on an all-but-empty dir.
