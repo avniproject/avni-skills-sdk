@@ -43,6 +43,7 @@
     "archiver": "^7.0.1",
     "blessed": "^0.1.81",
     "blessed-contrib": "^4.11.0",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "xlsx": "^0.18.5"
   }
 }

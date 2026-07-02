@@ -14,9 +14,10 @@ export function register(app) {
   //   • mode=baseline (DEFAULT): from an SRS upload. Runs the deterministic
   //     generator as turn 0. Requires the 'forms' file. Byte-for-byte unchanged.
   //   • mode=agent (story #12): from requirements. The bundle starts empty; the
-  //     SRS is attached (inline 'srs' field, optional 'forms'/'modelling' XLSX,
-  //     and/or an 'srs_path' the agent can Read). The agent reads it via
-  //     read_srs and optionally bootstraps via generate_baseline.
+  //     SRS is attached as a 'forms'/'modelling' XLSX (kept in input/, read via
+  //     bundle_read_srs) and/or an inline 'srs' field. NO external path is
+  //     accepted (LFI closure). The agent reads the SRS via bundle_read_srs and
+  //     optionally bootstraps via bundle_generate_baseline.
   // No LLM call required at create time — caller iterates later via /edit (WoO),
   // /apply-spec, or /messages (real agent, BYO key).
   app.post("/v1/sessions", async (req, res) => {
@@ -30,8 +31,8 @@ export function register(app) {
       if (mode === "baseline" && !files.forms) {
         return res.status(400).json({ error: "missing 'forms' file (Forms.xlsx)" });
       }
-      if (mode === "agent" && !files.forms && !files.modelling && !fields.srs && !fields.srs_path) {
-        return res.status(400).json({ error: "agent mode requires at least one SRS source: an 'srs' field (inline text/JSON), a 'forms'/'modelling' XLSX file, or an 'srs_path'" });
+      if (mode === "agent" && !files.forms && !files.modelling && !fields.srs) {
+        return res.status(400).json({ error: "agent mode requires at least one SRS source: a 'forms'/'modelling' XLSX file (read via bundle_read_srs), or an 'srs' field (inline text/JSON)" });
       }
 
       const result = sessions.createSession({
@@ -42,7 +43,6 @@ export function register(app) {
         modellingFilename: files.modelling?.filename,
         org: fields.org || "Bundle",
         srs: fields.srs,
-        srsPath: fields.srs_path,
       });
       // Seed transcript + step log with the creation event.
       try {

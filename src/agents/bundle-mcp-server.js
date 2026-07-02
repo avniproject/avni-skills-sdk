@@ -19,6 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { createRequire } from "node:module";
+import XLSX from "xlsx"; // SheetJS is CJS — default import gives module.exports (readFile/utils/write)
 import { z } from "zod";
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { validateBundle, generateBundle, zipBundle as zipBundleDir } from "../bundle.js";
@@ -861,6 +862,36 @@ function readSessionMeta(bundleCwd) {
 }
 
 const MAX_SRS_INLINE = 8000; // chars — beyond this a text/JSON SRS is summarised, not dumped
+const DEFAULT_SRS_ROW_LIMIT = 200; // rows — server-side page size for an Excel sheet read
+
+// ─── input/ path jail (LFI closure, MAJOR-1) ────────────────────────
+//
+// The divergent #12 build let an agent-mode session carry `srs.externalPath` — a
+// caller-supplied filesystem path that generate_baseline handed straight to the
+// generator (arbitrary local-file read). That path is GONE: everything read by
+// bundle_read_srs / bundle_generate_baseline is the session's OWN input/ dir.
+// `resolveInputPath` is the single choke point — it maps the friendly enum
+// ('forms'|'modelling') to a filename and refuses anything that escapes input/
+// (`../`, absolute), exactly like resolveExportPath jails exports. Exported for
+// unit testing the path-escape refusal.
+export function resolveInputPath(inputDir, fileArg) {
+  const root = path.resolve(inputDir);
+  const name =
+    (fileArg === undefined || fileArg === null || fileArg === "" || fileArg === "forms") ? "forms.xlsx"
+    : fileArg === "modelling" ? "modelling.xlsx"
+    : String(fileArg);
+  const resolved = path.resolve(root, name);
+  const rel = path.relative(root, resolved);
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
+    return {
+      ok: false,
+      error:
+        `file ${JSON.stringify(fileArg)} escapes the session input/ directory — refused. ` +
+        `bundle_read_srs only reads the session's own uploaded spreadsheets (file: "forms" | "modelling").`,
+    };
+  }
+  return { ok: true, path: resolved, name };
+}
 
 // Markdown-style heading extraction for prose SRS section navigation.
 function extractHeadings(text) {
@@ -894,19 +925,29 @@ function sliceSection(text, name) {
 
 /**
  * Read the SRS attached to the session that owns `bundleCwd`.
- * Returns an MCP CallToolResult. Never throws — an baseline-mode session (no SRS)
- * or a read failure surfaces as an actionable isError. Exported for unit tests.
+ *
+ * Epic signature: `{ file?: 'forms'|'modelling', sheet?, format?: 'json'|'csv',
+ * limit?, offset? }` for Excel SRSes (parsed via SheetJS, jailed to input/):
+ *   • no `sheet` → `{ sheets: [{ name, rows, columns }] }` (an index to paginate from)
+ *   • with `sheet` → the sheet's rows as JSON (default) or CSV, sliced to `limit`
+ *     (default 200) from `offset` (0), with a `truncated` flag + a pagination note.
+ * A prose/JSON inline SRS (no spreadsheet) still returns structured/raw content and
+ * honours `{ section }`.
+ *
+ * Returns an MCP CallToolResult. Never throws — a baseline-mode session (no SRS),
+ * a path escape, or a missing file all surface as an actionable isError. Exported
+ * for unit tests.
  */
 export function readSrsOnDir(bundleCwd, opts = {}) {
   const section = opts && typeof opts.section === "string" ? opts.section.trim() : "";
   const meta = readSessionMeta(bundleCwd);
   if (!meta) {
-    return errorResult("could not read session meta (../meta.json) — read_srs needs a session-backed bundle directory.");
+    return errorResult("could not read session meta (../meta.json) — bundle_read_srs needs a session-backed bundle directory.");
   }
   if (meta.mode !== "agent" || !meta.srs) {
     return errorResult(
-      "no SRS is attached to this session. read_srs is for AGENT-mode sessions created around an SRS; " +
-      "this is an baseline-mode session (its bundle was generated from an uploaded SRS at turn 0). " +
+      "no SRS is attached to this session. bundle_read_srs is for AGENT-mode sessions created around an SRS; " +
+      "this is a baseline-mode session (its bundle was generated from an uploaded SRS at turn 0). " +
       "Read the bundle files directly (bundle_summary / Read) instead.",
     );
   }
@@ -914,10 +955,75 @@ export function readSrsOnDir(bundleCwd, opts = {}) {
   const srsDir = path.join(sessionDirOf(bundleCwd), "input");
   const head = {
     kind: srs.kind,
-    externalPath: srs.externalPath || null,
     hasGeneratorInputs: !!srs.hasGeneratorInputs,
     available: Object.keys(srs.files || {}),
   };
+
+  // ── Excel SRS (epic primary path) — {file, sheet, format, limit, offset} ──
+  // When the session carries a forms/modelling spreadsheet, that is the SRS the
+  // agent reads directly. All file access is jailed to input/ (resolveInputPath).
+  const hasExcel = !!(srs.files && (srs.files.forms || srs.files.modelling));
+  const wantsExcel = hasExcel || opts.file !== undefined || opts.sheet !== undefined;
+  if (wantsExcel) {
+    const jail = resolveInputPath(srsDir, opts.file);
+    if (!jail.ok) return errorResult(jail.error);
+    if (!fs.existsSync(jail.path)) {
+      return errorResult(
+        `no ${jail.name} in the session input/ dir. Available SRS inputs: ${head.available.join(", ") || "(none)"}. ` +
+        `Pass file: "forms" or "modelling" to pick a spreadsheet that exists.`,
+      );
+    }
+    let wb;
+    try { wb = XLSX.readFile(jail.path); }
+    catch (e) { return errorResult(`could not parse ${jail.name} as an Excel workbook: ${e.message}`); }
+    const sheetNames = wb.SheetNames || [];
+    const wantSheet = typeof opts.sheet === "string" ? opts.sheet.trim() : "";
+
+    // No sheet → return the sheet index (name + row/column counts) to paginate from.
+    if (!wantSheet) {
+      const sheets = sheetNames.map((name) => {
+        const aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: "", blankrows: false });
+        return { name, rows: Math.max(0, aoa.length - 1), columns: (aoa[0] || []).map((c) => String(c)) };
+      });
+      return textResult({
+        ...head, file: jail.name, format: "sheet-list", sheets,
+        note: `Pass { sheet: "<name>", limit } (json default, or format:"csv") to read a sheet's rows; { offset } paginates.`,
+      });
+    }
+
+    // Resolve the sheet name (exact, then case-insensitive).
+    const actual = sheetNames.find((n) => n === wantSheet) || sheetNames.find((n) => n.toLowerCase() === wantSheet.toLowerCase());
+    if (!actual) {
+      return errorResult(`sheet "${wantSheet}" not found in ${jail.name}. Available sheets: ${sheetNames.join(", ") || "(none)"}.`);
+    }
+    const ws = wb.Sheets[actual];
+    const limit = Number.isInteger(opts.limit) && opts.limit > 0 ? opts.limit : DEFAULT_SRS_ROW_LIMIT;
+    const offset = Number.isInteger(opts.offset) && opts.offset > 0 ? opts.offset : 0;
+    const format = opts.format === "csv" ? "csv" : "json";
+
+    if (format === "csv") {
+      const lines = XLSX.utils.sheet_to_csv(ws).split(/\r?\n/);
+      const header = lines.length ? lines[0] : "";
+      const dataLines = lines.slice(1).filter((l) => l.length > 0);
+      const page = dataLines.slice(offset, offset + limit);
+      const truncated = offset + limit < dataLines.length;
+      return textResult({
+        ...head, file: jail.name, sheet: actual, format: "csv",
+        totalRows: dataLines.length, offset, returnedRows: page.length, truncated,
+        note: truncated ? `Rows ${offset}–${offset + page.length} of ${dataLines.length}. Pass { offset: ${offset + limit}, limit } for the next page.` : undefined,
+        csv: [header, ...page].join("\n"),
+      });
+    }
+    const all = XLSX.utils.sheet_to_json(ws, { defval: "" });
+    const page = all.slice(offset, offset + limit);
+    const truncated = offset + limit < all.length;
+    return textResult({
+      ...head, file: jail.name, sheet: actual, format: "json",
+      totalRows: all.length, offset, returnedRows: page.length, truncated,
+      note: truncated ? `Rows ${offset}–${offset + page.length} of ${all.length}. Pass { offset: ${offset + limit}, limit } for the next page.` : undefined,
+      rows: page,
+    });
+  }
 
   // JSON SRS — structured. Honour a section arg (top-level key); summarise large.
   if (srs.files && srs.files.json) {
@@ -964,17 +1070,11 @@ export function readSrsOnDir(bundleCwd, opts = {}) {
     return textResult({ ...head, format: "text", content: text });
   }
 
-  // Only XLSX / external inputs — nothing textual to inline. Point the agent at
-  // generate_baseline (XLSX) or the external path (a doc to Read).
-  const notes = [];
-  if (srs.files && (srs.files.forms || srs.files.modelling)) {
-    notes.push("The SRS was provided as XLSX generator input(s) under ../input/. Call generate_baseline to bootstrap a deterministic bundle from them, then refine.");
-  }
-  if (srs.externalPath) {
-    notes.push(`An external SRS path is recorded: ${srs.externalPath} — Read it directly for the requirements.`);
-  }
-  if (!notes.length) notes.push("No SRS content is attached to this session.");
-  return textResult({ ...head, format: "reference", note: notes.join(" ") });
+  // Nothing readable attached to this session.
+  return textResult({
+    ...head, format: "reference",
+    note: "No SRS content is attached to this session. Call bundle_generate_baseline to bootstrap a minimal bundle, then author from your own requirements.",
+  });
 }
 
 // A MINIMAL VALID bundle skeleton: one Person subject type + its registration
@@ -1034,11 +1134,11 @@ function writeMinimalSkeleton(bundleCwd) {
 export function generateBaselineOnDir(bundleCwd) {
   const meta = readSessionMeta(bundleCwd);
   if (!meta) {
-    return errorResult("could not read session meta (../meta.json) — generate_baseline needs a session-backed bundle directory.");
+    return errorResult("could not read session meta (../meta.json) — bundle_generate_baseline needs a session-backed bundle directory.");
   }
   if (meta.mode !== "agent") {
     return errorResult(
-      "generate_baseline is only for AGENT-mode sessions. An baseline-mode session already has a deterministic " +
+      "bundle_generate_baseline is only for AGENT-mode sessions. An baseline-mode session already has a deterministic " +
       "first-pass bundle (generated from the uploaded SRS at turn 0) — there is no baseline to bootstrap.",
     );
   }
@@ -1051,11 +1151,11 @@ export function generateBaselineOnDir(bundleCwd) {
   // Prefer the BRAIN generator when the session carries usable XLSX inputs. This
   // is the deterministic SRS→bundle generator DEMOTED to a tool: the same code
   // baseline mode runs at turn 0, but here the AGENT chooses to invoke it.
+  // LFI closure (MAJOR-1): the ONLY forms source is the session's own
+  // input/forms.xlsx — never a caller-supplied external path.
   let formsPath = null;
   if (srs.files && srs.files.forms && fs.existsSync(path.join(srsDir, "forms.xlsx"))) {
     formsPath = path.join(srsDir, "forms.xlsx");
-  } else if (srs.externalPath && /\.xlsx?$/i.test(srs.externalPath) && fs.existsSync(srs.externalPath)) {
-    formsPath = srs.externalPath;
   }
 
   if (formsPath) {
@@ -1066,7 +1166,7 @@ export function generateBaselineOnDir(bundleCwd) {
       source = "brain-generator";
     } catch (e) {
       return errorResult(
-        `generate_baseline: the deterministic generator failed on the session's SRS XLSX: ${e.message}. ` +
+        `bundle_generate_baseline: the deterministic generator failed on the session's SRS XLSX: ${e.message}. ` +
         `Fix the SRS spreadsheet, or hand-author the bundle (spec_apply / Edit).`,
       );
     }
@@ -1075,7 +1175,7 @@ export function generateBaselineOnDir(bundleCwd) {
       filesWritten = writeMinimalSkeleton(bundleCwd);
       source = "minimal-skeleton";
     } catch (e) {
-      return errorResult(`generate_baseline: failed to write the minimal skeleton: ${e.message}`);
+      return errorResult(`bundle_generate_baseline: failed to write the minimal skeleton: ${e.message}`);
     }
   }
 
@@ -1116,16 +1216,24 @@ export function generateBaselineOnDir(bundleCwd) {
 
 function buildReadSrsTool(bundleCwd) {
   return tool(
-    "read_srs",
-    "Read the SRS (requirements) attached to the CURRENT agent-mode session so you can ground bundle authoring in the requirements instead of guessing. Returns the SRS structured (when it is JSON with sections/entities) or raw (when it is prose); a large SRS returns a summary + section list — pass { section } to read just one section. AGENT-mode only; an baseline-mode session (bundle already generated from an uploaded SRS) returns an actionable error. Call this FIRST in agent mode.",
-    { section: z.string().optional().describe("Optional: read a single named section/key of the SRS instead of the whole thing (use for a large SRS).") },
-    async ({ section }) => readSrsOnDir(bundleCwd, { section }),
+    "bundle_read_srs",
+    "Read the SRS (requirements) attached to the CURRENT agent-mode session so you can ground bundle authoring in the requirements instead of guessing. For an Excel SRS: call with no args to get the sheet index ({sheets:[{name,rows,columns}]}), then pass { sheet, limit, offset, format } to read a sheet's rows (json default or csv), sliced to `limit` rows (default 200) from `offset` — paginate large sheets (concept sheets run thousands of rows) instead of dumping. File access is JAILED to the session input/ dir. For a prose/JSON inline SRS: pass { section } to read one section. AGENT-mode only; a baseline-mode session (bundle already generated from an uploaded SRS) returns an actionable error. Call this FIRST in agent mode.",
+    {
+      file: z.enum(["forms", "modelling"]).optional().describe("Which uploaded spreadsheet to read (default 'forms'). Only the session's own input/ files are readable."),
+      sheet: z.string().optional().describe("Sheet name to read rows from. Omit to list all sheets with their row/column counts."),
+      format: z.enum(["json", "csv"]).optional().describe("Row format when reading a sheet: 'json' (default) or 'csv'."),
+      limit: z.number().int().positive().optional().describe("Max rows to return from a sheet (default 200). Paginate with offset."),
+      offset: z.number().int().nonnegative().optional().describe("Row offset to start from (default 0), for paginating a large sheet."),
+      section: z.string().optional().describe("For a prose/JSON inline SRS only: read a single named section/key."),
+    },
+    async ({ file, sheet, format, limit, offset, section }) =>
+      readSrsOnDir(bundleCwd, { file, sheet, format, limit, offset, section }),
   );
 }
 
 function buildGenerateBaselineTool(bundleCwd) {
   return tool(
-    "generate_baseline",
+    "bundle_generate_baseline",
     "Bootstrap a BASELINE bundle for the current agent-mode session, written into the session bundle dir so you can then refine it. Source: if the session carries XLSX generator inputs, this runs the deterministic SRS→bundle generator (the same one baseline mode runs at turn 0, now demoted to a tool you choose to call); otherwise it writes a MINIMAL VALID skeleton (one subject type + registration form + operational mirror) you can build on. Opt-in — you may instead hand-author via spec_apply/Edit. Returns { source, clean, validator, integrity }; it NEVER silently writes a dirty bundle — the resulting validator+integrity status is always surfaced. AGENT-mode only; a bad state returns an actionable error (never throws).",
     {},
     async () => generateBaselineOnDir(bundleCwd),

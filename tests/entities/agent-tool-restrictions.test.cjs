@@ -27,7 +27,7 @@ async function loadAgent() {
 
 const EXPORT_TOOL = "mcp__avni-bundle__bundle_export_to_path";
 const SPEC_APPLY = "mcp__avni-bundle__spec_apply";
-const GEN_BASELINE = "mcp__avni-bundle__generate_baseline";
+const GEN_BASELINE = "mcp__avni-bundle__bundle_generate_baseline";
 
 // ─── FIX 2: baseline SSRF / exfil block ─────────────────────────────
 

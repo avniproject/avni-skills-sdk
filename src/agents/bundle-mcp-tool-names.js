@@ -22,9 +22,15 @@ export const BUNDLE_TOOL_NAME = Object.freeze({
   // APPENDED in story #11 (part B). New names only — never repurpose the above.
   SPEC_APPLY: "mcp__avni-bundle__spec_apply",
   SPEC_EMIT: "mcp__avni-bundle__spec_emit",
-  // APPENDED in story #12 (agent agent mode). New names only.
-  READ_SRS: "mcp__avni-bundle__read_srs",
-  GENERATE_BASELINE: "mcp__avni-bundle__generate_baseline",
+  // APPENDED in story #12 (agent mode). New names only.
+  // NOTE: these frozen names use the `bundle_` prefix mandated by the epic
+  // acceptance criteria (bundle_read_srs / bundle_generate_baseline). The
+  // earlier divergent #12 build briefly named them read_srs / generate_baseline;
+  // that build never shipped (this is the unmerged epic integration branch), so
+  // there are no persisted transcripts to break — the rename to the epic's
+  // frozen contract happens ONCE here, before merge. Never rename after merge.
+  READ_SRS: "mcp__avni-bundle__bundle_read_srs",
+  GENERATE_BASELINE: "mcp__avni-bundle__bundle_generate_baseline",
   // APPENDED in story #13 (tool promotion). Promotes the CLI blast-radius
   // finder (scripts/agent-tools/find-references.mjs) to a first-class MCP tool —
   // the discovery harness (d8 multi-file-rename) + eval case 05 (rename-concept)

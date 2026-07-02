@@ -83,8 +83,8 @@ test("frozen names: original 5 unchanged + spec_apply/spec_emit appended", async
   assert.equal(BUNDLE_TOOL_NAME.SPEC_EMIT, "mcp__avni-bundle__spec_emit");
 
   // The two names appended in story #12 (agent author mode).
-  assert.equal(BUNDLE_TOOL_NAME.READ_SRS, "mcp__avni-bundle__read_srs");
-  assert.equal(BUNDLE_TOOL_NAME.GENERATE_BASELINE, "mcp__avni-bundle__generate_baseline");
+  assert.equal(BUNDLE_TOOL_NAME.READ_SRS, "mcp__avni-bundle__bundle_read_srs");
+  assert.equal(BUNDLE_TOOL_NAME.GENERATE_BASELINE, "mcp__avni-bundle__bundle_generate_baseline");
 
   // The name appended in story #13 (tool promotion: find-references).
   assert.equal(BUNDLE_TOOL_NAME.FIND_REFERENCES, "mcp__avni-bundle__bundle_find_references");
@@ -98,8 +98,8 @@ test("frozen names: original 5 unchanged + spec_apply/spec_emit appended", async
     "mcp__avni-bundle__bundle_integrity_check",
     "mcp__avni-bundle__spec_apply",
     "mcp__avni-bundle__spec_emit",
-    "mcp__avni-bundle__read_srs",
-    "mcp__avni-bundle__generate_baseline",
+    "mcp__avni-bundle__bundle_read_srs",
+    "mcp__avni-bundle__bundle_generate_baseline",
     "mcp__avni-bundle__bundle_find_references",
   ]);
 

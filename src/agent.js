@@ -203,12 +203,12 @@ HOW to satisfy these — entity shapes, the closed enum sets, the FK matrix, the
 // agent-mode sessions (activeRulesBlock({ mode: "agent" })). Baseline mode's
 // contract stays BYTE-IDENTICAL (the default no-arg call is unchanged), so the
 // slim-prompt / hard-rules pins keep passing. A few lines: it tells the agent the
-// agent flow (read_srs → optional generate_baseline → refine to clean) and that
-// the SAME data-integrity invariants above still hold — agent mode adds a
-// starting point, not a lower bar.
+// agent flow (bundle_read_srs → optional bundle_generate_baseline → refine to
+// clean) and that the SAME data-integrity invariants above still hold — agent
+// mode adds a starting point, not a lower bar.
 export const AGENT_MODE_ADDENDUM = `AGENT MODE — you are building this bundle FROM requirements, not editing an uploaded one. Your cwd may be EMPTY or a bare skeleton; do NOT assume a bundle already exists. Flow:
-1. Call \`mcp__avni-bundle__read_srs\` FIRST to read the session's SRS (requirements). Pass { section } for a large SRS.
-2. OPTIONALLY call \`mcp__avni-bundle__generate_baseline\` to bootstrap a deterministic baseline (it runs the SRS→bundle generator when XLSX inputs exist, else writes a minimal valid skeleton). You may instead hand-author via spec_apply / Edit.
+1. Call \`mcp__avni-bundle__bundle_read_srs\` FIRST to read the session's SRS (the uploaded spreadsheet(s) in ../input/). With no args it lists the sheets; pass { sheet, limit, offset } to page through a sheet's rows (concept sheets can be thousands of rows — paginate, don't dump).
+2. OPTIONALLY call \`mcp__avni-bundle__bundle_generate_baseline\` to bootstrap a deterministic baseline (it runs the SRS→bundle generator when XLSX inputs exist, else writes a minimal valid skeleton). You may instead hand-author via spec_apply / Edit.
 3. Refine with judgment until BOTH the validator and the integrity check report ZERO errors — honouring EXACTLY the same invariants above (find-before-create concept search, formElement.concept is a nested object, valid addressLevelType names, coded answers exist as standalone concepts, no dangling/invented UUIDs, server is the sole committer). Agent mode gives you a starting point, not a lower bar.`;
 
 // Backout flag (story #11): SDK_LEGACY_RULES=1 restores the full legacy

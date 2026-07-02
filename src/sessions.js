@@ -187,11 +187,10 @@ async function summariseRules(dir) {
  * @param {string}  [args.org="Bundle"]
  * @param {"baseline"|"agent"} [args.mode="baseline"]
  * @param {string|Object} [args.srs]         agent-mode SRS as inline text or JSON (string or already-parsed object)
- * @param {string}  [args.srsPath]           agent-mode external SRS path the agent can Read (recorded, not copied)
  */
-export function createSession({ formsBuffer, formsFilename, modellingBuffer, modellingFilename, org = "Bundle", mode = "baseline", srs, srsPath }) {
+export function createSession({ formsBuffer, formsFilename, modellingBuffer, modellingFilename, org = "Bundle", mode = "baseline", srs }) {
   if (mode === "agent") {
-    return createAgentSession({ formsBuffer, modellingBuffer, org, srs, srsPath });
+    return createAgentSession({ formsBuffer, modellingBuffer, org, srs });
   }
   if (mode !== "baseline") {
     throw new Error(`unknown session mode: ${JSON.stringify(mode)} (expected "baseline" or "agent")`);
@@ -261,7 +260,7 @@ export function createSession({ formsBuffer, formsFilename, modellingBuffer, mod
 // <session>/bundle/, kept OUT of git) so the tools (which run with cwd =
 // <session>/bundle) can reach them as ../input/ — the same sibling-access
 // pattern bundle_export_to_path uses to read ../meta.json.
-function createAgentSession({ formsBuffer, modellingBuffer, org, srs, srsPath }) {
+function createAgentSession({ formsBuffer, modellingBuffer, org, srs }) {
   const id = newId();
   const dir = path.join(SESSIONS_DIR, id);
   const inputDir = path.join(dir, "input");
@@ -271,8 +270,10 @@ function createAgentSession({ formsBuffer, modellingBuffer, org, srs, srsPath })
 
   // Persist the SRS in whatever form(s) the caller supplied under input/. All
   // are optional; an agent session may start from pure prose, from structured
-  // JSON, from XLSX generator inputs, from an external path, or any combination.
-  const srsMeta = { kind: "none", files: {}, hasGeneratorInputs: false, externalPath: null };
+  // JSON, from XLSX generator inputs, or any combination. NO external path is
+  // accepted (LFI closure, MAJOR-1) — everything read later is the session's own
+  // input/ dir.
+  const srsMeta = { kind: "none", files: {}, hasGeneratorInputs: false };
 
   if (typeof srs === "string" && srs.trim()) {
     // Inline SRS text. Store as JSON when it parses to an object/array, else raw.
@@ -303,12 +304,6 @@ function createAgentSession({ formsBuffer, modellingBuffer, org, srs, srsPath })
   if (modellingBuffer) {
     fs.writeFileSync(path.join(inputDir, "modelling.xlsx"), modellingBuffer);
     srsMeta.files.modelling = "input/modelling.xlsx";
-  }
-  if (typeof srsPath === "string" && srsPath.trim()) {
-    srsMeta.externalPath = srsPath.trim();
-    if (srsMeta.kind === "none") srsMeta.kind = "path";
-    // An external XLSX path can serve as generator forms input too.
-    if (/\.xlsx?$/i.test(srsMeta.externalPath)) srsMeta.hasGeneratorInputs = true;
   }
 
   // .gitignore keeps the input/ binaries + agent-staging artifacts out of the

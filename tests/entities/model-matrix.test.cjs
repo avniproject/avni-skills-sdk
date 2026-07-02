@@ -262,7 +262,7 @@ test("promotion: createBundleMcpServer registers bundle_find_references alongsid
   const names = Object.keys(server?.instance?._registeredTools || {});
   assert.ok(names.includes("bundle_find_references"), `saw: ${names.join(", ")}`);
   // The story #12 tools are still there (append-only, nothing removed).
-  for (const n of ["bundle_validator_run", "read_srs", "generate_baseline"]) {
+  for (const n of ["bundle_validator_run", "bundle_read_srs", "bundle_generate_baseline"]) {
     assert.ok(names.includes(n), `${n} missing; saw ${names.join(", ")}`);
   }
   fs.rmSync(dir, { recursive: true, force: true });
