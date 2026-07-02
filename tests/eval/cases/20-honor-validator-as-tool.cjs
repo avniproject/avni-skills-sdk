@@ -15,6 +15,7 @@
 
 module.exports = {
   name: "20-honor-validator-as-tool",
+  category: "no-thrash",
   description:
     "[no-thrash] After the fix, the agent re-runs bundle_validator_run to confirm the delta (edit → validate).",
 

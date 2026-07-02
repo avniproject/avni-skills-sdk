@@ -86,7 +86,10 @@ test("frozen names: original 5 unchanged + spec_apply/spec_emit appended", async
   assert.equal(BUNDLE_TOOL_NAME.READ_SRS, "mcp__avni-bundle__read_srs");
   assert.equal(BUNDLE_TOOL_NAME.GENERATE_BASELINE, "mcp__avni-bundle__generate_baseline");
 
-  // The list form: exactly 9, in order, the first 5 unchanged.
+  // The name appended in story #13 (tool promotion: find-references).
+  assert.equal(BUNDLE_TOOL_NAME.FIND_REFERENCES, "mcp__avni-bundle__bundle_find_references");
+
+  // The list form: exactly 10, in order, the first 5 unchanged.
   assert.deepEqual(BUNDLE_TOOL_NAMES, [
     "mcp__avni-bundle__bundle_validator_run",
     "mcp__avni-bundle__bundle_find_concept",
@@ -97,6 +100,7 @@ test("frozen names: original 5 unchanged + spec_apply/spec_emit appended", async
     "mcp__avni-bundle__spec_emit",
     "mcp__avni-bundle__read_srs",
     "mcp__avni-bundle__generate_baseline",
+    "mcp__avni-bundle__bundle_find_references",
   ]);
 
   // Still frozen — a stray mutation must throw, not silently corrupt logs.

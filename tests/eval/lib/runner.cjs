@@ -122,6 +122,10 @@ async function dispatchPrompt({ http, sid, prompt, apiKey, model, timeoutMs }) {
   let costUsd = 0;
   let inputTokens = 0, outputTokens = 0;
   let lastEventTs = Date.now();
+  // Story #13: the server's `start` SSE event reports the model selectModel()
+  // actually chose (respecting SDK_MODEL / caller model / matrix). Capturing it
+  // lets the model-matrix regenerator attribute each case result to a model.
+  let serverModel = null;
 
   while (true) {
     const { value, done } = await reader.read();
@@ -135,7 +139,9 @@ async function dispatchPrompt({ http, sid, prompt, apiKey, model, timeoutMs }) {
       let data;
       try { data = JSON.parse(dataLine); } catch { continue; }
       lastEventTs = Date.now();
-      if (evName === "agent") {
+      if (evName === "start") {
+        if (data && typeof data.model === "string") serverModel = data.model;
+      } else if (evName === "agent") {
         agentEvents.push(data);
         if (data.type === "result" && typeof data.total_cost_usd === "number") {
           costUsd = data.total_cost_usd;
@@ -166,16 +172,18 @@ async function dispatchPrompt({ http, sid, prompt, apiKey, model, timeoutMs }) {
     inputTokens,
     outputTokens,
     lastEventTs,
+    serverModel,
   };
 }
 
 // ─── one-case driver ───────────────────────────────────────────────
 
-async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, log = () => {} }) {
+async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, evalModel = "", log = () => {} }) {
   const start = Date.now();
   if (caseDef.pending) {
     return {
       name: caseDef.name,
+      category: caseDef.category || null,
       status: "pending",
       pendingReason: caseDef.pendingReason || "not yet implemented",
       durationMs: Date.now() - start,
@@ -243,14 +251,18 @@ async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, 
     baselineValidator = meta.validationAtCurrent || meta.validation || baselineValidator;
   } catch { /* best-effort — leave the empty baseline */ }
 
-  // 5. Dispatch the prompt
+  // 5. Dispatch the prompt. Story #13: SDK_EVAL_MODEL (evalModel) pins the run
+  // to one model so its results can be attributed in the matrix regenerator; it
+  // overrides any per-case model. Absent both, the server selects via the matrix
+  // and the chosen model is captured from the `start` event (dispatch.serverModel).
+  const dispatchModel = evalModel || caseDef.model || undefined;
   let dispatch;
   try {
     dispatch = await dispatchPrompt({
       http, sid,
       prompt: caseDef.prompt,
       apiKey,
-      model: caseDef.model,
+      model: dispatchModel,
       timeoutMs: caseDef.timeoutMs || 180_000,
     });
   } catch (e) {
@@ -328,9 +340,12 @@ async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, 
   }
 
   const durationMs = Date.now() - start;
+  const usedModel = dispatch.serverModel || dispatchModel || null;
   if (assertErr) {
     return {
       name: caseDef.name,
+      category: caseDef.category || null,
+      model: usedModel,
       status: "fail",
       error: assertErr.message,
       stack: assertErr.stack,
@@ -345,6 +360,8 @@ async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, 
 
   return {
     name: caseDef.name,
+    category: caseDef.category || null,
+    model: usedModel,
     status: "pass",
     turnsUsed: dispatch.turnEvent?.noChanges ? 0 : 1,
     cost: dispatch.costUsd,
@@ -358,6 +375,8 @@ async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, 
 function errResult(caseDef, message, start, extra = {}) {
   return {
     name: caseDef.name,
+    category: caseDef.category || null,
+    model: extra.dispatch?.serverModel || null,
     status: "fail",
     error: message,
     turnsUsed: 0,

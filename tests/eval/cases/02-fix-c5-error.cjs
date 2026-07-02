@@ -17,6 +17,7 @@
 
 module.exports = {
   name: "02-fix-c5-error",
+  category: "data-integrity",
   description:
     "Agent must repoint Religion.answer[Other] back at the existing 'Other' UUID, not add a new concept.",
 

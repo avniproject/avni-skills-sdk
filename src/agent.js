@@ -242,14 +242,19 @@ export function activeRulesBlock(opts = {}) {
   return base;
 }
 
-// Default model for live agent dispatch. Replaces the deleted keyword router
-// (src/router.js) with a single explicit default — capable enough for the
-// slim/open-tools setup — that callers can override per-turn (the `model`
-// field in the /messages payload) or globally via the SDK_MODEL env var.
+// Default model for live agent dispatch — the no-evidence FALLBACK floor.
 //
-// TODO(#13): replace this fixed default with the evidence-based
-// model-qualification matrix (model-qualification.json) once P5 produces real
-// per-model numbers; until then a safe explicit default beats a keyword guess.
+// Story #13 (P5) added the evidence-based model-qualification matrix
+// (spec/model-qualification.json) + selectModel() in src/model-matrix.js, which
+// is now what /v1/sessions/:id/messages calls. DEFAULT_MODEL is no longer the
+// primary path — it is the fallback selectModel() returns when the matrix has NO
+// evidence for a request's category (so nothing breaks and a weaker model is
+// never chosen without evidence). It is pinned to the matrix's `fallbackModel`
+// by a test (model-matrix.test.cjs) so the two can't drift.
+//
+// defaultModel() (SDK_MODEL env override, else DEFAULT_MODEL) is retained for
+// back-compat callers; the SDK_MODEL override is also honored (highest priority)
+// inside selectModel().
 export const DEFAULT_MODEL = "claude-sonnet-4-6";
 export function defaultModel() {
   const v = process.env.SDK_MODEL;

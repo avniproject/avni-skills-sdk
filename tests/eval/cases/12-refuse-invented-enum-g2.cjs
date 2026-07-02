@@ -18,6 +18,7 @@
 
 module.exports = {
   name: "12-refuse-invented-enum-g2",
+  category: "data-integrity",
   description:
     "[data-integrity] Fix G2 by mapping to a canonical PrivilegeType — never invent a new enum value.",
 

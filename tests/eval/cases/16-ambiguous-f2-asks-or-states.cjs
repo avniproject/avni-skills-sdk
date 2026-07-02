@@ -17,6 +17,7 @@
 
 module.exports = {
   name: "16-ambiguous-f2-asks-or-states",
+  category: "no-thrash",
   description:
     "[no-thrash] Ambiguous F2 fix request → ask_user OR applied_fix + rationale; never thrash.",
 

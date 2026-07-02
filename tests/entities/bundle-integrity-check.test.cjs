@@ -513,6 +513,8 @@ test("frozen tool-name file still carries the original names unchanged + appends
   // The author-mode names appended in story #12.
   assert.equal(BUNDLE_TOOL_NAME.READ_SRS, "mcp__avni-bundle__read_srs");
   assert.equal(BUNDLE_TOOL_NAME.GENERATE_BASELINE, "mcp__avni-bundle__generate_baseline");
+  // Appended in story #13 (tool promotion).
+  assert.equal(BUNDLE_TOOL_NAME.FIND_REFERENCES, "mcp__avni-bundle__bundle_find_references");
   // The list preserves the originals in order, then the appended ones.
   assert.deepEqual(BUNDLE_TOOL_NAMES, [
     "mcp__avni-bundle__bundle_validator_run",
@@ -524,6 +526,7 @@ test("frozen tool-name file still carries the original names unchanged + appends
     "mcp__avni-bundle__spec_emit",
     "mcp__avni-bundle__read_srs",
     "mcp__avni-bundle__generate_baseline",
+    "mcp__avni-bundle__bundle_find_references",
   ]);
   // Still frozen.
   assert.ok(Object.isFrozen(BUNDLE_TOOL_NAME));

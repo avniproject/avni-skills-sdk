@@ -1,0 +1,182 @@
+{
+  "version": 1,
+  "source": "interim-seed",
+  "generatedAt": null,
+  "note": "INTERIM SEED — this qualification is a documented judgment, NOT eval data. Regenerate from a real eval run: run the 20-case suite per model with SDK_EVAL_RESULTS_JSONL set (see scripts/build-model-matrix.mjs header), then `node scripts/build-model-matrix.mjs --in <results.jsonl>`. Until then, selection falls back to the #11 default (claude-sonnet-4-6) for any category with no qualified model.",
+  "categories": [
+    "data-integrity",
+    "safety-refusal",
+    "correctness",
+    "no-thrash",
+    "srs-authorship"
+  ],
+  "fallbackModel": "claude-sonnet-4-6",
+  "models": {
+    "claude-haiku-4-5": {
+      "costRank": 1,
+      "toolTiers": [
+        "read"
+      ],
+      "qualification": {
+        "data-integrity": {
+          "qualified": false,
+          "source": "interim",
+          "runId": null,
+          "passed": null,
+          "total": null,
+          "passRate": null,
+          "rationale": "interim: cheapest model — low-risk explain/verify only; not trusted for structural work pending eval"
+        },
+        "safety-refusal": {
+          "qualified": false,
+          "source": "interim",
+          "runId": null,
+          "passed": null,
+          "total": null,
+          "passRate": null,
+          "rationale": "interim: cheapest model — low-risk explain/verify only; not trusted for structural work pending eval"
+        },
+        "correctness": {
+          "qualified": false,
+          "source": "interim",
+          "runId": null,
+          "passed": null,
+          "total": null,
+          "passRate": null,
+          "rationale": "interim: cheapest model — low-risk explain/verify only; not trusted for structural work pending eval"
+        },
+        "no-thrash": {
+          "qualified": true,
+          "source": "interim",
+          "runId": null,
+          "passed": null,
+          "total": null,
+          "passRate": null,
+          "rationale": "interim: cheapest model — low-risk explain/verify only; not trusted for structural work pending eval"
+        },
+        "srs-authorship": {
+          "qualified": false,
+          "source": "interim",
+          "runId": null,
+          "passed": null,
+          "total": null,
+          "passRate": null,
+          "rationale": "interim: cheapest model — low-risk explain/verify only; not trusted for structural work pending eval"
+        }
+      }
+    },
+    "claude-sonnet-4-6": {
+      "costRank": 2,
+      "toolTiers": [
+        "read",
+        "write",
+        "structural",
+        "export"
+      ],
+      "qualification": {
+        "data-integrity": {
+          "qualified": true,
+          "source": "interim",
+          "runId": null,
+          "passed": null,
+          "total": null,
+          "passRate": null,
+          "rationale": "interim: #11 default — treated as safe across all categories pending eval evidence"
+        },
+        "safety-refusal": {
+          "qualified": true,
+          "source": "interim",
+          "runId": null,
+          "passed": null,
+          "total": null,
+          "passRate": null,
+          "rationale": "interim: #11 default — treated as safe across all categories pending eval evidence"
+        },
+        "correctness": {
+          "qualified": true,
+          "source": "interim",
+          "runId": null,
+          "passed": null,
+          "total": null,
+          "passRate": null,
+          "rationale": "interim: #11 default — treated as safe across all categories pending eval evidence"
+        },
+        "no-thrash": {
+          "qualified": true,
+          "source": "interim",
+          "runId": null,
+          "passed": null,
+          "total": null,
+          "passRate": null,
+          "rationale": "interim: #11 default — treated as safe across all categories pending eval evidence"
+        },
+        "srs-authorship": {
+          "qualified": true,
+          "source": "interim",
+          "runId": null,
+          "passed": null,
+          "total": null,
+          "passRate": null,
+          "rationale": "interim: #11 default — treated as safe across all categories pending eval evidence"
+        }
+      }
+    },
+    "claude-opus-4-8": {
+      "costRank": 3,
+      "toolTiers": [
+        "read",
+        "write",
+        "structural",
+        "export"
+      ],
+      "qualification": {
+        "data-integrity": {
+          "qualified": true,
+          "source": "interim",
+          "runId": null,
+          "passed": null,
+          "total": null,
+          "passRate": null,
+          "rationale": "interim: strongest model — qualified for the hardest categories"
+        },
+        "safety-refusal": {
+          "qualified": true,
+          "source": "interim",
+          "runId": null,
+          "passed": null,
+          "total": null,
+          "passRate": null,
+          "rationale": "interim: strongest model — qualified for the hardest categories"
+        },
+        "correctness": {
+          "qualified": true,
+          "source": "interim",
+          "runId": null,
+          "passed": null,
+          "total": null,
+          "passRate": null,
+          "rationale": "interim: strongest model — qualified for the hardest categories"
+        },
+        "no-thrash": {
+          "qualified": true,
+          "source": "interim",
+          "runId": null,
+          "passed": null,
+          "total": null,
+          "passRate": null,
+          "rationale": "interim: strongest model — qualified for the hardest categories"
+        },
+        "srs-authorship": {
+          "qualified": true,
+          "source": "interim",
+          "runId": null,
+          "passed": null,
+          "total": null,
+          "passRate": null,
+          "rationale": "interim: strongest model — qualified for the hardest categories"
+        }
+      }
+    }
+  },
+  "checksum": "sha256:b3d63650fbc14fa746687918a49a8cdb067a344aa5af2dc3edbca5ca6ef100b1"
+}

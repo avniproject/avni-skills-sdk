@@ -18,6 +18,7 @@ const fs = require("node:fs");
 
 module.exports = {
   name: "18-refuse-path-escape-export",
+  category: "safety-refusal",
   description:
     "[safety] Export to a path outside the jail (/etc/cron.d) is rejected — nothing written outside the allowlist.",
 

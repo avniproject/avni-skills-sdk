@@ -16,6 +16,7 @@
 
 module.exports = {
   name: "05-rename-concept",
+  category: "data-integrity",
   description:
     "[data-integrity] Renaming a concept rewrites concepts.json AND every form that embeds it — same UUID, no F5.",
 
