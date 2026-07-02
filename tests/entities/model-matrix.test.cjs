@@ -81,16 +81,16 @@ test("matrix: fallbackModel is pinned to agent.js DEFAULT_MODEL (no drift)", asy
 
 test("selectModel: edit mode → cheapest qualified for data-integrity (sonnet, the #11 default)", async () => {
   const M = await loadMatrixMod();
-  const r = M.selectModel({ mode: "edit", env: null });
+  const r = M.selectModel({ mode: "baseline", env: null });
   assert.equal(r.category, "data-integrity");
   assert.equal(r.source, "matrix");
   // Under the interim seed only sonnet+opus qualify for data-integrity → cheapest = sonnet.
   assert.equal(r.model, "claude-sonnet-4-6");
 });
 
-test("selectModel: author mode → cheapest qualified for srs-authorship (sonnet)", async () => {
+test("selectModel: agent mode → cheapest qualified for srs-authorship (sonnet)", async () => {
   const M = await loadMatrixMod();
-  const r = M.selectModel({ mode: "author", env: null });
+  const r = M.selectModel({ mode: "agent", env: null });
   assert.equal(r.category, "srs-authorship");
   assert.equal(r.source, "matrix");
   assert.equal(r.model, "claude-sonnet-4-6");
@@ -98,7 +98,7 @@ test("selectModel: author mode → cheapest qualified for srs-authorship (sonnet
 
 test("selectModel: low-risk signal (structural:false) → cheapest qualified for no-thrash (haiku)", async () => {
   const M = await loadMatrixMod();
-  const r = M.selectModel({ mode: "edit", structural: false, env: null });
+  const r = M.selectModel({ mode: "baseline", structural: false, env: null });
   assert.equal(r.category, "no-thrash");
   assert.equal(r.source, "matrix");
   // haiku is interim-qualified for no-thrash and is the cheapest → selected.
@@ -113,7 +113,7 @@ test("selectModel: low-risk signal (structural:false) → cheapest qualified for
 test("selectModel: caller's explicit model BEATS SDK_MODEL (FIX 3 precedence)", async () => {
   const M = await loadMatrixMod();
   // Both a caller model AND an operator env are present → the caller wins.
-  const r = M.selectModel({ mode: "edit", requested: "claude-opus-4-8", env: "claude-haiku-4-5" });
+  const r = M.selectModel({ mode: "baseline", requested: "claude-opus-4-8", env: "claude-haiku-4-5" });
   assert.equal(r.source, "caller", "explicit per-request model must win over SDK_MODEL");
   assert.equal(r.model, "claude-opus-4-8");
 });
@@ -123,7 +123,7 @@ test("selectModel: caller's explicit model beats process.env.SDK_MODEL too (FIX 
   const prev = process.env.SDK_MODEL;
   process.env.SDK_MODEL = "claude-haiku-4-5";
   try {
-    const r = M.selectModel({ mode: "edit", requested: "claude-opus-4-8" });
+    const r = M.selectModel({ mode: "baseline", requested: "claude-opus-4-8" });
     assert.equal(r.source, "caller");
     assert.equal(r.model, "claude-opus-4-8");
   } finally {
@@ -134,7 +134,7 @@ test("selectModel: caller's explicit model beats process.env.SDK_MODEL too (FIX 
 test("selectModel: SDK_MODEL still wins when the caller does NOT pin a model", async () => {
   const M = await loadMatrixMod();
   // No `requested` → the operator env override applies.
-  const r = M.selectModel({ mode: "edit", env: "claude-haiku-4-5" });
+  const r = M.selectModel({ mode: "baseline", env: "claude-haiku-4-5" });
   assert.equal(r.source, "override");
   assert.equal(r.model, "claude-haiku-4-5");
 });
@@ -144,7 +144,7 @@ test("selectModel: reads process.env.SDK_MODEL when env arg omitted (no caller m
   const prev = process.env.SDK_MODEL;
   process.env.SDK_MODEL = "claude-opus-4-8";
   try {
-    const r = M.selectModel({ mode: "edit" });
+    const r = M.selectModel({ mode: "baseline" });
     assert.equal(r.source, "override");
     assert.equal(r.model, "claude-opus-4-8");
   } finally {
@@ -154,7 +154,7 @@ test("selectModel: reads process.env.SDK_MODEL when env arg omitted (no caller m
 
 test("selectModel: caller's explicit model wins over the matrix (no env override)", async () => {
   const M = await loadMatrixMod();
-  const r = M.selectModel({ mode: "edit", requested: "claude-opus-4-8", env: null });
+  const r = M.selectModel({ mode: "baseline", requested: "claude-opus-4-8", env: null });
   assert.equal(r.source, "caller");
   assert.equal(r.model, "claude-opus-4-8");
 });
@@ -192,7 +192,7 @@ test("selectModel: no qualified model for a category → falls back to the #11 d
       },
     },
   };
-  const r = M.selectModel({ mode: "edit", env: null, matrix: emptyEvidence });
+  const r = M.selectModel({ mode: "baseline", env: null, matrix: emptyEvidence });
   assert.equal(r.source, "fallback");
   assert.equal(r.model, DEFAULT_MODEL, "no evidence MUST NOT downgrade — return the #11 default");
 });
@@ -200,7 +200,7 @@ test("selectModel: no qualified model for a category → falls back to the #11 d
 test("selectModel: empty matrix models {} → still returns the #11 default (never throws)", async () => {
   const M = await loadMatrixMod();
   const { DEFAULT_MODEL } = await loadAgent();
-  const r = M.selectModel({ mode: "author", env: null, matrix: { models: {}, fallbackModel: DEFAULT_MODEL } });
+  const r = M.selectModel({ mode: "agent", env: null, matrix: { models: {}, fallbackModel: DEFAULT_MODEL } });
   assert.equal(r.source, "fallback");
   assert.equal(r.model, DEFAULT_MODEL);
 });

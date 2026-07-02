@@ -83,8 +83,16 @@ export async function renderBundleStats({ BASE, sess, getJson }) {
 
   const headerTurn = sess.resumed ? (sess.meta?.currentTurn ?? 0) : 0;
   const headerTag = sess.resumed ? "resumed" : "deterministic first-pass";
+  // Session mode (story #12): baseline (generator at turn 0) | agent (author from SRS).
+  // Absent on pre-#12 sessions → baseline. Surfaced so the operator knows which
+  // pipeline this session runs.
+  const sessionMode = bundleStats?.mode || sess.meta?.mode || "baseline";
+  const modeTag = sessionMode === "agent"
+    ? magenta("agent") + dim(" · author from SRS in input/")
+    : cyan("baseline") + dim(" · deterministic generator at turn 0");
   box([
     dim("bundle  ") + bold(`turn ${headerTurn}`) + dim(" · " + headerTag),
+    `${dim("mode")}            ${modeTag}`,
     "",
     `${dim("concepts")}        ${cyan(String(nConcepts ?? "?"))}`,
     `${dim("forms")}           ${cyan(String(nForms))}`,

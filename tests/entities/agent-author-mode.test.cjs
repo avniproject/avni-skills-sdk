@@ -4,8 +4,8 @@
 //   • session mode: edit (default) is unchanged; author creates a session
 //     around an SRS with an empty bundle dir.
 //   • bundle_read_srs: returns the attached SRS (text/JSON, section arg); an
-//     edit-mode session (no SRS) returns an actionable isError.
-//   • bundle_generate_baseline: an author session with XLSX inputs bootstraps a
+//     baseline-mode session (no SRS) returns an actionable isError.
+//   • bundle_generate_baseline: an agent session with XLSX inputs bootstraps a
 //     CLEAN bundle via the brain generator; one lacking inputs writes a CLEAN
 //     minimal skeleton; a bad state returns isError (never throws).
 //   • an end-to-end-ish author path: create → generate_baseline → integrity
@@ -77,10 +77,10 @@ test("session mode: edit is the DEFAULT and runs the generator at turn 0 (unchan
     modellingBuffer: buildModellingBuffer(), org: "EditOrg",
   });
   assert.equal(created.meta.currentTurn, 0);
-  // Edit-mode meta must NOT carry a `mode` field — the shape is byte-identical
-  // to pre-#12 sessions.
-  assert.equal(created.meta.mode, undefined);
-  assert.equal(sessions.getSessionMode(created.sessionId), "edit");
+  // Baseline-mode meta now records mode:"baseline" (story #12); the bundle
+  // generation path itself stays byte-identical to pre-#12 sessions.
+  assert.equal(created.meta.mode, "baseline");
+  assert.equal(sessions.getSessionMode(created.sessionId), "baseline");
   const files = sessions.listFiles(created.sessionId);
   assert.ok(files.includes("subjectTypes.json"), "edit mode generates a bundle at turn 0");
   assert.ok(files.some((f) => f.startsWith("forms/")), "edit mode generates forms at turn 0");
@@ -90,13 +90,13 @@ test("session mode: author creates a session around an SRS with an EMPTY bundle 
   freshRoot();
   const sessions = await loadSessions();
   const created = sessions.createSession({
-    mode: "author", org: "AuthorOrg",
+    mode: "agent", org: "AuthorOrg",
     srs: "# Requirements\nRegister individuals with a name.",
   });
-  assert.equal(created.meta.mode, "author");
+  assert.equal(created.meta.mode, "agent");
   assert.equal(created.meta.currentTurn, 0);
   assert.equal(created.meta.srs.kind, "text");
-  assert.equal(sessions.getSessionMode(created.sessionId), "author");
+  assert.equal(sessions.getSessionMode(created.sessionId), "agent");
   const files = sessions.listFiles(created.sessionId);
   assert.ok(!files.includes("subjectTypes.json"), "author bundle starts empty (no generated entities)");
   assert.ok(!files.some((f) => f.startsWith("forms/")), "author bundle has no forms yet");
@@ -116,12 +116,12 @@ test("session mode: unknown mode is rejected", async () => {
 
 // ─── bundle_read_srs ─────────────────────────────────────────────────
 
-test("read_srs: returns the attached prose SRS for an author session", async () => {
+test("read_srs: returns the attached prose SRS for an agent session", async () => {
   freshRoot();
   const sessions = await loadSessions();
   const { readSrsOnDir } = await loadMcp();
   const created = sessions.createSession({
-    mode: "author", org: "A",
+    mode: "agent", org: "A",
     srs: "# Goal\nTrack pregnant women.\n# Forms\nANC visit form.",
   });
   const res = readSrsOnDir(sessions.bundleDir(created.sessionId), {});
@@ -136,7 +136,7 @@ test("read_srs: returns structured JSON and honours a section arg", async () => 
   const sessions = await loadSessions();
   const { readSrsOnDir } = await loadMcp();
   const srs = JSON.stringify({ org: "X", subjectTypes: [{ name: "Mother" }], forms: [{ name: "ANC" }] });
-  const created = sessions.createSession({ mode: "author", org: "X", srs });
+  const created = sessions.createSession({ mode: "agent", org: "X", srs });
   const dir = sessions.bundleDir(created.sessionId);
   const whole = jsonOf(readSrsOnDir(dir, {}));
   assert.equal(whole.format, "json");
@@ -146,7 +146,7 @@ test("read_srs: returns structured JSON and honours a section arg", async () => 
   assert.deepEqual(sec.content, [{ name: "ANC" }]);
 });
 
-test("read_srs: an edit-mode session returns an actionable error (no SRS)", async () => {
+test("read_srs: an baseline-mode session returns an actionable error (no SRS)", async () => {
   freshRoot();
   const sessions = await loadSessions();
   const { readSrsOnDir } = await loadMcp();
@@ -154,8 +154,8 @@ test("read_srs: an edit-mode session returns an actionable error (no SRS)", asyn
     formsBuffer: buildFormsBuffer(), modellingBuffer: buildModellingBuffer(), org: "E",
   });
   const res = readSrsOnDir(sessions.bundleDir(created.sessionId), {});
-  assert.ok(res.isError, "edit-mode read_srs must be an error");
-  assert.match(res.content[0].text, /no SRS is attached|AUTHOR-mode/);
+  assert.ok(res.isError, "baseline-mode read_srs must be an error");
+  assert.match(res.content[0].text, /no SRS is attached|AGENT-mode/);
 });
 
 test("read_srs: a dir with no session meta returns an actionable error, never throws", async () => {
@@ -170,12 +170,12 @@ test("read_srs: a dir with no session meta returns an actionable error, never th
 
 // ─── bundle_generate_baseline ────────────────────────────────────────
 
-test("generate_baseline: author session with XLSX inputs bootstraps a CLEAN bundle via the brain generator", async () => {
+test("generate_baseline: agent session with XLSX inputs bootstraps a CLEAN bundle via the brain generator", async () => {
   freshRoot();
   const sessions = await loadSessions();
   const { generateBaselineOnDir } = await loadMcp();
   const created = sessions.createSession({
-    mode: "author", org: "GenOrg",
+    mode: "agent", org: "GenOrg",
     formsBuffer: buildFormsBuffer(), modellingBuffer: buildModellingBuffer(),
   });
   const dir = sessions.bundleDir(created.sessionId);
@@ -189,12 +189,12 @@ test("generate_baseline: author session with XLSX inputs bootstraps a CLEAN bund
   assert.ok(sessions.listFiles(created.sessionId).includes("subjectTypes.json"), "generator wrote a bundle into the session dir");
 });
 
-test("generate_baseline: author session lacking generator inputs writes a CLEAN minimal skeleton", async () => {
+test("generate_baseline: agent session lacking generator inputs writes a CLEAN minimal skeleton", async () => {
   freshRoot();
   const sessions = await loadSessions();
   const { generateBaselineOnDir } = await loadMcp();
   const created = sessions.createSession({
-    mode: "author", org: "SkelOrg",
+    mode: "agent", org: "SkelOrg",
     srs: "Just prose requirements, no spreadsheet attached.",
   });
   const dir = sessions.bundleDir(created.sessionId);
@@ -210,7 +210,7 @@ test("generate_baseline: author session lacking generator inputs writes a CLEAN 
   assert.ok(out.filesWritten.includes("formMappings.json"));
 });
 
-test("generate_baseline: an edit-mode session returns an actionable error, never throws", async () => {
+test("generate_baseline: an baseline-mode session returns an actionable error, never throws", async () => {
   freshRoot();
   const sessions = await loadSessions();
   const { generateBaselineOnDir } = await loadMcp();
@@ -221,7 +221,7 @@ test("generate_baseline: an edit-mode session returns an actionable error, never
   let res;
   assert.doesNotThrow(() => { res = generateBaselineOnDir(dir); });
   assert.ok(res.isError);
-  assert.match(res.content[0].text, /only for AUTHOR-mode/);
+  assert.match(res.content[0].text, /only for AGENT-mode/);
 });
 
 test("generate_baseline: a dir with no session meta returns an actionable error, never throws", async () => {
@@ -262,7 +262,7 @@ test("author path: create → generate_baseline → integrity clean → spec_app
   const sessions = await loadSessions();
   const { generateBaselineOnDir, specApplyOnDir, runBundleIntegrityCheck } = await loadMcp();
   const created = sessions.createSession({
-    mode: "author", org: "E2EOrg",
+    mode: "agent", org: "E2EOrg",
     srs: "# Plan\nStart with individuals, add a Household group.",
   });
   const dir = sessions.bundleDir(created.sessionId);
@@ -294,16 +294,16 @@ test("contract: activeRulesBlock({mode:'author'}) appends the addendum; edit mod
     const m = await loadAgent();
     // Edit / no-arg — byte-identical to the slim contract (slim-prompt pin).
     assert.equal(m.activeRulesBlock(), m.BUNDLE_OUTCOME_CONTRACT);
-    assert.equal(m.activeRulesBlock({ mode: "edit" }), m.BUNDLE_OUTCOME_CONTRACT);
+    assert.equal(m.activeRulesBlock({ mode: "baseline" }), m.BUNDLE_OUTCOME_CONTRACT);
     // Author — appends the addendum after the base contract.
-    const authored = m.activeRulesBlock({ mode: "author" });
+    const authored = m.activeRulesBlock({ mode: "agent" });
     assert.ok(authored.startsWith(m.BUNDLE_OUTCOME_CONTRACT), "addendum must follow the base contract");
-    assert.ok(authored.includes(m.AUTHOR_MODE_ADDENDUM));
-    assert.match(authored, /AUTHOR MODE/);
+    assert.ok(authored.includes(m.AGENT_MODE_ADDENDUM));
+    assert.match(authored, /AGENT MODE/);
     assert.match(authored, /read_srs/);
     assert.match(authored, /generate_baseline/);
     // The addendum stays short (a few lines, not a second ruleset).
-    assert.ok(m.AUTHOR_MODE_ADDENDUM.trim().split(/\s+/).length < 200, "addendum must stay short");
+    assert.ok(m.AGENT_MODE_ADDENDUM.trim().split(/\s+/).length < 200, "addendum must stay short");
   } finally {
     if (prev === undefined) delete process.env.SDK_LEGACY_RULES;
     else process.env.SDK_LEGACY_RULES = prev;

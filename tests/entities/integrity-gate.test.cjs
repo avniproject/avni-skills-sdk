@@ -127,7 +127,7 @@ test("export gate: a CLEAN bundle still exports fine", async () => {
 
 test("integrity errors are FOLDED into the stored per-turn validation (commitWorkspaceChanges)", async () => {
   const sessions = await loadSessions();
-  const created = sessions.createSession({ mode: "author", org: "IntegTest", srs: "requirements" });
+  const created = sessions.createSession({ mode: "agent", org: "IntegTest", srs: "requirements" });
   const bundleDir = sessions.bundleDir(created.sessionId);
 
   // Author the dirty bundle into the session's bundle dir.
@@ -155,7 +155,7 @@ test("integrity errors are FOLDED into the stored per-turn validation (commitWor
 
 test("integrity errors are INJECTED into every turn's prompt (currentValidatorStateText)", async () => {
   const sessions = await loadSessions();
-  const created = sessions.createSession({ mode: "author", org: "IntegTest", srs: "requirements" });
+  const created = sessions.createSession({ mode: "agent", org: "IntegTest", srs: "requirements" });
   const bundleDir = sessions.bundleDir(created.sessionId);
 
   const files = (await loadServer()).buildMinimalSkeleton();
@@ -180,7 +180,7 @@ test("integrity errors are INJECTED into every turn's prompt (currentValidatorSt
 
 test("closes the hole: validator shows 0 errors but integrity is dirty → folded state is NOT clean", async () => {
   const sessions = await loadSessions();
-  const created = sessions.createSession({ mode: "author", org: "IntegTest", srs: "requirements" });
+  const created = sessions.createSession({ mode: "agent", org: "IntegTest", srs: "requirements" });
   const bundleDir = sessions.bundleDir(created.sessionId);
 
   const files = (await loadServer()).buildMinimalSkeleton();

@@ -156,8 +156,8 @@ export function register(app) {
     // with a backout to the full legacy BUNDLE_HARD_RULES iff SDK_LEGACY_RULES=1.
     // activeRulesBlock() reads the env per-call, so a single scenario (or the
     // discovery harness) can toggle it. Evaluated once so both injection points
-    // agree within a turn. In an author-mode session (story #12) the
-    // AUTHOR_MODE_ADDENDUM is appended; edit mode is byte-identical.
+    // agree within a turn. In an agent-mode session (story #12) the
+    // AGENT_MODE_ADDENDUM is appended; baseline mode is byte-identical.
     const sessionMode = sessions.getSessionMode(req.params.id);
     const rulesBlock = activeRulesBlock({ mode: sessionMode });
 
@@ -198,8 +198,8 @@ ${wrappedUserPrompt}`;
     // the #11 default fallback. NO regression: absent evidence for a category,
     // selection returns the #11 default (claude-sonnet-4-6) — never a silent
     // downgrade to a weaker model. Signals are cheap + evidence-grounded: the
-    // session mode (author vs edit, story #12). Edit mode assumes structural
-    // work → the data-integrity category, so the common edit case keeps routing
+    // session mode (agent vs baseline, story #12). Baseline mode assumes structural
+    // work → the data-integrity category, so the common baseline case keeps routing
     // to the #11 default under the interim seed.
     const requestedModel = (typeof model === "string" && model.trim()) ? model.trim() : undefined;
     const selection = selectModel({ requested: requestedModel, mode: sessionMode });

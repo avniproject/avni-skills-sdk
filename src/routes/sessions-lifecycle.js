@@ -11,9 +11,9 @@ import { readMultipart } from "../middleware/multipart.js";
 
 export function register(app) {
   // Create a new session.
-  //   • mode=edit (DEFAULT): from an SRS upload. Runs the deterministic
+  //   • mode=baseline (DEFAULT): from an SRS upload. Runs the deterministic
   //     generator as turn 0. Requires the 'forms' file. Byte-for-byte unchanged.
-  //   • mode=author (story #12): from requirements. The bundle starts empty; the
+  //   • mode=agent (story #12): from requirements. The bundle starts empty; the
   //     SRS is attached (inline 'srs' field, optional 'forms'/'modelling' XLSX,
   //     and/or an 'srs_path' the agent can Read). The agent reads it via
   //     read_srs and optionally bootstraps via generate_baseline.
@@ -26,12 +26,12 @@ export function register(app) {
         return res.status(400).json({ error: "Content-Type must be multipart/form-data" });
       }
       const { fields, files } = await readMultipart(req);
-      const mode = fields.mode === "author" ? "author" : "edit";
-      if (mode === "edit" && !files.forms) {
+      const mode = fields.mode === "agent" ? "agent" : "baseline";
+      if (mode === "baseline" && !files.forms) {
         return res.status(400).json({ error: "missing 'forms' file (Forms.xlsx)" });
       }
-      if (mode === "author" && !files.forms && !files.modelling && !fields.srs && !fields.srs_path) {
-        return res.status(400).json({ error: "author mode requires at least one SRS source: an 'srs' field (inline text/JSON), a 'forms'/'modelling' XLSX file, or an 'srs_path'" });
+      if (mode === "agent" && !files.forms && !files.modelling && !fields.srs && !fields.srs_path) {
+        return res.status(400).json({ error: "agent mode requires at least one SRS source: an 'srs' field (inline text/JSON), a 'forms'/'modelling' XLSX file, or an 'srs_path'" });
       }
 
       const result = sessions.createSession({

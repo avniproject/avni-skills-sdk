@@ -839,9 +839,9 @@ function buildSpecEmitTool(bundleCwd) {
   );
 }
 
-// ─── author mode: SRS reader + baseline bootstrap (story #12) ────────
+// ─── agent mode: SRS reader + baseline bootstrap (story #12) ────────
 //
-// Author mode builds a bundle FROM requirements (an SRS) rather than editing an
+// Agent mode builds a bundle FROM requirements (an SRS) rather than editing an
 // uploaded one. The SRS is persisted by createSession under <session>/srs/; the
 // tools reach it via the session dir (the parent of bundleCwd) — the SAME
 // sibling-access pattern bundle_export_to_path uses to read ../meta.json.
@@ -894,7 +894,7 @@ function sliceSection(text, name) {
 
 /**
  * Read the SRS attached to the session that owns `bundleCwd`.
- * Returns an MCP CallToolResult. Never throws — an edit-mode session (no SRS)
+ * Returns an MCP CallToolResult. Never throws — an baseline-mode session (no SRS)
  * or a read failure surfaces as an actionable isError. Exported for unit tests.
  */
 export function readSrsOnDir(bundleCwd, opts = {}) {
@@ -903,10 +903,10 @@ export function readSrsOnDir(bundleCwd, opts = {}) {
   if (!meta) {
     return errorResult("could not read session meta (../meta.json) — read_srs needs a session-backed bundle directory.");
   }
-  if (meta.mode !== "author" || !meta.srs) {
+  if (meta.mode !== "agent" || !meta.srs) {
     return errorResult(
-      "no SRS is attached to this session. read_srs is for AUTHOR-mode sessions created around an SRS; " +
-      "this is an edit-mode session (its bundle was generated from an uploaded SRS at turn 0). " +
+      "no SRS is attached to this session. read_srs is for AGENT-mode sessions created around an SRS; " +
+      "this is an baseline-mode session (its bundle was generated from an uploaded SRS at turn 0). " +
       "Read the bundle files directly (bundle_summary / Read) instead.",
     );
   }
@@ -980,7 +980,7 @@ export function readSrsOnDir(bundleCwd, opts = {}) {
 // A MINIMAL VALID bundle skeleton: one Person subject type + its registration
 // form (a single Text concept) + the operational mirror + the required
 // empty entity files + org config + one address level. Proven validator-clean
-// AND integrity-clean (see tests/entities/agent-author-mode.test.cjs). Uses
+// AND integrity-clean (see tests/entities/agent-agent-mode.test.cjs). Uses
 // fresh v4 UUIDs so the skeleton is generator-independent — the baseline the
 // agent gets when the session has no XLSX generator inputs. Exported for tests.
 export function buildMinimalSkeleton() {
@@ -1024,7 +1024,7 @@ function writeMinimalSkeleton(bundleCwd) {
 }
 
 /**
- * Bootstrap a baseline bundle for the author-mode session that owns `bundleCwd`,
+ * Bootstrap a baseline bundle for the agent-mode session that owns `bundleCwd`,
  * writing it into `bundleCwd`. Sources the baseline from the BRAIN generator when
  * the session carries XLSX inputs; otherwise writes a minimal valid skeleton.
  * Always runs validator + integrity AFTER and surfaces the status (never claims
@@ -1036,9 +1036,9 @@ export function generateBaselineOnDir(bundleCwd) {
   if (!meta) {
     return errorResult("could not read session meta (../meta.json) — generate_baseline needs a session-backed bundle directory.");
   }
-  if (meta.mode !== "author") {
+  if (meta.mode !== "agent") {
     return errorResult(
-      "generate_baseline is only for AUTHOR-mode sessions. An edit-mode session already has a deterministic " +
+      "generate_baseline is only for AGENT-mode sessions. An baseline-mode session already has a deterministic " +
       "first-pass bundle (generated from the uploaded SRS at turn 0) — there is no baseline to bootstrap.",
     );
   }
@@ -1050,7 +1050,7 @@ export function generateBaselineOnDir(bundleCwd) {
 
   // Prefer the BRAIN generator when the session carries usable XLSX inputs. This
   // is the deterministic SRS→bundle generator DEMOTED to a tool: the same code
-  // edit mode runs at turn 0, but here the AGENT chooses to invoke it.
+  // baseline mode runs at turn 0, but here the AGENT chooses to invoke it.
   let formsPath = null;
   if (srs.files && srs.files.forms && fs.existsSync(path.join(srsDir, "forms.xlsx"))) {
     formsPath = path.join(srsDir, "forms.xlsx");
@@ -1117,7 +1117,7 @@ export function generateBaselineOnDir(bundleCwd) {
 function buildReadSrsTool(bundleCwd) {
   return tool(
     "read_srs",
-    "Read the SRS (requirements) attached to the CURRENT author-mode session so you can ground bundle authoring in the requirements instead of guessing. Returns the SRS structured (when it is JSON with sections/entities) or raw (when it is prose); a large SRS returns a summary + section list — pass { section } to read just one section. AUTHOR-mode only; an edit-mode session (bundle already generated from an uploaded SRS) returns an actionable error. Call this FIRST in author mode.",
+    "Read the SRS (requirements) attached to the CURRENT agent-mode session so you can ground bundle authoring in the requirements instead of guessing. Returns the SRS structured (when it is JSON with sections/entities) or raw (when it is prose); a large SRS returns a summary + section list — pass { section } to read just one section. AGENT-mode only; an baseline-mode session (bundle already generated from an uploaded SRS) returns an actionable error. Call this FIRST in agent mode.",
     { section: z.string().optional().describe("Optional: read a single named section/key of the SRS instead of the whole thing (use for a large SRS).") },
     async ({ section }) => readSrsOnDir(bundleCwd, { section }),
   );
@@ -1126,7 +1126,7 @@ function buildReadSrsTool(bundleCwd) {
 function buildGenerateBaselineTool(bundleCwd) {
   return tool(
     "generate_baseline",
-    "Bootstrap a BASELINE bundle for the current author-mode session, written into the session bundle dir so you can then refine it. Source: if the session carries XLSX generator inputs, this runs the deterministic SRS→bundle generator (the same one edit mode runs at turn 0, now demoted to a tool you choose to call); otherwise it writes a MINIMAL VALID skeleton (one subject type + registration form + operational mirror) you can build on. Opt-in — you may instead hand-author via spec_apply/Edit. Returns { source, clean, validator, integrity }; it NEVER silently writes a dirty bundle — the resulting validator+integrity status is always surfaced. AUTHOR-mode only; a bad state returns an actionable error (never throws).",
+    "Bootstrap a BASELINE bundle for the current agent-mode session, written into the session bundle dir so you can then refine it. Source: if the session carries XLSX generator inputs, this runs the deterministic SRS→bundle generator (the same one baseline mode runs at turn 0, now demoted to a tool you choose to call); otherwise it writes a MINIMAL VALID skeleton (one subject type + registration form + operational mirror) you can build on. Opt-in — you may instead hand-author via spec_apply/Edit. Returns { source, clean, validator, integrity }; it NEVER silently writes a dirty bundle — the resulting validator+integrity status is always surfaced. AGENT-mode only; a bad state returns an actionable error (never throws).",
     {},
     async () => generateBaselineOnDir(bundleCwd),
   );

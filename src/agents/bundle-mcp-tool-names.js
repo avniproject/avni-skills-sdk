@@ -22,7 +22,7 @@ export const BUNDLE_TOOL_NAME = Object.freeze({
   // APPENDED in story #11 (part B). New names only — never repurpose the above.
   SPEC_APPLY: "mcp__avni-bundle__spec_apply",
   SPEC_EMIT: "mcp__avni-bundle__spec_emit",
-  // APPENDED in story #12 (agent author mode). New names only.
+  // APPENDED in story #12 (agent agent mode). New names only.
   READ_SRS: "mcp__avni-bundle__read_srs",
   GENERATE_BASELINE: "mcp__avni-bundle__generate_baseline",
   // APPENDED in story #13 (tool promotion). Promotes the CLI blast-radius

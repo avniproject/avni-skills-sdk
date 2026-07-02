@@ -152,15 +152,15 @@ export function isToolTierQualified(model, tier, matrix = loadMatrix()) {
 
 // ─── category derivation from cheap request signals ─────────────────
 //
-// Signals must be cheap + evidence-grounded. `mode` (author vs edit, story #12)
+// Signals must be cheap + evidence-grounded. `mode` (agent vs baseline, story #12)
 // and a `structural` hint are enough:
-//   • author mode           → srs-authorship (building a bundle FROM an SRS)
-//   • edit + structural work → data-integrity (the default assumption for edits)
-//   • edit + non-structural  → no-thrash (a pure question / explain / verify)
-// The call site passes only `mode` today (edit defaults to structural=true), so
+//   • agent mode                 → srs-authorship (building a bundle FROM an SRS)
+//   • baseline + structural work → data-integrity (the default assumption for edits)
+//   • baseline + non-structural  → no-thrash (a pure question / explain / verify)
+// The call site passes only `mode` today (baseline defaults to structural=true), so
 // production keeps routing edits through data-integrity — see selectModel.
-export function deriveCategory({ mode = "edit", structural } = {}) {
-  if (mode === "author") return "srs-authorship";
+export function deriveCategory({ mode = "baseline", structural } = {}) {
+  if (mode === "agent") return "srs-authorship";
   if (structural === false) return "no-thrash";
   return "data-integrity";
 }
@@ -186,7 +186,7 @@ export function deriveCategory({ mode = "edit", structural } = {}) {
 export function selectModel(signals = {}) {
   const {
     requested,
-    mode = "edit",
+    mode = "baseline",
     structural,
     matrix = loadMatrix(),
     // `env` lets tests disable the operator override (pass env: null); default

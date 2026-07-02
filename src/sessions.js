@@ -171,32 +171,32 @@ async function summariseRules(dir) {
  * Create a session.
  *
  * Two modes (story #12):
- *   • "edit" (DEFAULT) — the existing behaviour, byte-for-byte unchanged: runs
+ *   • "baseline" (DEFAULT) — the existing behaviour, byte-for-byte unchanged: runs
  *     the deterministic generator on the uploaded SRS and commits the
  *     first-pass bundle as turn 0. `formsBuffer` is required.
- *   • "author" — the session is created AROUND an SRS (requirements) instead of
+ *   • "agent" — the session is created AROUND an SRS (requirements) instead of
  *     an uploaded bundle. The bundle dir starts empty; the SRS is persisted so
  *     the agent can read it (bundle_read_srs) and optionally bootstrap a
  *     deterministic baseline (bundle_generate_baseline), then refine to clean.
  *
  * @param {Object} args
- * @param {Buffer}  [args.formsBuffer]       Forms.xlsx (required in edit mode; optional generator input in author mode)
+ * @param {Buffer}  [args.formsBuffer]       Forms.xlsx (required in baseline mode; optional generator input in agent mode)
  * @param {string}  [args.formsFilename]
  * @param {Buffer}  [args.modellingBuffer]   Modelling.xlsx (optional generator input)
  * @param {string}  [args.modellingFilename]
  * @param {string}  [args.org="Bundle"]
- * @param {"edit"|"author"} [args.mode="edit"]
- * @param {string|Object} [args.srs]         author-mode SRS as inline text or JSON (string or already-parsed object)
- * @param {string}  [args.srsPath]           author-mode external SRS path the agent can Read (recorded, not copied)
+ * @param {"baseline"|"agent"} [args.mode="baseline"]
+ * @param {string|Object} [args.srs]         agent-mode SRS as inline text or JSON (string or already-parsed object)
+ * @param {string}  [args.srsPath]           agent-mode external SRS path the agent can Read (recorded, not copied)
  */
-export function createSession({ formsBuffer, formsFilename, modellingBuffer, modellingFilename, org = "Bundle", mode = "edit", srs, srsPath }) {
-  if (mode === "author") {
-    return createAuthorSession({ formsBuffer, modellingBuffer, org, srs, srsPath });
+export function createSession({ formsBuffer, formsFilename, modellingBuffer, modellingFilename, org = "Bundle", mode = "baseline", srs, srsPath }) {
+  if (mode === "agent") {
+    return createAgentSession({ formsBuffer, modellingBuffer, org, srs, srsPath });
   }
-  if (mode !== "edit") {
-    throw new Error(`unknown session mode: ${JSON.stringify(mode)} (expected "edit" or "author")`);
+  if (mode !== "baseline") {
+    throw new Error(`unknown session mode: ${JSON.stringify(mode)} (expected "baseline" or "agent")`);
   }
-  // ─── EDIT MODE (default) — behaviour below is unchanged from before #12 ───
+  // ─── BASELINE MODE (default) — behaviour below is unchanged from before #12 ───
   if (!formsBuffer) throw new Error("formsBuffer required");
 
   const id = newId();
@@ -234,6 +234,7 @@ export function createSession({ formsBuffer, formsFilename, modellingBuffer, mod
   const meta = {
     sessionId: id,
     org,
+    mode: "baseline",
     createdAt: new Date().toISOString(),
     inputs: {
       forms: path.basename(formsPath),
@@ -247,10 +248,10 @@ export function createSession({ formsBuffer, formsFilename, modellingBuffer, mod
   return { sessionId: id, meta, validation };
 }
 
-// ─── author mode (story #12) ─────────────────────────────────────────
+// ─── agent mode (story #12) ─────────────────────────────────────────
 //
-// An author-mode session is built AROUND requirements (an SRS), not an uploaded
-// bundle. Unlike edit mode, we do NOT run the deterministic generator at create
+// An agent-mode session is built AROUND requirements (an SRS), not an uploaded
+// bundle. Unlike baseline mode, we do NOT run the deterministic generator at create
 // time — the generator is DEMOTED from the pipeline to an agent-callable tool
 // (bundle_generate_baseline). The bundle dir starts empty (only .gitignore, so
 // git has a HEAD to commit turns against); the agent reads the SRS
@@ -259,7 +260,7 @@ export function createSession({ formsBuffer, formsFilename, modellingBuffer, mod
 // The SRS is persisted under <session>/srs/ so the tools (which run with cwd =
 // <session>/bundle) can reach it as ../srs/ — the same sibling-access pattern
 // bundle_export_to_path uses to read ../meta.json.
-function createAuthorSession({ formsBuffer, modellingBuffer, org, srs, srsPath }) {
+function createAgentSession({ formsBuffer, modellingBuffer, org, srs, srsPath }) {
   const id = newId();
   const dir = path.join(SESSIONS_DIR, id);
   const srsDir = path.join(dir, "srs");
@@ -268,7 +269,7 @@ function createAuthorSession({ formsBuffer, modellingBuffer, org, srs, srsPath }
   fs.mkdirSync(bDir, { recursive: true });
 
   // Persist the SRS in whatever form(s) the caller supplied. All are optional;
-  // an author session may start from pure prose, from structured JSON, from
+  // an agent session may start from pure prose, from structured JSON, from
   // XLSX generator inputs, from an external path, or any combination.
   const srsMeta = { kind: "none", files: {}, hasGeneratorInputs: false, externalPath: null };
 
@@ -316,7 +317,7 @@ function createAuthorSession({ formsBuffer, modellingBuffer, org, srs, srsPath }
   git(bDir, "config", "user.email", "agent@avni-skills-sdk");
   git(bDir, "config", "user.name", "avni-skills-sdk");
   git(bDir, "add", "-A");
-  git(bDir, "commit", "-m", "turn 0: author session initialised (empty bundle — awaiting baseline/authoring)");
+  git(bDir, "commit", "-m", "turn 0: agent session initialised (empty bundle — awaiting baseline/authoring)");
 
   // The empty bundle is expected to be dirty; the agent authors it clean. Guard
   // against the validator throwing on an all-but-empty dir.
@@ -327,7 +328,7 @@ function createAuthorSession({ formsBuffer, modellingBuffer, org, srs, srsPath }
   const meta = {
     sessionId: id,
     org: org || "Bundle",
-    mode: "author",
+    mode: "agent",
     createdAt: new Date().toISOString(),
     srs: srsMeta,
     currentTurn: 0,
@@ -343,11 +344,11 @@ export function getSession(id) {
   return meta;
 }
 
-// Session mode (story #12). Absent on pre-#12 sessions → "edit" (the historical
-// default), so old sessions and the byte-identical edit path are unaffected.
+// Session mode (story #12). Absent on pre-#12 sessions → "baseline" (the historical
+// default), so old sessions and the byte-identical baseline path are unaffected.
 export function getSessionMode(id) {
-  try { return readMeta(id).mode === "author" ? "author" : "edit"; }
-  catch { return "edit"; }
+  try { return readMeta(id).mode === "agent" ? "agent" : "baseline"; }
+  catch { return "baseline"; }
 }
 
 // Persist the Claude Agent SDK's internal session id on first dispatch so
