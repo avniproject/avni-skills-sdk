@@ -17,10 +17,61 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { z } from "zod";
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { validateBundle, zipBundle as zipBundleDir } from "../bundle.js";
 import { BUNDLE_TOOL_NAMES as FROZEN_BUNDLE_TOOL_NAMES } from "./bundle-mcp-tool-names.js";
+
+// ─── brain dependency-graph loader (yaml-driven, single source of truth) ──
+//
+// The FK / edge integrity logic lives in the BRAIN (avni-skills), not here.
+// As of #14 the brain's spec/graph.js is a generic interpreter that emits one
+// edge per rule declared in spec/fk-matrix.yaml — so it is the single source
+// of truth for EVERY edge kind, including the graph-only ones the SDK's old
+// local `checkIntegrityOnFileMap` never covered (encounterType.conceptUuid,
+// form.decisionConcepts[], addressLevelType.parentUuid, groupRoles,
+// formMapping.taskTypeUUID). `bundle_integrity_check` builds the graph in
+// memory from a file map and runs the brain's `integrityCheck`, so it inherits
+// full, yaml-driven edge coverage with zero duplicated FK logic.
+//
+// Resolve the brain the SAME way the rest of the SDK does (env var or sibling
+// clone) — mirrors src/pipeline.js + tests/entities/spec-graph.test.cjs.
+const require = createRequire(import.meta.url);
+
+function resolveBrainPath() {
+  if (process.env.AVNI_SKILLS_PATH) return process.env.AVNI_SKILLS_PATH;
+  return path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "..", "..", "avni-skills");
+}
+
+// Load buildBundleGraph + integrityCheck from the brain. FAIL LOUD if the brain
+// is missing or is an OLD build without the file-map-capable buildBundleGraph
+// (#14) — we must NOT silently fall back to partial coverage, because that
+// would re-open exactly the graph-only-edge gap this tool exists to close.
+function loadBrainGraph() {
+  const brainPath = resolveBrainPath();
+  const graphModulePath = path.join(brainPath, "srs-bundle-generator/spec/graph.js");
+  let mod;
+  try {
+    mod = require(graphModulePath);
+  } catch (e) {
+    throw new Error(
+      `bundle_integrity_check could not load the avni-skills dependency graph from ` +
+      `"${graphModulePath}". Set AVNI_SKILLS_PATH to a checkout of avni-skills that ` +
+      `includes the yaml-driven graph (buildBundleGraph(fileMap) + MISSING_REQUIRED_REF). ` +
+      `Underlying error: ${e.message}`,
+    );
+  }
+  const { buildBundleGraph, integrityCheck } = mod;
+  if (typeof buildBundleGraph !== "function" || typeof integrityCheck !== "function") {
+    throw new Error(
+      `bundle_integrity_check loaded "${graphModulePath}" but it does not export ` +
+      `buildBundleGraph + integrityCheck. AVNI_SKILLS_PATH points at an incompatible ` +
+      `avni-skills build — it must be one with the #14 yaml-driven graph.`,
+    );
+  }
+  return { buildBundleGraph, integrityCheck };
+}
 
 // MCP CallToolResult helper — wrap a JS value as a text content block.
 function textResult(obj) {
@@ -264,6 +315,260 @@ function buildExportTool(bundleCwd) {
   );
 }
 
+// ─── deterministic data-integrity checks ────────────────────────────
+//
+// Two real shipped incidents motivated this tool — both slipped past BOTH the
+// local validator AND the model:
+//
+//   • Durga  — a "fix all errors" turn flattened formElement `concept` objects
+//     down to bare UUID strings. The local validator was happy; the AVNI
+//     server expects a nested ConceptContract object and Jackson crashed on
+//     deserialize. → FE_CONCEPT_NOT_OBJECT.
+//
+//   • Astitva — addressLevelType names carried URLs / arrow chains / empty
+//     strings copied from an SRS hierarchy diagram. The local validator never
+//     checked name chars; the AVNI LocationService rejected them on upload.
+//     → ALT_INVALID_NAME.
+//
+// These are deterministic structural checks, not heuristics. Findings are
+// returned as normal tool output (an array), NOT thrown.
+
+// Mirrors avni-server ValidationUtil.COMMON_INVALID_CHARS_PATTERN
+// (^.*[<>="'].*$), enforced by LocationService.createAddressLevelTypes — NOT a
+// port of summarizer.js (the summarizer used different URL / arrow-chain
+// heuristics). This rejects addressLevelType names that are empty or contain
+// any of < > = " '. Kept local (not imported) so this safety check has no
+// cross-module coupling to the advisory summarizer.
+function invalidLocationLevelNameReason(name) {
+  if (!name || typeof name !== "string") return "empty";
+  const t = name.trim();
+  if (!t) return "empty";
+  if (/[<>="']/.test(t)) return "contains a character AVNI rejects (< > = \" ')";
+  return null;
+}
+
+// FE_CONCEPT_NOT_OBJECT shape predicate. The avni-server's
+// FormElementContract.validate() fails whenever the deserialized concept is
+// null, has no UUID, or (the Durga incident) was flattened to a bare UUID
+// string that Jackson can't map onto a ConceptContract object. This is a pure
+// SHAPE check — a well-shaped { uuid, ... } object is ACCEPTED here even if that
+// uuid is dangling; resolving dangling UUIDs is the FK check's separate job.
+// Returns a stable reason key (or null when the shape is valid).
+function invalidConceptShapeReason(concept) {
+  if (concept === null || concept === undefined) return "missing";      // server: "Concept UUID Not Provided"
+  if (typeof concept === "string") return "bare-string";                // Durga: bare UUID string → Jackson crash
+  if (typeof concept !== "object" || Array.isArray(concept)) return "not-object"; // number/bool/array etc.
+  if (typeof concept.uuid !== "string" || !concept.uuid.trim()) return "no-uuid"; // object without a real uuid
+  return null;
+}
+
+// Read a bundle directory into the file map shape the brain's buildBundleGraph
+// and the shape checks expect: { "concepts.json": [...], "forms/<f>.json": {...}, ... }
+// (POSIX-slash keys). The top-level list MUST cover every source the brain's
+// fk-matrix.yaml `nodeKinds` loads from — otherwise an entity present on disk
+// is invisible to the graph and its edges silently vanish. In particular
+// groupRoles.json is REQUIRED here: groupRole is a noded kind whose two FKs to
+// subjectType are graph-only edges (the old local checker never saw them).
+// groups/groupPrivilege/taskTypes are listed for completeness; the brain does
+// not node them yet (#14 follow-up) so they only appear as dangling targets.
+function readBundleFileMap(bundleCwd) {
+  const files = {};
+  const topLevel = [
+    "concepts.json",
+    "subjectTypes.json",
+    "programs.json",
+    "encounterTypes.json",
+    "formMappings.json",
+    "operationalSubjectTypes.json",
+    "operationalPrograms.json",
+    "operationalEncounterTypes.json",
+    "addressLevelTypes.json",
+    "groupRoles.json",
+    "groups.json",
+    "groupPrivilege.json",
+    "taskTypes.json",
+  ];
+  for (const rel of topLevel) {
+    const fp = path.join(bundleCwd, rel);
+    if (fs.existsSync(fp)) {
+      try { files[rel] = JSON.parse(fs.readFileSync(fp, "utf8")); }
+      catch { /* malformed JSON is the validator's job, not ours */ }
+    }
+  }
+  const formsDir = path.join(bundleCwd, "forms");
+  if (fs.existsSync(formsDir)) {
+    for (const f of fs.readdirSync(formsDir)) {
+      if (!f.endsWith(".json")) continue;
+      const fp = path.join(formsDir, f);
+      try { files[`forms/${f}`] = JSON.parse(fs.readFileSync(fp, "utf8")); }
+      catch { /* malformed JSON is the validator's job */ }
+    }
+  }
+  return files;
+}
+
+/**
+ * Run deterministic data-integrity checks on a bundle directory.
+ *
+ * Combines:
+ *   (a) FK / dangling-reference integrity — built from the BRAIN's yaml-driven
+ *       dependency graph (buildBundleGraph + integrityCheck). Because the graph
+ *       emits one edge per rule in spec/fk-matrix.yaml, this covers EVERY edge
+ *       kind — including the graph-only ones the old local checker missed
+ *       (encounterType.conceptUuid, form.decisionConcepts[],
+ *       addressLevelType.parentUuid, groupRole FKs, formMapping.taskTypeUUID).
+ *       A dangling REQUIRED edge surfaces as MISSING_REQUIRED_REF (error); a
+ *       dangling OPTIONAL edge as DANGLING_REF (warning);
+ *   (b) FE_CONCEPT_NOT_OBJECT — formElement.concept must be a nested object,
+ *       not a bare UUID string (Durga). NOT a graph edge — run alongside;
+ *   (c) ALT_INVALID_NAME — addressLevelType names must be non-empty and free of
+ *       the chars AVNI's LocationService rejects (Astitva). NOT a graph edge.
+ *
+ * @param {string} bundleCwd Absolute path to the bundle directory.
+ * @returns {{ ok: boolean, findings: Array<{code,severity,file,locator,message}> }}
+ *   `ok` is false iff any finding has severity "error".
+ */
+export function runBundleIntegrityCheck(bundleCwd) {
+  const files = readBundleFileMap(bundleCwd);
+  const findings = [];
+
+  // (a) FK / dangling-reference integrity — drive it off the brain's
+  // yaml-driven dependency graph so this tool inherits FULL edge coverage from
+  // the single source of truth (spec/fk-matrix.yaml). buildBundleGraph accepts
+  // the in-memory file map directly (no disk I/O); integrityCheck walks every
+  // emitted edge and flags the ones whose target uuid is absent. We map each
+  // graph issue into the structured finding shape. Loading the brain graph
+  // FAILS LOUD (loadBrainGraph) rather than degrading to partial coverage.
+  const { buildBundleGraph, integrityCheck } = loadBrainGraph();
+  const graph = buildBundleGraph(files);
+  const { issues } = integrityCheck(graph);
+  for (const issue of issues) {
+    const e = issue.edge || {};
+    const fromNode = e.from ? graph.nodes.get(e.from) : null;
+    const fromKind = fromNode ? fromNode.kind : "?";
+    const fromName = fromNode ? (fromNode.name || e.from) : e.from;
+    findings.push({
+      code: issue.code,                 // "MISSING_REQUIRED_REF" | "DANGLING_REF"
+      severity: issue.severity,         // "error" | "warning"
+      file: e.field || "(bundle)",      // the FK field that dangles
+      // locator names the FROM record (kind + name/uuid), the field, and the
+      // dangling TO uuid — enough for the agent to find and fix the ref.
+      locator: e.from
+        ? `${fromKind} "${fromName}" .${e.field || "?"} → ${e.to} (not found)`
+        : (e.to || ""),
+      message: issue.message,
+    });
+  }
+
+  // (b) FE_CONCEPT_NOT_OBJECT — for every form's formElements, the `concept`
+  // must be a nested object carrying a non-empty `uuid`. The avni-server's
+  // FormElementContract.validate() rejects ANY other shape: a missing/null
+  // concept ("Concept UUID Not Provided"), a bare UUID string (Durga — Jackson
+  // crashes mapping a string onto ConceptContract), a non-object scalar, or an
+  // object that lacks a real uuid. This is a pure SHAPE check; a well-shaped
+  // { uuid, ... } whose uuid happens to be dangling is left to the FK check (a).
+  const conceptShapeMessage = {
+    "missing": (uuid) =>
+      `formElement concept is missing/null — AVNI's FormElementContract.validate() ` +
+      `rejects it ("Concept UUID Not Provided"). Inline the full concept object ` +
+      `(name/uuid/dataType/answers/media).`,
+    "bare-string": (uuid) =>
+      `formElement concept is a bare UUID string "${uuid}" — AVNI expects a nested ` +
+      `ConceptContract object and will fail to deserialize (Jackson). ` +
+      `Re-inline the full concept object (name/uuid/dataType/answers/media).`,
+    "not-object": (uuid) =>
+      `formElement concept is a ${typeof uuid === "object" ? "non-object value" : typeof uuid} ` +
+      `instead of a nested ConceptContract object — AVNI will fail to deserialize it. ` +
+      `Re-inline the full concept object (name/uuid/dataType/answers/media).`,
+    "no-uuid": (uuid) =>
+      `formElement concept object has no uuid — AVNI's FormElementContract.validate() ` +
+      `rejects a concept without a UUID ("Concept UUID Not Provided"). ` +
+      `Restore the concept's uuid (and the rest of the ConceptContract).`,
+  };
+  for (const [pathStr, form] of Object.entries(files)) {
+    if (!pathStr.startsWith("forms/") || !pathStr.endsWith(".json")) continue;
+    if (!form || typeof form !== "object") continue;
+    for (const grp of (form.formElementGroups || [])) {
+      for (const fe of (grp.formElements || [])) {
+        if (!fe || typeof fe !== "object") continue;
+        const reason = invalidConceptShapeReason(fe.concept);
+        if (reason) {
+          const msgFor = conceptShapeMessage[reason];
+          findings.push({
+            code: "FE_CONCEPT_NOT_OBJECT",
+            severity: "error",
+            file: pathStr,
+            locator: `formElements["${fe.name ?? ""}"].concept`,
+            message: msgFor ? msgFor(fe.concept) : `formElement concept has an invalid shape (${reason}).`,
+          });
+        }
+      }
+    }
+  }
+
+  // (c) ALT_INVALID_NAME — for every addressLevelTypes.json entry, an empty name
+  // or one containing < > = " ' is rejected by AVNI's LocationService on upload.
+  // The deterministic generator emits a bare array, but server-round-tripped and
+  // hand-edited bundles can wrap the list ({ addressLevelTypes: [...] } or the
+  // generic { data: [...] } envelope) — same quirk the brain graph already
+  // tolerates for operational entities. Normalise to the array first so a wrapped
+  // shape is NOT silently skipped; the bare-array case is unchanged.
+  const altsRaw = files["addressLevelTypes.json"];
+  const alts = Array.isArray(altsRaw)
+    ? altsRaw
+    : (altsRaw && typeof altsRaw === "object" && !Array.isArray(altsRaw))
+        ? (Array.isArray(altsRaw.addressLevelTypes)
+            ? altsRaw.addressLevelTypes
+            : Array.isArray(altsRaw.data)
+              ? altsRaw.data
+              : null)
+        : null;
+  if (Array.isArray(alts)) {
+    alts.forEach((alt, i) => {
+      const name = alt && typeof alt === "object" ? alt.name : alt;
+      const reason = invalidLocationLevelNameReason(name);
+      if (reason) {
+        findings.push({
+          code: "ALT_INVALID_NAME",
+          severity: "error",
+          file: "addressLevelTypes.json",
+          locator: `[${i}].name`,
+          message:
+            `addressLevelType name ${JSON.stringify(name)} is invalid: ${reason}. ` +
+            `AVNI's LocationService rejects this on upload.`,
+        });
+      }
+    });
+  }
+
+  const ok = !findings.some((f) => f.severity === "error");
+  return { ok, findings };
+}
+
+function buildIntegrityCheckTool(bundleCwd) {
+  return tool(
+    "bundle_integrity_check",
+    "Run deterministic DATA-INTEGRITY checks on the current bundle that the validator and the model both miss. Covers: (1) FK / dangling references (formMappings, operational entities, form-element concepts, coded answers) pointing at UUIDs not present in the bundle; (2) FE_CONCEPT_NOT_OBJECT — a formElement whose `concept` is a bare UUID string instead of a nested object (AVNI server crashes on deserialize); (3) ALT_INVALID_NAME — an addressLevelType name that is empty or contains < > = \" ' (AVNI LocationService rejects it). Returns { ok, findings:[{code,severity,file,locator,message}], counts }. Run this BEFORE export — a clean validator does NOT guarantee a clean upload.",
+    {},
+    async () => {
+      try {
+        const { ok, findings } = runBundleIntegrityCheck(bundleCwd);
+        const counts = {};
+        for (const f of findings) counts[f.code] = (counts[f.code] || 0) + 1;
+        return textResult({
+          ok,
+          errorCount: findings.filter((f) => f.severity === "error").length,
+          warningCount: findings.filter((f) => f.severity === "warning").length,
+          counts,
+          findings,
+        });
+      } catch (e) {
+        return errorResult(e.message);
+      }
+    },
+  );
+}
+
 // ─── server factory ─────────────────────────────────────────────────
 
 /**
@@ -293,6 +598,7 @@ export function createBundleMcpServer(bundleCwd) {
       buildFindConceptTool(bundleCwd),
       buildSummaryTool(bundleCwd),
       buildExportTool(bundleCwd),
+      buildIntegrityCheckTool(bundleCwd),
     ],
     alwaysLoad: true,
   });
