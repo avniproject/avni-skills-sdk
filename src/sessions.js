@@ -316,11 +316,11 @@ function createAgentSession({ formsBuffer, modellingBuffer, org, srs }) {
   git(bDir, "add", "-A");
   git(bDir, "commit", "-m", "turn 0: empty workspace (agent mode)");
 
-  // The empty bundle is expected to be dirty; the agent authors it clean. Guard
-  // against the validator throwing on an all-but-empty dir.
-  let validation;
-  try { validation = summariseValidation(bDir); }
-  catch { validation = { valid: false, errors: 0, warnings: 0, groups: {} }; }
+  // Agent-mode sentinel (story #12 gotcha): the empty workspace is the EXPECTED
+  // starting point, not a defect. Do NOT run the raw validator here — it would
+  // record a dozen "Missing required file" errors in meta and scare the agent on
+  // turn 1. Record an explicit empty-workspace marker instead.
+  const validation = { valid: false, errors: 0, warnings: 0, groups: {}, emptyWorkspace: true };
 
   const meta = {
     sessionId: id,
@@ -366,6 +366,30 @@ export function getSdkSessionId(id) {
   return meta.sdkSessionId || null;
 }
 
+// Agent-mode empty-workspace sentinel (story #12 gotcha). Before authorship
+// begins the bundle dir is intentionally empty; the raw validator would report a
+// dozen "Missing required file" errors and turn 1 would burn "fixing" emptiness.
+// This sentinel is injected INSTEAD so the agent knows the empty state is the
+// expected starting point, not a defect list.
+export const AGENT_EMPTY_WORKSPACE_SENTINEL =
+  "CURRENT VALIDATOR + INTEGRITY STATE (server-truth): AGENT MODE — the workspace is EMPTY (no bundle authored yet). " +
+  "This is the EXPECTED starting point, NOT a set of errors to fix: do NOT treat missing bundle files as validator " +
+  "defects and do NOT spend this turn 'fixing' emptiness. Read the requirements with mcp__avni-bundle__bundle_read_srs " +
+  "(the uploaded spreadsheet(s) live in ../input/), then author the bundle — optionally bootstrap with " +
+  "mcp__avni-bundle__bundle_generate_baseline. The real validator + integrity state is reported normally once you have " +
+  "authored files.";
+
+// True when an agent-mode bundle dir holds no authored content yet (only git
+// bookkeeping / .gitignore / staged skills). Used to gate the sentinel above.
+function agentWorkspaceIsEmpty(dir) {
+  try {
+    const ignore = new Set([".git", ".gitignore", ".claude"]);
+    return !fs.readdirSync(dir).some((n) => !ignore.has(n));
+  } catch {
+    return true;
+  }
+}
+
 // Build a human-readable preamble describing the bundle's CURRENT validator
 // state, suitable for prepending to every per-turn agent prompt. Stops the
 // agent from re-discovering the error (one cold turn = ~$0.15) and from
@@ -385,6 +409,16 @@ export function currentValidatorStateText(id) {
   }
   const cached = VALIDATOR_CACHE.get(id);
   if (cached && cached.sha === headSha) return cached.text;
+
+  // Agent-mode empty-workspace sentinel (story #12 gotcha) — flows through the
+  // per-turn injection (currentValidatorStateText), not just the create
+  // response, so turn 1 doesn't see a dozen missing-file "errors".
+  let sessionMode;
+  try { sessionMode = readMeta(id).mode; } catch { sessionMode = undefined; }
+  if (sessionMode === "agent" && agentWorkspaceIsEmpty(bundleDir)) {
+    VALIDATOR_CACHE.set(id, { sha: headSha, text: AGENT_EMPTY_WORKSPACE_SENTINEL, ts: Date.now() });
+    return AGENT_EMPTY_WORKSPACE_SENTINEL;
+  }
 
   let r;
   try {

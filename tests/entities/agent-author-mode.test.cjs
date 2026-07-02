@@ -133,6 +133,41 @@ test("session mode: unknown mode is rejected", async () => {
   );
 });
 
+// ─── agent-mode empty-workspace sentinel (epic gotcha) ───────────────
+
+test("sentinel: an empty agent workspace injects the sentinel, NOT missing-file errors", async () => {
+  freshRoot();
+  const sessions = await loadSessions();
+  const created = sessions.createSession({ mode: "agent", org: "A", formsBuffer: buildFormsBuffer() });
+  // meta.validationAtCurrent must not claim a dozen errors.
+  assert.equal(created.meta.validationAtCurrent.errors, 0);
+  assert.equal(created.meta.validationAtCurrent.emptyWorkspace, true);
+
+  sessions._resetValidatorCache();
+  const text = sessions.currentValidatorStateText(created.sessionId);
+  assert.match(text, /AGENT MODE/);
+  assert.match(text, /EMPTY/);
+  assert.doesNotMatch(text, /Missing required file/, "must NOT list missing-file errors");
+  assert.doesNotMatch(text, /errors \(\d+\)/, "must NOT report an error count");
+});
+
+test("sentinel: once files are authored, the real validator+integrity state is reported", async () => {
+  freshRoot();
+  const sessions = await loadSessions();
+  const { generateBaselineOnDir } = await loadMcp();
+  // Prose agent session → the minimal-skeleton baseline (written in place, so
+  // the session git repo survives), then commit it so HEAD advances.
+  const created = sessions.createSession({ mode: "agent", org: "A", srs: "prose requirements" });
+  const dir = sessions.bundleDir(created.sessionId);
+  generateBaselineOnDir(dir);
+  await sessions.commitWorkspaceChanges(created.sessionId, "author baseline");
+
+  sessions._resetValidatorCache();
+  const text = sessions.currentValidatorStateText(created.sessionId);
+  assert.doesNotMatch(text, /workspace is EMPTY/, "sentinel must not fire once authored");
+  assert.match(text, /clean|VALIDATOR/, "real state is reported after authoring");
+});
+
 // ─── bundle_read_srs (Excel via SheetJS) ─────────────────────────────
 
 test("bundle_read_srs: no sheet → lists sheets with row + column counts", async () => {
