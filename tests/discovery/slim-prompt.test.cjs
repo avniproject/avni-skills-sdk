@@ -64,7 +64,7 @@ test("the outcome contract is slim (~250 words) and states the required outcomes
   // gates, the two server-only traps, and the C3/C5/committer invariants the
   // hard rules enforce — so it sits ~250 words. Still far below the ~1,181-word
   // hard rules. The bound guards "slim", not a magic number.
-  assert.ok(words >= 150 && words <= 340, `outcome contract should be slim (~250 words), got ${words}`);
+  assert.ok(words >= 150 && words <= 350, `outcome contract should be slim (~250 words), got ${words}`);
   assert.ok(words < wc(m.BUNDLE_HARD_RULES), "the slim contract must stay well under the full hard rules");
   // States the two gates (outcome, not procedure).
   assert.match(c, /bundle_integrity_check/);
@@ -83,6 +83,9 @@ test("the outcome contract is slim (~250 words) and states the required outcomes
   assert.match(c, /committer/, "must carry the server-is-the-sole-committer / no-git invariant");
   // Points at the skill for the "how".
   assert.match(c, /avni-bundle-spec/);
+  // Carries the restored structural-choice disclosure (reuse-vs-create / rename-vs-
+  // delete) so humans can catch a wrong reuse/create call before it cascades (#11).
+  assert.match(c, /alternative you rejected/);
   // Does NOT re-enumerate the long procedural rules (no rule-numbering 1..12 prose).
   assert.ok(!/CONCEPT-LOOKUP GATE/.test(c), "the slim contract must NOT re-import procedural hard-rule prose");
 });

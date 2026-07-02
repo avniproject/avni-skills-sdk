@@ -197,7 +197,7 @@ The bundle you produce or edit MUST satisfy ALL of these, or the AVNI server rej
 
 7. NEVER run git or any destructive shell — the server is the sole committer (it runs \`git add -A && git commit\` after your turn). Read-only git (status/log/diff) is fine; you are not the committer.
 
-HOW to satisfy these — entity shapes, the closed enum sets, the FK matrix, the review checklist — lives in the avni-bundle-spec skill. Consult it before authoring or editing. Answer the user's explicit request only; do not do opportunistic cleanup in the same turn.`;
+HOW to satisfy these — entity shapes, the closed enum sets, the FK matrix, the review checklist — lives in the avni-bundle-spec skill. Consult it before authoring or editing. Answer the user's explicit request only; do not do opportunistic cleanup in the same turn. When a fix has multiple valid resolutions (reuse vs create, rename vs delete), state the choice you made AND the alternative you rejected, so a wrong call is caught early.`;
 
 // AGENT-MODE ADDENDUM (story #12) — appended to the active contract ONLY for
 // agent-mode sessions (activeRulesBlock({ mode: "agent" })). Baseline mode's

@@ -18,7 +18,7 @@ avni-skills-sdk (this repo, body)
   │     ├── bundles.js              ← POST /v1/bundles/generate
   │     ├── agent-query.js          ← POST /v1/agent/query
   │     ├── sessions-lifecycle.js   ← POST/GET/DELETE /v1/sessions + files + turns + diff + zip + revert
-  │     ├── sessions-edit.js        ← POST /:id/edit + POST /:id/apply-spec
+  │     ├── sessions-edit.js        ← POST /:id/edit (Wizard-of-Oz; apply-spec route retired in #11 → spec_apply MCP tool)
   │     ├── sessions-messages.js    ← /:id/messages (single linear agent, slim contract)
   │     ├── sessions-observability.js ← /:id/{transcript,steps,cost,diagnostics}
   │     ├── sessions-rules.js       ← /:id/rules + /rules/validation + PUT /rules
@@ -173,8 +173,8 @@ The active rules block (in `src/agent.js`) is the slim `BUNDLE_OUTCOME_CONTRACT`
 |---|---|
 | No destructive shell (git writes, `rm -rf`, `sudo`) | PreToolUse Bash hook in `src/agent.js` |
 | No out-of-scope file mutations per turn | `src/security/post-turn-detector.js` — diffs working tree post-turn, reverts violations, rejects the turn |
-| `formElement.concept` shape + `addressLevelType` name chars (server rejects, validator doesn't) | `bundle_integrity_check` (FE_CONCEPT_NOT_OBJECT + ALT_INVALID_NAME) |
-| Dangling UUID refs / FK coherence | yaml-driven bundle graph + validator |
+| `formElement.concept` shape + `addressLevelType` name chars (server rejects, validator doesn't) | `bundle_integrity_check` (FE_CONCEPT_NOT_OBJECT + ALT_INVALID_NAME), **now a code-enforced commit/export gate** — its error findings are folded into the per-turn validation state at commit (`summariseIntegrity` in `src/sessions.js`, surfaced to the agent every turn) and are a **hard ship gate** at export (`exportBundleToPath` / `bundle_export_to_path` refuses to zip on any severity:error finding). No longer prose/tool-only. |
+| Dangling UUID refs / FK coherence | yaml-driven bundle graph + validator + `bundle_integrity_check` (MISSING_REQUIRED_REF = error, blocks export; DANGLING_REF = warning) |
 | C3/D1 case-insensitive concept-name collisions | concept-collision interceptor + `bundle_find_concept` |
 | ZIP export must land inside an allowlisted path | Path-jail in `src/agents/bundle-mcp-server.js` (`bundle_export_to_path`) — allowlist: `~/Desktop`, `~/Downloads`, `~/Documents`, `~/.avni-skills-sdk/exports`, `$SDK_EXPORT_DIR` |
 | No concurrent writes to the same session | Per-session async mutex in `src/locks.js` |

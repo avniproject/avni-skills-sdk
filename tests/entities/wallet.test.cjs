@@ -85,3 +85,44 @@ test("remainingUsd reflects spend", async () => {
   const wallet = w.getWallet("sess_rem");
   assert.ok(Math.abs(wallet.remainingUsd - 0.60) < 1e-9);
 });
+
+test("capOverride is HONORED: a below-default override fires a 402 preDispatchCheck (#13)", async () => {
+  const w = await load();                 // DEFAULTS.hardCapUsd = 1.00
+  w._testReset();
+  const m = w.startTurn("sess_ovr");
+  // Spend $0.60 — under the $1.00 default, so a fresh dispatch would be allowed.
+  m.recordResult({ usd: 0.60, inputTokens: 1, outputTokens: 1 });
+  assert.equal(w.preDispatchCheck("sess_ovr").allowed, true, "under default cap → allowed");
+
+  // Lower the cap BELOW current spend. Previously this was a no-op (capOverride
+  // written but never read); now the enforcement paths must honor it.
+  w.setCapOverride("sess_ovr", 0.50);
+
+  const wallet = w.getWallet("sess_ovr");
+  assert.ok(Math.abs(wallet.caps.hardCapUsd - 0.50) < 1e-9, "getWallet reflects the override cap");
+  assert.equal(wallet.remainingUsd, 0, "remaining clamps to 0 once spend exceeds the lowered cap");
+
+  let err;
+  try { w.preDispatchCheck("sess_ovr"); } catch (e) { err = e; }
+  assert.ok(err, "preDispatchCheck must throw once spend exceeds the override cap");
+  assert.equal(err.status, 402);
+  assert.equal(err.code, "WALLET_HARD_CAP");
+
+  // shouldAbort mid-turn also honors the override.
+  const meter = w.startTurn("sess_ovr");
+  const a = meter.shouldAbort(1, 0.0);    // 0.60 already >= 0.50 override
+  assert.ok(a && a.reason === "SESSION_HARD_CAP_MID_TURN", "shouldAbort honors the override");
+});
+
+test("resetCap bumps the cap upward and is now actually honored (#13)", async () => {
+  const w = await load();                 // DEFAULTS.hardCapUsd = 1.00
+  w._testReset();
+  const m = w.startTurn("sess_reset");
+  m.recordResult({ usd: 1.00, inputTokens: 1, outputTokens: 1 }); // at cap
+  assert.throws(() => w.preDispatchCheck("sess_reset"), /hard cap/i);
+  // Reset bumps the cap; the previously no-op write is now read → dispatch allowed.
+  w.resetCap("sess_reset", 1);            // cap → 1.00 + 1.00*1 = 2.00
+  const wallet = w.getWallet("sess_reset");
+  assert.ok(Math.abs(wallet.caps.hardCapUsd - 2.00) < 1e-9, "resetCap raised the effective cap");
+  assert.equal(w.preDispatchCheck("sess_reset").allowed, true, "dispatch allowed after reset");
+});

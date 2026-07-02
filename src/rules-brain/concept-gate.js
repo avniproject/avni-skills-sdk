@@ -88,8 +88,8 @@ export function formatViolationMessage(collisions) {
     lines.push(`    fix: instead of adding a new concept, reuse the existing UUID ${v.existingConcept.uuid} wherever you were going to reference "${v.newConcept.name}".`);
     lines.push("");
   }
-  lines.push("Your edit was reverted. Re-attempt with the corrective fix above, or run:");
-  lines.push("  node /Users/samanvay/Developer/avni-skills-sdk/scripts/agent-tools/find-concept.mjs \"<name>\"");
-  lines.push("before any concept add to look up existing UUIDs.");
+  lines.push("Your edit was reverted. Re-attempt with the corrective fix above. Before adding any concept, look up existing UUIDs (case-insensitive) with the in-process MCP tool:");
+  lines.push("  mcp__avni-bundle__bundle_find_concept({ name: \"<name>\" })");
+  lines.push("It reports whether to REUSE an existing UUID or whether it is SAFE to add a new concept.");
   return lines.join("\n");
 }

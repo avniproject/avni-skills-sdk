@@ -10,6 +10,10 @@
 //
 //   1. session.hardCapUsd  — once exceeded, every /messages request is refused
 //                            until the user explicitly resets via /v1/sessions/:id/wallet/reset.
+//                            A per-session cap can override the default in either
+//                            direction: resetCap() bumps it UP; setCapOverride()
+//                            sets an absolute value (may be BELOW the default).
+//                            All enforcement paths read it via effectiveCap().
 //   2. turn.maxEvents      — abort an in-flight turn if the SSE event count
 //                            crosses this threshold (runaway loop guard).
 //   3. turn.maxCostUsd     — abort an in-flight turn if its accumulated cost
@@ -89,8 +93,18 @@ function get(sessionId) {
   return row;
 }
 
+// The active hard cap for a session. A per-session `capOverride` (set by
+// resetCap / setCapOverride) wins over the process-wide DEFAULTS.hardCapUsd.
+// Before this was read, resetCap()'s write was a documented no-op (#13) — the
+// enforcement paths (preDispatchCheck / shouldAbort / getWallet) all compared
+// against DEFAULTS directly. They now go through here.
+function effectiveCap(row) {
+  return typeof row.capOverride === "number" ? row.capOverride : DEFAULTS.hardCapUsd;
+}
+
 export function getWallet(sessionId) {
   const row = get(sessionId);
+  const cap = effectiveCap(row);
   // Per-agent breakdown: aggregate turn rows by agent tag. Untagged turns
   // (legacy /messages calls, /evaluate, etc.) bucket under "unspecified".
   const byAgent = {};
@@ -110,8 +124,8 @@ export function getWallet(sessionId) {
     totalInputTokens: row.totalInputTokens,
     totalOutputTokens: row.totalOutputTokens,
     turnCount: row.turns.length,
-    caps: { ...DEFAULTS },
-    remainingUsd: Math.max(0, DEFAULTS.hardCapUsd - row.totalUsd),
+    caps: { ...DEFAULTS, hardCapUsd: cap },
+    remainingUsd: Math.max(0, cap - row.totalUsd),
     byAgent,
   };
 }
@@ -122,16 +136,17 @@ export function getWallet(sessionId) {
  */
 export function preDispatchCheck(sessionId) {
   const row = get(sessionId);
-  if (row.totalUsd >= DEFAULTS.hardCapUsd) {
+  const cap = effectiveCap(row);
+  if (row.totalUsd >= cap) {
     const e = new Error(
-      `wallet: session ${sessionId} has spent $${row.totalUsd.toFixed(4)} which meets/exceeds hard cap $${DEFAULTS.hardCapUsd.toFixed(2)}. ` +
+      `wallet: session ${sessionId} has spent $${row.totalUsd.toFixed(4)} which meets/exceeds hard cap $${cap.toFixed(2)}. ` +
       `Reset via POST /v1/sessions/${sessionId}/wallet/reset to continue.`,
     );
     e.code = "WALLET_HARD_CAP";
     e.status = 402;
     throw e;
   }
-  return { allowed: true, remainingUsd: DEFAULTS.hardCapUsd - row.totalUsd };
+  return { allowed: true, remainingUsd: cap - row.totalUsd };
 }
 
 /**
@@ -155,8 +170,9 @@ export function startTurn(sessionId, { now = Date.now() } = {}) {
       }
       // Mid-stream session-cap check: even if this turn started under the cap,
       // if it's accumulated enough this single turn to push past, abort.
-      if (row.totalUsd + costUsd >= DEFAULTS.hardCapUsd) {
-        return { abort: true, reason: "SESSION_HARD_CAP_MID_TURN", costUsd, totalUsd: row.totalUsd + costUsd, cap: DEFAULTS.hardCapUsd };
+      const cap = effectiveCap(row);
+      if (row.totalUsd + costUsd >= cap) {
+        return { abort: true, reason: "SESSION_HARD_CAP_MID_TURN", costUsd, totalUsd: row.totalUsd + costUsd, cap };
       }
       return null;
     },
@@ -187,6 +203,19 @@ export function resetCap(sessionId, multiplier = 2) {
   // as letting the session spend another full budget. Implementation: stash a
   // session-local cap-override on the row.
   row.capOverride = (row.capOverride || DEFAULTS.hardCapUsd) + DEFAULTS.hardCapUsd * multiplier;
+  return getWallet(sessionId);
+}
+
+/**
+ * Set an ABSOLUTE per-session hard cap (USD), overriding DEFAULTS.hardCapUsd for
+ * this session only. Unlike resetCap (which bumps the cap UPWARD by a multiplier
+ * so a session can keep spending), this sets an exact value — it can be BELOW the
+ * default to tighten a session's budget. Honored by preDispatchCheck /
+ * shouldAbort / getWallet (via effectiveCap).
+ */
+export function setCapOverride(sessionId, capUsd) {
+  const row = get(sessionId);
+  row.capOverride = Number(capUsd);
   return getWallet(sessionId);
 }
 
