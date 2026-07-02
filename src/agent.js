@@ -197,6 +197,18 @@ The bundle you produce or edit MUST satisfy ALL of these, or the AVNI server rej
 
 HOW to satisfy these — entity shapes, the closed enum sets, the FK matrix, the review checklist — lives in the avni-bundle-spec skill. Consult it before authoring or editing. Answer the user's explicit request only; do not do opportunistic cleanup in the same turn.`;
 
+// AUTHOR-MODE ADDENDUM (story #12) — appended to the active contract ONLY for
+// author-mode sessions (activeRulesBlock({ mode: "author" })). Edit mode's
+// contract stays BYTE-IDENTICAL (the default no-arg call is unchanged), so the
+// slim-prompt / hard-rules pins keep passing. A few lines: it tells the agent the
+// author flow (read_srs → optional generate_baseline → refine to clean) and that
+// the SAME data-integrity invariants above still hold — author mode adds a
+// starting point, not a lower bar.
+export const AUTHOR_MODE_ADDENDUM = `AUTHOR MODE — you are building this bundle FROM requirements, not editing an uploaded one. Your cwd may be EMPTY or a bare skeleton; do NOT assume a bundle already exists. Flow:
+1. Call \`mcp__avni-bundle__read_srs\` FIRST to read the session's SRS (requirements). Pass { section } for a large SRS.
+2. OPTIONALLY call \`mcp__avni-bundle__generate_baseline\` to bootstrap a deterministic baseline (it runs the SRS→bundle generator when XLSX inputs exist, else writes a minimal valid skeleton). You may instead hand-author via spec_apply / Edit.
+3. Refine with judgment until BOTH the validator and the integrity check report ZERO errors — honouring EXACTLY the same invariants above (find-before-create concept search, formElement.concept is a nested object, valid addressLevelType names, coded answers exist as standalone concepts, no dangling/invented UUIDs, server is the sole committer). Author mode gives you a starting point, not a lower bar.`;
+
 // Backout flag (story #11): SDK_LEGACY_RULES=1 restores the full legacy
 // BUNDLE_HARD_RULES prose. DEFAULT (env unset) is the slim BUNDLE_OUTCOME_CONTRACT.
 // This is the reversible escape hatch Himesh asks for ("where's the backout?") —
@@ -219,8 +231,15 @@ export function discoveryPromptEnabled() {
 // The rules block injected into the system prompt: the slim outcome contract by
 // default, the full legacy hard rules iff SDK_LEGACY_RULES is set. Evaluated
 // per-call so a test can toggle the env without a module reload.
-export function activeRulesBlock() {
-  return legacyRulesEnabled() ? BUNDLE_HARD_RULES : BUNDLE_OUTCOME_CONTRACT;
+//
+// `opts.mode === "author"` (story #12) appends the AUTHOR_MODE_ADDENDUM. The
+// no-arg / edit-mode call is BYTE-IDENTICAL to before — the guard keeps the
+// default contract unchanged (slim-prompt.test.cjs pins activeRulesBlock() ===
+// BUNDLE_OUTCOME_CONTRACT).
+export function activeRulesBlock(opts = {}) {
+  const base = legacyRulesEnabled() ? BUNDLE_HARD_RULES : BUNDLE_OUTCOME_CONTRACT;
+  if (opts && opts.mode === "author") return `${base}\n\n${AUTHOR_MODE_ADDENDUM}`;
+  return base;
 }
 
 // Default model for live agent dispatch. Replaces the deleted keyword router

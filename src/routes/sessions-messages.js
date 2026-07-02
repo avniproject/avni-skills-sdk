@@ -155,8 +155,10 @@ export function register(app) {
     // with a backout to the full legacy BUNDLE_HARD_RULES iff SDK_LEGACY_RULES=1.
     // activeRulesBlock() reads the env per-call, so a single scenario (or the
     // discovery harness) can toggle it. Evaluated once so both injection points
-    // agree within a turn.
-    const rulesBlock = activeRulesBlock();
+    // agree within a turn. In an author-mode session (story #12) the
+    // AUTHOR_MODE_ADDENDUM is appended; edit mode is byte-identical.
+    const sessionMode = sessions.getSessionMode(req.params.id);
+    const rulesBlock = activeRulesBlock({ mode: sessionMode });
 
     // H2 — Prompt-injection defense. Wrap the user instruction in markers
     // so the agent can distinguish data from instructions if either side

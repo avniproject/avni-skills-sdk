@@ -111,10 +111,35 @@ async function summariseRules(dir) {
 // ───────────────────────────────────────────────────────────────────
 
 /**
- * Create a session. Runs deterministic generator on the uploaded SRS,
- * commits the first-pass bundle as turn 0, returns session info.
+ * Create a session.
+ *
+ * Two modes (story #12):
+ *   • "edit" (DEFAULT) — the existing behaviour, byte-for-byte unchanged: runs
+ *     the deterministic generator on the uploaded SRS and commits the
+ *     first-pass bundle as turn 0. `formsBuffer` is required.
+ *   • "author" — the session is created AROUND an SRS (requirements) instead of
+ *     an uploaded bundle. The bundle dir starts empty; the SRS is persisted so
+ *     the agent can read it (bundle_read_srs) and optionally bootstrap a
+ *     deterministic baseline (bundle_generate_baseline), then refine to clean.
+ *
+ * @param {Object} args
+ * @param {Buffer}  [args.formsBuffer]       Forms.xlsx (required in edit mode; optional generator input in author mode)
+ * @param {string}  [args.formsFilename]
+ * @param {Buffer}  [args.modellingBuffer]   Modelling.xlsx (optional generator input)
+ * @param {string}  [args.modellingFilename]
+ * @param {string}  [args.org="Bundle"]
+ * @param {"edit"|"author"} [args.mode="edit"]
+ * @param {string|Object} [args.srs]         author-mode SRS as inline text or JSON (string or already-parsed object)
+ * @param {string}  [args.srsPath]           author-mode external SRS path the agent can Read (recorded, not copied)
  */
-export function createSession({ formsBuffer, formsFilename, modellingBuffer, modellingFilename, org = "Bundle" }) {
+export function createSession({ formsBuffer, formsFilename, modellingBuffer, modellingFilename, org = "Bundle", mode = "edit", srs, srsPath }) {
+  if (mode === "author") {
+    return createAuthorSession({ formsBuffer, modellingBuffer, org, srs, srsPath });
+  }
+  if (mode !== "edit") {
+    throw new Error(`unknown session mode: ${JSON.stringify(mode)} (expected "edit" or "author")`);
+  }
+  // ─── EDIT MODE (default) — behaviour below is unchanged from before #12 ───
   if (!formsBuffer) throw new Error("formsBuffer required");
 
   const id = newId();
@@ -165,9 +190,107 @@ export function createSession({ formsBuffer, formsFilename, modellingBuffer, mod
   return { sessionId: id, meta, validation };
 }
 
+// ─── author mode (story #12) ─────────────────────────────────────────
+//
+// An author-mode session is built AROUND requirements (an SRS), not an uploaded
+// bundle. Unlike edit mode, we do NOT run the deterministic generator at create
+// time — the generator is DEMOTED from the pipeline to an agent-callable tool
+// (bundle_generate_baseline). The bundle dir starts empty (only .gitignore, so
+// git has a HEAD to commit turns against); the agent reads the SRS
+// (bundle_read_srs), optionally bootstraps a baseline, then refines to clean.
+//
+// The SRS is persisted under <session>/srs/ so the tools (which run with cwd =
+// <session>/bundle) can reach it as ../srs/ — the same sibling-access pattern
+// bundle_export_to_path uses to read ../meta.json.
+function createAuthorSession({ formsBuffer, modellingBuffer, org, srs, srsPath }) {
+  const id = newId();
+  const dir = path.join(SESSIONS_DIR, id);
+  const srsDir = path.join(dir, "srs");
+  const bDir = path.join(dir, "bundle");
+  fs.mkdirSync(srsDir, { recursive: true });
+  fs.mkdirSync(bDir, { recursive: true });
+
+  // Persist the SRS in whatever form(s) the caller supplied. All are optional;
+  // an author session may start from pure prose, from structured JSON, from
+  // XLSX generator inputs, from an external path, or any combination.
+  const srsMeta = { kind: "none", files: {}, hasGeneratorInputs: false, externalPath: null };
+
+  if (typeof srs === "string" && srs.trim()) {
+    // Inline SRS text. Store as JSON when it parses to an object/array, else raw.
+    let parsed = null;
+    try { parsed = JSON.parse(srs); } catch { /* not JSON — treat as prose */ }
+    if (parsed !== null && typeof parsed === "object") {
+      fs.writeFileSync(path.join(srsDir, "srs.json"), JSON.stringify(parsed, null, 2));
+      srsMeta.files.json = "srs/srs.json";
+      srsMeta.kind = "json";
+    } else {
+      fs.writeFileSync(path.join(srsDir, "srs.txt"), srs);
+      srsMeta.files.text = "srs/srs.txt";
+      srsMeta.kind = "text";
+    }
+  } else if (srs && typeof srs === "object") {
+    // Already-parsed structured SRS object.
+    fs.writeFileSync(path.join(srsDir, "srs.json"), JSON.stringify(srs, null, 2));
+    srsMeta.files.json = "srs/srs.json";
+    srsMeta.kind = "json";
+  }
+
+  if (formsBuffer) {
+    fs.writeFileSync(path.join(srsDir, "forms.xlsx"), formsBuffer);
+    srsMeta.files.forms = "srs/forms.xlsx";
+    srsMeta.hasGeneratorInputs = true;
+    if (srsMeta.kind === "none") srsMeta.kind = "xlsx";
+  }
+  if (modellingBuffer) {
+    fs.writeFileSync(path.join(srsDir, "modelling.xlsx"), modellingBuffer);
+    srsMeta.files.modelling = "srs/modelling.xlsx";
+  }
+  if (typeof srsPath === "string" && srsPath.trim()) {
+    srsMeta.externalPath = srsPath.trim();
+    if (srsMeta.kind === "none") srsMeta.kind = "path";
+    // An external XLSX path can serve as generator forms input too.
+    if (/\.xlsx?$/i.test(srsMeta.externalPath)) srsMeta.hasGeneratorInputs = true;
+  }
+
+  // .gitignore keeps agent-staging artifacts out of the bundle git history +
+  // gives git a first tracked file so turn 0 is a real (non-empty) commit.
+  fs.writeFileSync(path.join(bDir, ".gitignore"), ".claude/\n");
+  git(bDir, "init", "-b", "main");
+  git(bDir, "config", "user.email", "agent@avni-skills-sdk");
+  git(bDir, "config", "user.name", "avni-skills-sdk");
+  git(bDir, "add", "-A");
+  git(bDir, "commit", "-m", "turn 0: author session initialised (empty bundle — awaiting baseline/authoring)");
+
+  // The empty bundle is expected to be dirty; the agent authors it clean. Guard
+  // against the validator throwing on an all-but-empty dir.
+  let validation;
+  try { validation = summariseValidation(bDir); }
+  catch { validation = { valid: false, errors: 0, warnings: 0, groups: {} }; }
+
+  const meta = {
+    sessionId: id,
+    org: org || "Bundle",
+    mode: "author",
+    createdAt: new Date().toISOString(),
+    srs: srsMeta,
+    currentTurn: 0,
+    validationAtCurrent: validation,
+  };
+  writeMeta(id, meta);
+
+  return { sessionId: id, meta, validation };
+}
+
 export function getSession(id) {
   const meta = readMeta(id);
   return meta;
+}
+
+// Session mode (story #12). Absent on pre-#12 sessions → "edit" (the historical
+// default), so old sessions and the byte-identical edit path are unaffected.
+export function getSessionMode(id) {
+  try { return readMeta(id).mode === "author" ? "author" : "edit"; }
+  catch { return "edit"; }
 }
 
 // Persist the Claude Agent SDK's internal session id on first dispatch so
