@@ -6,7 +6,7 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "test:entities": "node --test tests/entities/*.test.cjs",
+    "test:entities": "node --test tests/entities/*.test.cjs tests/corpus/parity/*.test.cjs",
     "test:bundle": "node tests/bundle-harness.cjs",
     "test:multi-org": "node scripts/multi-org-run.js",
     "test:corpus": "node tests/corpus/run.cjs",
@@ -19,6 +19,8 @@
     "verify": "node scripts/sdk-cli.mjs --demo",
     "verify:dryrun": "bash -c 'node scripts/dryrun-phase-4.mjs --forms \"$0\" --modelling \"$1\" --org \"${2:-Demo}\"'",
     "corpus:validate": "node tests/corpus/run.cjs",
+    "corpus:parity": "node tests/corpus/parity/run.cjs",
+    "corpus:parity:snapshot": "node tests/corpus/parity/snapshot.cjs",
     "dashboard": "node scripts/observability-dashboard.mjs",
     "repl:observed": "bash scripts/repl-with-dashboard.sh"
   },
