@@ -36,10 +36,10 @@ avni-skills-sdk (this repo, body)
   ├── src/locks.js               ← per-session async mutex (serialises concurrent writes)
   ├── src/logging.js             ← structured logger (one place for rate-limit/prune/security events)
   ├── src/middleware/rate-limit.js ← per-IP rate-limit middleware (429s logged)
-  ├── src/security/post-turn-detector.js ← diffs the working tree after each turn,
-  │                                  reverts out-of-scope writes, rejects the turn
+  ├── src/security/post-turn-detector.js ← after each turn, reverts commits authored
+  │                                  by a non-server identity and rejects the turn
   ├── src/agents/bundle-mcp-server.js     ← per-request factory createBundleMcpServer(bundleCwd)
-  │                                  exposes 4 in-process MCP tools to the agent
+  │                                  exposes 10 in-process MCP tools to the agent
   ├── src/agents/bundle-mcp-tool-names.js ← FROZEN tool-name constants (see rule §7)
   ├── src/agent.js               ← Claude Agent SDK wrapper (BYO key); slim outcome
   │                                  contract (default) / legacy hard rules (SDK_LEGACY_RULES=1);

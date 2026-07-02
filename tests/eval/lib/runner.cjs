@@ -56,11 +56,14 @@ function makeHttp(base) {
   };
 }
 
-async function createSession(http, { formsBuffer, modellingBuffer, org }) {
+async function createSession(http, { formsBuffer, modellingBuffer, org, mode }) {
   const fd = new FormData();
   fd.set("forms", new Blob([formsBuffer]), "forms.xlsx");
   if (modellingBuffer) fd.set("modelling", new Blob([modellingBuffer]), "modelling.xlsx");
   fd.set("org", org || "TestOrg");
+  // story #12: mode:'agent' starts an EMPTY workspace with the SRS in input/;
+  // default (omitted) is baseline (deterministic generator at turn 0).
+  if (mode) fd.set("mode", mode);
   return http.postMultipart("/v1/sessions", fd);
 }
 
@@ -208,11 +211,13 @@ async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, 
   }
   const { formsBuffer, modellingBuffer, org = "TestOrg" } = fx;
   if (!formsBuffer) return errResult(caseDef, "setupFixture didn't return formsBuffer", start);
+  // story #12: a case may pin the session mode ('agent' | 'baseline'); default baseline.
+  const sessionMode = caseDef.mode || fx.mode;
 
   // 2. Create session
   let session;
   try {
-    session = await createSession(http, { formsBuffer, modellingBuffer, org });
+    session = await createSession(http, { formsBuffer, modellingBuffer, org, mode: sessionMode });
   } catch (e) {
     return errResult(caseDef, `create session failed: ${e.message}`, start);
   }

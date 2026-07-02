@@ -3,7 +3,7 @@
 //
 // The eval harness (tests/eval/run.cjs) is gated on ANTHROPIC_API_KEY and only
 // runs during a paid ops sweep. This test proves the STATIC health of the suite
-// under `npm test`: all 20 case files parse + expose their contract, the fixture
+// under `npm test`: all 21 case files parse + expose their contract, the fixture
 // + assertion libs load, and the harness SKIPS cleanly with no key (no spend).
 
 "use strict";
@@ -24,11 +24,11 @@ function caseFiles() {
 
 // ─── registry shape ─────────────────────────────────────────────────
 
-test("eval registry: exactly 20 case files, numbered 01..20", () => {
+test("eval registry: exactly 21 case files, numbered 01..21", () => {
   const files = caseFiles();
-  assert.equal(files.length, 20, `expected 20 case files, got ${files.length}: ${files.join(", ")}`);
+  assert.equal(files.length, 21, `expected 21 case files, got ${files.length}: ${files.join(", ")}`);
   const nums = files.map((f) => f.slice(0, 2));
-  const expected = Array.from({ length: 20 }, (_, i) => String(i + 1).padStart(2, "0"));
+  const expected = Array.from({ length: 21 }, (_, i) => String(i + 1).padStart(2, "0"));
   assert.deepEqual(nums, expected, `case numbering gaps: ${nums.join(", ")}`);
 });
 
@@ -55,10 +55,10 @@ test("eval cases: every file loads + exposes a valid contract (no LLM executed)"
     assert.equal(typeof mod.assertions, "function", `${f}: assertions must be a function`);
     assert.equal(typeof mod.maxCostUsd, "number", `${f}: maxCostUsd (budget cap) must be a number`);
   }
-  assert.equal(names.size, 20);
+  assert.equal(names.size, 21);
 });
 
-test("eval cases: all 20 are implemented (no pending stubs remain)", () => {
+test("eval cases: all 21 are implemented (no pending stubs remain)", () => {
   const pending = caseFiles()
     .map((f) => require(path.join(CASES_DIR, f)))
     .filter((m) => m.pending)
