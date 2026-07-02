@@ -18,6 +18,7 @@
 
 module.exports = {
   name: "11-fix-f5-dangling-uuid",
+  category: "data-integrity",
   description:
     "[data-integrity] Fix F5 by restoring the missing concept at the referenced UUID — no invented UUID.",
 

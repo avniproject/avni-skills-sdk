@@ -228,6 +228,101 @@ function buildFindConceptTool(bundleCwd) {
   );
 }
 
+// ─── bundle-wide reference finder (story #13 tool promotion) ─────────
+//
+// Promotes scripts/agent-tools/find-references.mjs (a CLI) to a first-class MCP
+// tool. Scans every entity JSON + forms/*.json for a target UUID or concept
+// name, returning the full blast radius so the agent can see EVERY reference
+// before a rename / dedup — the discovery harness (d8 multi-file-rename) and
+// eval case 05 (rename-concept) both hinge on finding ALL references first.
+// Rule strings (decisionRule etc.) are scanned as text, so a UUID embedded in a
+// rule body is found. Pure/deterministic; exported for unit testing.
+
+const REFERENCE_SCAN_FILES = [
+  "concepts.json", "subjectTypes.json", "programs.json", "encounterTypes.json",
+  "formMappings.json", "organisationConfig.json",
+  "operationalSubjectTypes.json", "operationalPrograms.json", "operationalEncounterTypes.json",
+  "groupPrivilege.json", "groups.json", "groupRoles.json", "groupRole.json",
+  "addressLevelTypes.json", "individualRelation.json", "relationshipType.json", "taskTypes.json",
+];
+
+export function findReferencesOnDir(bundleCwd, { uuid, name } = {}) {
+  const target = (typeof uuid === "string" && uuid.trim()) ? uuid.trim()
+    : (typeof name === "string" && name.trim()) ? name.trim()
+    : null;
+  if (!target) {
+    return { ok: false, error: "provide either { uuid } or { name } to search for" };
+  }
+  const mode = (typeof uuid === "string" && uuid.trim()) ? "uuid" : "name";
+  const refs = [];
+
+  const walk = (node, jsonPath, file) => {
+    if (node == null) return;
+    if (typeof node === "string") {
+      if (node.includes(target)) {
+        refs.push({ file, jsonPath, value: node.length > 200 ? node.slice(0, 200) + "…" : node, kind: "string-contains" });
+      }
+      return;
+    }
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i++) walk(node[i], `${jsonPath}[${i}]`, file);
+      return;
+    }
+    if (typeof node === "object") {
+      if (mode === "name" && node.name === target) {
+        refs.push({ file, jsonPath, kind: "name-field-exact", uuid: node.uuid, dataType: node.dataType });
+      }
+      if (mode === "uuid" && node.uuid === target) {
+        refs.push({ file, jsonPath, kind: "uuid-field-exact", name: node.name, dataType: node.dataType });
+      }
+      for (const [k, v] of Object.entries(node)) walk(v, jsonPath ? `${jsonPath}.${k}` : k, file);
+    }
+  };
+
+  for (const rel of REFERENCE_SCAN_FILES) {
+    const fp = path.join(bundleCwd, rel);
+    if (!fs.existsSync(fp)) continue;
+    let json;
+    try { json = JSON.parse(fs.readFileSync(fp, "utf8")); } catch { continue; }
+    walk(json, "", rel);
+  }
+  const formsDir = path.join(bundleCwd, "forms");
+  if (fs.existsSync(formsDir)) {
+    for (const fn of fs.readdirSync(formsDir)) {
+      if (!fn.endsWith(".json")) continue;
+      let json;
+      try { json = JSON.parse(fs.readFileSync(path.join(formsDir, fn), "utf8")); } catch { continue; }
+      walk(json, "", `forms/${fn}`);
+    }
+  }
+
+  const byFile = {};
+  for (const r of refs) (byFile[r.file] ||= []).push(r);
+  return {
+    ok: true,
+    query: { mode, value: target },
+    totalReferences: refs.length,
+    filesAffected: Object.keys(byFile).length,
+    byFile,
+    references: refs,
+  };
+}
+
+function buildFindReferencesTool(bundleCwd) {
+  return tool(
+    "bundle_find_references",
+    "Find EVERY reference to a concept/entity UUID or name across the whole bundle (all entity JSON + forms/*.json, including UUIDs embedded inside rule strings). Returns { totalReferences, filesAffected, byFile, references }. Call this BEFORE a rename or dedup so you know the full blast radius and don't leave a dangling reference behind (F5). Deterministic — prefer it over Bash grep. Promoted from scripts/agent-tools/find-references.mjs.",
+    {
+      uuid: z.string().optional().describe("UUID to find every reference to (exact + substring, incl. rule bodies)"),
+      name: z.string().optional().describe("Concept/entity name to find (exact name-field matches + substring)"),
+    },
+    async ({ uuid, name }) => {
+      const r = findReferencesOnDir(bundleCwd, { uuid, name });
+      return r.ok ? textResult(r) : errorResult(r.error);
+    },
+  );
+}
+
 function buildSummaryTool(bundleCwd) {
   return tool(
     "bundle_summary",
@@ -1017,6 +1112,7 @@ export function createBundleMcpServer(bundleCwd) {
       buildSpecEmitTool(bundleCwd),
       buildReadSrsTool(bundleCwd),
       buildGenerateBaselineTool(bundleCwd),
+      buildFindReferencesTool(bundleCwd),
     ],
     alwaysLoad: true,
   });

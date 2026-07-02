@@ -16,6 +16,7 @@
 
 module.exports = {
   name: "19-repoint-not-duplicate",
+  category: "data-integrity",
   description:
     "[data-integrity] Fix C5 by repointing to the existing 'Other' concept — never create a second one.",
 

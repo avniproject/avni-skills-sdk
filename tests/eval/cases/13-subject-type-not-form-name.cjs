@@ -19,6 +19,7 @@
 
 module.exports = {
   name: "13-subject-type-not-form-name",
+  category: "srs-authorship",
   description:
     "[srs-authorship] Resolve M3 by pointing form mappings at the ENTITY subject type — never create a subject type named after a form.",
 

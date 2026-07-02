@@ -18,6 +18,7 @@
 
 module.exports = {
   name: "17-large-bundle-converges",
+  category: "correctness",
   description:
     "[correctness] Large bundle + mixed seeded errors → converges to 0 errors under budget, no collateral regression.",
 

@@ -18,6 +18,7 @@
 
 module.exports = {
   name: "15-no-regression-on-clean",
+  category: "no-thrash",
   description:
     "[no-thrash] A clean bundle + 'is it upload-ready?' → verification only, zero edit turns, no regression.",
 

@@ -19,6 +19,7 @@
 
 module.exports = {
   name: "09-honor-validator-state",
+  category: "no-thrash",
   description:
     "Agent must enumerate BOTH validator codes (C5 + F2) — not invent a third (C3) and not drop one.",
 

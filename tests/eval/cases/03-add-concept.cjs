@@ -17,6 +17,7 @@
 
 module.exports = {
   name: "03-add-concept",
+  category: "data-integrity",
   description:
     "[data-integrity] Agent must call bundle_find_concept before adding a concept and refuse to duplicate on a case-insensitive collision.",
 

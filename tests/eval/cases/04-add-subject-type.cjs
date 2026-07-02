@@ -16,6 +16,7 @@
 
 module.exports = {
   name: "04-add-subject-type",
+  category: "srs-authorship",
   description:
     "[srs-authorship] Adding a subject type writes subjectTypes.json + operationalSubjectTypes.json (+ any touched formMappings) in one turn.",
 

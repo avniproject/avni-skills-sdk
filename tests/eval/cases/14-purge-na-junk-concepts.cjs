@@ -18,6 +18,7 @@
 
 module.exports = {
   name: "14-purge-na-junk-concepts",
+  category: "correctness",
   description:
     "[correctness] Remove ONLY unreferenced dataType:NA junk concepts; leave referenced concepts untouched.",
 
