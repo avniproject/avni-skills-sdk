@@ -141,7 +141,7 @@ export function makeSseSender({ BASE, state }) {
         box(lines, { style: isRegression ? "square" : "round", indent: 0 });
 
         if (isRegression && !data.noChanges) {
-          console.log(dim("  ↪ The agent may have claimed success. Consider ") + cyan(":diff " + data.turn) + dim(" then ") + cyan(":revert " + (data.turn - 1)) + dim(" — or ") + cyan(":model sonnet") + dim(" before re-attempting."));
+          console.log(dim("  ↪ The agent may have claimed success. Consider ") + cyan(":diff " + data.turn) + dim(" then ") + cyan(":revert " + (data.turn - 1)) + dim(" — or ") + cyan(":model opus") + dim(" (deeper reasoning) before re-attempting."));
         }
         state.priorValidationGroups = { ...now };
       } else if (ev === "done") {

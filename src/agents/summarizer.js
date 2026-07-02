@@ -180,7 +180,7 @@ export function summarizeBundle(bundleDir) {
             severity: "error",
             where: `forms/* (form: ${f.name})`,
             value: `formElement "${el.name}": concept is a bare UUID string (${ec.slice(0, 38)}) — must be a nested object`,
-            note: "AVNI's server-side Jackson deserializer requires concept to be a ConceptContract object with at minimum {name, uuid, dataType}. Bare UUIDs are rejected at upload. Fix: run scripts/workflows/fix-formelement-concept-shape.mjs to re-inline.",
+            note: "AVNI's server-side Jackson deserializer requires concept to be a ConceptContract object with at minimum {name, uuid, dataType}. Bare UUIDs are rejected at upload. Fix inline (copy the full nested concept object verbatim); for bulk manual recovery a human can run scripts/recovery/fix-formelement-concept-shape.mjs.",
           });
           continue;
         }

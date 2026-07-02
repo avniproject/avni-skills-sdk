@@ -10,7 +10,7 @@ const os = require("node:os");
 const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
 
-const CLI = path.resolve(__dirname, "..", "..", "scripts", "workflows", "fix-formelement-concept-shape.mjs");
+const CLI = path.resolve(__dirname, "fix-formelement-concept-shape.mjs");
 
 function tmpBundle({ concepts = [], forms = [] } = {}) {
   const dir = path.join(os.tmpdir(), "fix-shape-test-" + crypto.randomBytes(4).toString("hex"));

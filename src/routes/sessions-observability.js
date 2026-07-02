@@ -55,13 +55,14 @@ export function register(app) {
   // + cost.jsonl and surfaces *exactly* where the loop is failing. Designed
   // to answer "what broke and on which agent" without grep+jq pipelines.
   //
-  // Reports six classes of failure:
-  //   1. schema_errors        — agent didn't end with valid AGENT_OUTPUT_SCHEMA JSON
-  //   2. circuit_breaks       — wallet aborted a turn mid-stream (events / cost / cap)
-  //   3. agent_errors         — runAgent threw (network, API, timeout)
-  //   4. validator_regressions — agent's edits made the validator state WORSE
-  //   5. integrity_issues     — apply-spec found dangling references
-  //   6. semantic_failures    — applied_fix with no changes; ask_user with no
+  // Reports five classes of failure (the relay-era schema_errors class was
+  // retired in #11 — a single linear agent has no AGENT_OUTPUT_SCHEMA contract
+  // to violate):
+  //   1. circuit_breaks       — wallet aborted a turn mid-stream (events / cost / cap)
+  //   2. agent_errors         — runAgent threw (network, API, timeout)
+  //   3. validator_regressions — agent's edits made the validator state WORSE
+  //   4. integrity_issues     — a turn's commit carried a failing integrity report
+  //   5. semantic_failures    — applied_fix with no changes; ask_user with no
   //                              ambiguities (semantic-guard violations)
   //
   // Plus aggregate breakdowns: per-agent turn counts, per-agent cost,
@@ -81,7 +82,7 @@ export function register(app) {
         const a = e.agent || e.source || "unspecified";
         if (!byAgent[a]) byAgent[a] = {
           agent: a, turns: 0,
-          ok: 0, schema_error: 0, aborted: 0, error: 0,
+          ok: 0, aborted: 0, error: 0,
           cost_usd: 0, input_tokens: 0, output_tokens: 0,
         };
         byAgent[a].turns += 1;
@@ -89,22 +90,11 @@ export function register(app) {
         byAgent[a].input_tokens += e.tokens?.in || 0;
         byAgent[a].output_tokens += e.tokens?.out || 0;
         if (e.aborted) byAgent[a].aborted += 1;
-        else if ((e.schemaErrors || []).length > 0) byAgent[a].schema_error += 1;
         else byAgent[a].ok += 1;
       }
       for (const a of Object.values(byAgent)) a.cost_usd = Number(a.cost_usd.toFixed(6));
 
-      // ── Failure category 1: schema_errors
-      const schemaErrors = turnCommits
-        .filter((e) => (e.schemaErrors || []).length > 0)
-        .map((e) => ({
-          turn: e.turn,
-          agent: e.agent || e.source,
-          errors: e.schemaErrors,
-          ts: e.ts,
-        }));
-
-      // ── Failure category 2: circuit_breaks
+      // ── Failure category 1: circuit_breaks
       const circuitBreaks = turnCommits
         .filter((e) => e.aborted)
         .map((e) => ({
@@ -115,7 +105,7 @@ export function register(app) {
           ts: e.ts,
         }));
 
-      // ── Failure category 3: agent_errors (from step log)
+      // ── Failure category 2: agent_errors (from step log)
       const agentErrors = steps
         .filter((s) => s.kind === "agent_turn" && s.status === "error")
         .map((s) => ({
@@ -126,7 +116,7 @@ export function register(app) {
           ts: s.ts,
         }));
 
-      // ── Failure category 4: validator_regressions
+      // ── Failure category 3: validator_regressions
       // Compare validation.errors across consecutive turn_commits. A regression
       // is when a turn's validation state has MORE errors than the previous turn's.
       const validatorRegressions = [];
@@ -147,7 +137,7 @@ export function register(app) {
         }
       }
 
-      // ── Failure category 5: integrity_issues (from apply-spec turns)
+      // ── Failure category 4: integrity_issues (turns whose commit carried a failing integrity report)
       const integrityIssues = turnCommits
         .filter((e) => e.integrity && !e.integrity.ok)
         .map((e) => ({
@@ -157,7 +147,7 @@ export function register(app) {
           ts: e.ts,
         }));
 
-      // ── Failure category 6: semantic_failures
+      // ── Failure category 5: semantic_failures
       // The schema validator catches these as schema errors, but also surface
       // them separately so operators can spot agent-prompt regressions.
       const semanticFailures = [];
@@ -237,7 +227,6 @@ export function register(app) {
           wallet: { totalUsd: w.totalUsd, remainingUsd: w.remainingUsd, capUsd: w.caps.hardCapUsd, byAgent: w.byAgent },
         },
         failures: {
-          schemaErrors,
           circuitBreaks,
           agentErrors,
           validatorRegressions,
