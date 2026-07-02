@@ -26,6 +26,7 @@
     "corpus:parity": "node tests/corpus/parity/run.cjs",
     "corpus:parity:snapshot": "node tests/corpus/parity/snapshot.cjs",
     "dashboard": "node scripts/observability-dashboard.mjs",
+    "head-to-head": "node scripts/head-to-head.mjs",
     "repl:observed": "bash scripts/repl-with-dashboard.sh"
   },
   "engines": {
