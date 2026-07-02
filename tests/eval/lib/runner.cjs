@@ -234,6 +234,15 @@ async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, 
     } catch { return null; }
   })();
 
+  // Pre-dispatch validator snapshot — the BASELINE. Cases assert on the DELTA
+  // the agent is responsible for (assertNoValidatorRegression), so inherent
+  // fixture/brain-version errors that predate the turn never cause a false fail.
+  let baselineValidator = { errors: 0, warnings: 0, groups: {} };
+  try {
+    const meta = await http.getJson(`/v1/sessions/${sid}`);
+    baselineValidator = meta.validationAtCurrent || meta.validation || baselineValidator;
+  } catch { /* best-effort — leave the empty baseline */ }
+
   // 5. Dispatch the prompt
   let dispatch;
   try {
@@ -276,6 +285,7 @@ async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, 
     inputTokens: dispatch.inputTokens,
     outputTokens: dispatch.outputTokens,
     preDispatchSha,
+    baselineValidator,
     assertions,
     envOverrides,
     async getValidator() {

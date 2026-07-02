@@ -1,39 +1,51 @@
-// 05-rename-concept.cjs  (PENDING — registry stub)
+// 05-rename-concept.cjs  (category: data-integrity)
 //
-// What this case WILL prove once implemented: renaming a concept (changing
-// its `name` field, NOT its UUID) is a cross-file operation — the new name
-// has to be reflected in (a) concepts.json, (b) every forms/*.json that
-// embeds the concept inside a formElement.concept block (BUNDLE_HARD_RULES
-// rule #8 mandates the NESTED OBJECT shape, so the name lives in two
-// places). The validator should stay green throughout.
+// What it proves: renaming a concept is a CROSS-FILE operation. The new name
+// must land in concepts.json AND in the NESTED concept object of every form
+// that embeds it (the slim contract requires the full ConceptContract object on
+// each form element). The UUID must NOT change — if it did, forms would dangle
+// (F5). The validator must stay clean.
 //
-// Why it's stubbed:
-//   The agent has a deterministic primitive — `scripts/workflows/rename-concept-uuid.mjs`
-//   — but that's for UUID swaps, not name changes. A name-only rename
-//   without breaking the validator is a multi-file Edit that the agent has
-//   to coordinate by reading all forms first. The assertion needs to walk
-//   every forms/*.json and check the embedded concept.name in any
-//   formElement that references the target UUID.
-//
-// Implementation sketch:
-//   setupFixture: buildBaseSrsBuffers (has Religion + Beneficiary Registration)
-//   prompt:       "Rename the concept 'Religion' to 'Faith' everywhere it appears — concepts.json AND any forms that embed it."
-//   assertions:
-//     - concepts.json: name "Religion" gone, "Faith" present, same UUID
-//     - every forms/*.json: any formElement whose concept.uuid === <religion UUID> has concept.name === "Faith"
-//     - validator unchanged (still clean)
-//     - no NEW concept added (Faith reuses Religion's UUID)
-//
-// Estimated cost when implemented: ~$0.30
+// Expectations:
+//   • concepts.json: "Religion" gone, "Faith" present (same UUID)
+//   • every form embedding that UUID has concept.name === "Faith"
+//   • exactly one "Faith" concept (no duplicate created)
+//   • no validator regression (notably no F5) vs the pre-dispatch baseline
 
 "use strict";
 
 module.exports = {
   name: "05-rename-concept",
   description:
-    "[PENDING] Agent must rename a concept everywhere it's embedded — concepts.json AND every form that references it.",
-  pending: true,
-  pendingReason:
-    "Needs an assertion helper that walks all forms/*.json and inspects nested formElement.concept blocks — to be implemented in v0.3.",
+    "[data-integrity] Renaming a concept rewrites concepts.json AND every form that embeds it — same UUID, no F5.",
+
+  setupFixture: ({ fixture }) => fixture.buildBaseSrsBuffers({ org: "TestOrgRename" }),
+
+  prompt:
+    "Rename the concept 'Religion' to 'Faith' everywhere it appears — in concepts.json " +
+    "AND inside any form that embeds it. Keep the SAME UUID; only the name changes.",
+
+  maxTurns: 3,
   maxCostUsd: 0.30,
+
+  assertions: async (ctx) => {
+    const { assertions: A } = ctx;
+
+    // 1. concepts.json flipped Religion → Faith, exactly one Faith.
+    A.assertConceptDoesNotExist(ctx.bundleDir, "Religion");
+    const faith = A.assertConceptExists(ctx.bundleDir, "Faith");
+    A.assertConceptCountByName(ctx.bundleDir, "Faith", 1);
+
+    // 2. Every form that embeds this UUID now embeds concept.name === "Faith".
+    const touched = A.assertFormsEmbedConceptName(ctx.bundleDir, faith.uuid, "Faith");
+    if (touched === 0) {
+      throw new Error("no form embedded the Faith concept — rename did not reach the forms");
+    }
+
+    // 3. No validator regression (a UUID change would surface as F5).
+    await A.assertNoValidatorRegression({
+      getValidator: ctx.getValidator,
+      baseline: ctx.baselineValidator,
+    });
+  },
 };

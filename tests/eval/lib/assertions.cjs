@@ -91,6 +91,99 @@ function assertConceptDoesNotExist(bundleDir, name) {
   }
 }
 
+// Case-insensitive count of concepts with a given name (C3/D1 dedup guard).
+function countConceptsByName(bundleDir, name) {
+  return readConceptsJson(bundleDir).filter(
+    (c) => String(c.name || "").trim().toLowerCase() === name.trim().toLowerCase(),
+  ).length;
+}
+
+function assertConceptCountByName(bundleDir, name, expected) {
+  const actual = countConceptsByName(bundleDir, name);
+  if (actual !== expected) {
+    throw new Error(`expected ${expected} concept(s) named "${name}" (case-insensitive), got ${actual}`);
+  }
+}
+
+// ─── forms walk ─────────────────────────────────────────────────────
+
+function readForms(bundleDir) {
+  const dir = path.join(bundleDir, "forms");
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir)
+    .filter((f) => f.endsWith(".json"))
+    .map((f) => ({ file: f, form: JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")) }));
+}
+
+// Every formElement whose concept.uuid === `uuid` must embed concept.name === `name`.
+// Used by the rename case: a concept rename has to be reflected in the NESTED
+// concept object inside every form that references it, not just concepts.json.
+function assertFormsEmbedConceptName(bundleDir, uuid, name) {
+  let checked = 0;
+  for (const { file, form } of readForms(bundleDir)) {
+    for (const grp of form.formElementGroups || []) {
+      for (const fe of grp.formElements || []) {
+        if (fe && fe.concept && fe.concept.uuid === uuid) {
+          checked++;
+          if (String(fe.concept.name || "") !== name) {
+            throw new Error(
+              `form "${file}" element "${fe.name}" embeds concept.name="${fe.concept.name}", expected "${name}"`,
+            );
+          }
+        }
+      }
+    }
+  }
+  return checked;
+}
+
+// ─── formMappings ───────────────────────────────────────────────────
+
+function readFormMappings(bundleDir) {
+  const fp = path.join(bundleDir, "formMappings.json");
+  return fs.existsSync(fp) ? JSON.parse(fs.readFileSync(fp, "utf8")) : [];
+}
+
+// The formMapping identified by `formName` (or predicate) must reference the
+// subjectType whose name is `expectedSubjectTypeName`.
+function assertFormMappingSubjectType(bundleDir, matcher, expectedSubjectTypeName) {
+  const mappings = readFormMappings(bundleDir);
+  const subjects = JSON.parse(fs.readFileSync(path.join(bundleDir, "subjectTypes.json"), "utf8"));
+  const wanted = subjects.find((s) => s.name === expectedSubjectTypeName);
+  if (!wanted) throw new Error(`assertFormMappingSubjectType: subjectType "${expectedSubjectTypeName}" not found`);
+  const pred = typeof matcher === "function"
+    ? matcher
+    : (m) => (m.formName || "") === matcher || m.formType === matcher;
+  const hits = mappings.filter(pred);
+  if (hits.length === 0) throw new Error(`assertFormMappingSubjectType: no formMapping matched ${matcher}`);
+  for (const m of hits) {
+    if (m.subjectTypeUUID !== wanted.uuid) {
+      throw new Error(
+        `formMapping "${m.formName || m.formType}" subjectTypeUUID=${m.subjectTypeUUID}, ` +
+        `expected ${wanted.uuid} (${expectedSubjectTypeName})`,
+      );
+    }
+  }
+}
+
+// ─── groupPrivileges ────────────────────────────────────────────────
+
+function readGroupPrivileges(bundleDir) {
+  const fp = path.join(bundleDir, "groupPrivilege.json");
+  return fs.existsSync(fp) ? JSON.parse(fs.readFileSync(fp, "utf8")) : [];
+}
+
+// No groupPrivilege may carry a privilegeType outside the allowed set. `allowed`
+// is a Set/array of canonical PrivilegeType enum values.
+function assertNoInventedPrivilegeType(bundleDir, allowed) {
+  const set = allowed instanceof Set ? allowed : new Set(allowed || []);
+  for (const p of readGroupPrivileges(bundleDir)) {
+    if (p.privilegeType && set.size > 0 && !set.has(p.privilegeType)) {
+      throw new Error(`invented/invalid privilegeType "${p.privilegeType}" still present in groupPrivilege.json`);
+    }
+  }
+}
+
 // Confirm a Coded concept's answer points at the expected UUID. Useful for
 // the C5-fix case: the fix should re-point the answer at the existing
 // "Other" concept, NOT add a new duplicate.
@@ -238,6 +331,42 @@ function assertToolUsed(agentEvents, predicate) {
   return hit;
 }
 
+function assertToolNotUsed(agentEvents, predicate, { label } = {}) {
+  const tools = listToolUses(agentEvents);
+  const hit = tools.find(predicate);
+  if (hit) {
+    throw new Error(`unexpected tool use: ${hit.name}${label ? ` (${label})` : ""}`);
+  }
+}
+
+// Ordering probe: the FIRST tool call matching `first` must occur before the
+// first tool call matching `then`. Used to prove e.g. bundle_find_concept is
+// called BEFORE any concepts.json edit, or the validator is re-run AFTER an edit.
+function assertToolOrder(agentEvents, { first, then, label }) {
+  const tools = listToolUses(agentEvents);
+  const iFirst = tools.findIndex(first);
+  const iThen = tools.findIndex(then);
+  if (iFirst === -1) {
+    throw new Error(`ordering: the "first" tool never ran${label ? ` (${label})` : ""}. Tools: ${tools.map((t) => t.name).join(", ") || "<none>"}`);
+  }
+  if (iThen === -1) {
+    throw new Error(`ordering: the "then" tool never ran${label ? ` (${label})` : ""}. Tools: ${tools.map((t) => t.name).join(", ") || "<none>"}`);
+  }
+  if (iFirst > iThen) {
+    throw new Error(
+      `ordering violation${label ? ` (${label})` : ""}: "first" (idx ${iFirst}) ran AFTER "then" (idx ${iThen}). ` +
+      `Sequence: ${tools.map((t) => t.name).join(" → ")}`,
+    );
+  }
+}
+
+// True if any tool call is an Edit/Write/MultiEdit touching a bundle file path.
+function isFileEditTool(t) {
+  const n = String(t.name || "");
+  if (!/^(Edit|Write|MultiEdit)$/.test(n) && !/edit|write/i.test(n)) return false;
+  return true;
+}
+
 // ─── cost guard ────────────────────────────────────────────────────
 
 function assertCostUnder(actualUsd, maxUsd, { label } = {}) {
@@ -259,6 +388,17 @@ module.exports = {
   assertConceptExists,
   assertConceptDoesNotExist,
   assertAnswerUuid,
+  countConceptsByName,
+  assertConceptCountByName,
+  // forms
+  readForms,
+  assertFormsEmbedConceptName,
+  // formMappings
+  readFormMappings,
+  assertFormMappingSubjectType,
+  // groupPrivileges
+  readGroupPrivileges,
+  assertNoInventedPrivilegeType,
   // subject types
   assertSubjectTypeExists,
   assertOperationalMirror,
@@ -272,6 +412,9 @@ module.exports = {
   // tools
   listToolUses,
   assertToolUsed,
+  assertToolNotUsed,
+  assertToolOrder,
+  isFileEditTool,
   // cost
   assertCostUnder,
   // const

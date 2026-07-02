@@ -1,15 +1,13 @@
-// commands/rules.mjs — rule + reference manipulation commands:
+// commands/rules.mjs — rule + reference inspection commands:
 //   :rules                list every populated rule
 //   :rulev                Layer-4 rules validator (R1-R6)
 //   :refs <q>             find every reference to a UUID or "Name"
-//   :rename <old> <new> [new-name]  rewrite across the bundle
-//   :add-form <spec.json> [--dry-run]  atomic form insertion
 //
-// :refs / :rename / :add-form shell out to the dedicated CLIs under
-// scripts/agent-tools/ + scripts/workflows/ — those are the deterministic
-// primitives the agent itself may invoke via Bash.
+// :refs shells out to scripts/agent-tools/find-references.mjs — a read-only
+// deterministic primitive. The deterministic edit workflows (:add-form /
+// :rename) were retired in story #11; adding/renaming entities is now the
+// agent's job (Read + Edit/Write; the gates catch bad mutations).
 
-import fs from "node:fs";
 import path from "node:path";
 import { bold, cyan, dim, green, red, yellow } from "../ui.mjs";
 import { guessBundlePath } from "../bundle-path.mjs";
@@ -78,54 +76,5 @@ export function makeRulesCommands({ http, SCRIPTS_DIR }) {
     }
   }
 
-  async function cmdRename(sid, args) {
-    if (args.length < 2) { console.log(red("  usage: :rename <old-uuid> <new-uuid> [new-name]")); return; }
-    const [oldU, newU, ...rest] = args;
-    const newName = rest.length ? rest.join(" ") : null;
-    console.log(dim(`  ⠋ rewriting ${oldU} → ${newU}${newName ? " (rename to '" + newName + "')" : ""} across the bundle…`));
-    const { spawnSync } = await import("node:child_process");
-    const cliPath = path.join(SCRIPTS_DIR, "workflows/rename-concept-uuid.mjs");
-    const bundlePath = guessBundlePath(sid);
-    const cliArgs = ["--old", oldU, "--new", newU];
-    if (newName) cliArgs.push("--new-name", newName);
-    const res = spawnSync("node", [cliPath, ...cliArgs], { cwd: bundlePath, encoding: "utf8" });
-    if (res.status !== 0) { console.log(red("  rename failed: " + (res.stderr || res.stdout))); return; }
-    const out = JSON.parse(res.stdout);
-    console.log("  " + green("✓") + " " + out.message);
-    for (const [f, info] of Object.entries(out.byFile || {})) {
-      console.log("    " + dim(f) + "  " + cyan(String(info.replacements)) + dim(" replacements"));
-    }
-    console.log(dim("  Tip: now commit the change as a turn via free text (e.g. 'commit the rename'), or it'll be in the working tree."));
-  }
-
-  async function cmdAddForm(sid, args) {
-    if (args.length < 1) { console.log(red("  usage: :add-form <spec.json> [--dry-run]")); return; }
-    const [specPath, ...rest] = args;
-    if (!fs.existsSync(specPath)) { console.log(red("  spec not found: " + specPath)); return; }
-    const isDry = rest.includes("--dry-run");
-    console.log(dim(`  ⠋ ${isDry ? "[dry-run] " : ""}adding form from ${specPath}…`));
-    const { spawnSync } = await import("node:child_process");
-    const cliPath = path.join(SCRIPTS_DIR, "workflows/add-form.mjs");
-    const bundlePath = guessBundlePath(sid);
-    const cliArgs = ["--spec", specPath, ...rest];
-    const res = spawnSync("node", [cliPath, ...cliArgs], { cwd: bundlePath, encoding: "utf8" });
-    let out;
-    try { out = JSON.parse(res.stdout); } catch { out = null; }
-    if (!out) { console.log(red("  add-form failed:\n  " + (res.stderr || res.stdout))); return; }
-    if (out.ok === false) {
-      console.log(red("  ✗ add-form rejected:"));
-      for (const e of (out.errors || [])) console.log("    " + e);
-      if (out.availableSubjectTypes) console.log(dim("  available subjectTypes: " + out.availableSubjectTypes.join(", ")));
-      return;
-    }
-    console.log("  " + green("✓") + (out.dryRun ? dim(" [dry-run] ") : " ") + (out.message || `form "${out.form.name}" planned`));
-    console.log(dim("    form uuid:           ") + cyan(out.form.uuid));
-    console.log(dim("    formElements:        ") + out.formElementCount);
-    console.log(dim("    new concepts:        ") + (out.newConcepts || []).length);
-    console.log(dim("    new answer concepts: ") + (out.newAnswerConcepts || []).length);
-    console.log(dim("    reused concepts:     ") + (out.reusedConcepts || []).length);
-    if (!out.dryRun) console.log(dim("  Tip: commit via free text 'commit the new form' or wait for the next agent turn."));
-  }
-
-  return { cmdRules, cmdRuleValidate, cmdRefs, cmdRename, cmdAddForm };
+  return { cmdRules, cmdRuleValidate, cmdRefs };
 }
