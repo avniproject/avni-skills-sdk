@@ -374,41 +374,81 @@ function buildSummaryTool(bundleCwd) {
   );
 }
 
+/**
+ * Zip the bundle at `bundleCwd` to `destPath` (path-jailed), REFUSING to write
+ * anything if the bundle has any data-integrity ERROR.
+ *
+ * This is the HARD SHIP GATE (FIX 1b): a clean local validator does NOT
+ * guarantee a clean AVNI upload — FE_CONCEPT_NOT_OBJECT (Durga), ALT_INVALID_NAME
+ * (Astitva), and dangling REQUIRED refs all pass the validator yet crash the
+ * server on upload. runBundleIntegrityCheck is the deterministic gate; we run it
+ * BEFORE zipping and refuse (isError) on any severity:error finding, so a dirty
+ * bundle can never leave the system via this tool. Returns an MCP CallToolResult;
+ * never throws. Exported for unit testing (mirrors specApplyOnDir / specEmitOnDir).
+ */
+export async function exportBundleToPath(bundleCwd, destPath) {
+  try {
+    // Determine org name from meta — try ../meta.json (session dir parent of bundle dir)
+    let org = "Bundle";
+    try {
+      const metaFp = path.join(bundleCwd, "..", "meta.json");
+      if (fs.existsSync(metaFp)) {
+        org = JSON.parse(fs.readFileSync(metaFp, "utf8")).org || org;
+      }
+    } catch {}
+
+    // HARD INTEGRITY GATE at the ship boundary. Never zip a bundle AVNI will
+    // reject. A load failure of the brain graph is itself a refusal — we do not
+    // silently ship an unchecked bundle.
+    let integrity;
+    try {
+      integrity = runBundleIntegrityCheck(bundleCwd);
+    } catch (e) {
+      return errorResult(
+        `cannot export — the data-integrity check could not run (${e.message}). ` +
+        `Fix the environment (AVNI_SKILLS_PATH must point at an avni-skills build with the yaml graph) and retry. ` +
+        `The bundle was NOT written.`,
+      );
+    }
+    if (!integrity.ok) {
+      const errs = integrity.findings.filter((f) => f.severity === "error");
+      const shown = errs.slice(0, 20)
+        .map((f) => `  • [${f.code}] ${f.file} ${f.locator} — ${f.message}`)
+        .join("\n");
+      return errorResult(
+        `REFUSING TO EXPORT: the bundle has ${errs.length} data-integrity error(s) that AVNI rejects ` +
+        `on upload (a clean validator does NOT guarantee a clean upload). Fix these, re-run ` +
+        `bundle_integrity_check to confirm zero errors, then export again — nothing was written:\n${shown}` +
+        (errs.length > 20 ? `\n  … and ${errs.length - 20} more` : ""),
+      );
+    }
+
+    const jail = resolveExportPath(destPath, org);
+    if (!jail.ok) return errorResult(jail.error);
+    const finalPath = jail.finalPath;
+
+    // Ensure parent dir exists (it's already proven to be inside the jail).
+    fs.mkdirSync(path.dirname(finalPath), { recursive: true });
+    const result = await zipBundleDir(bundleCwd, finalPath);
+    return textResult({
+      ok: true,
+      zipPath: finalPath,
+      bytes: result?.bytes || (fs.existsSync(finalPath) ? fs.statSync(finalPath).size : 0),
+      message: `Bundle exported to ${finalPath}`,
+    });
+  } catch (e) {
+    return errorResult(`failed to export: ${e.message}`);
+  }
+}
+
 function buildExportTool(bundleCwd) {
   return tool(
     "bundle_export_to_path",
-    'Zip the current bundle and copy it to a destination path. Use this when the user asks to "save the bundle", "put the bundle on Desktop", "download the bundle", "give me the zip". Destination MUST be inside one of the allowed roots (~/Desktop, ~/Downloads, ~/Documents, ~/.avni-skills-sdk/exports, or $SDK_EXPORT_DIR if set) — paths that escape are rejected. Tildes are resolved. Returns the absolute path of the written file.',
+    'Zip the current bundle and copy it to a destination path. Use this when the user asks to "save the bundle", "put the bundle on Desktop", "download the bundle", "give me the zip". REFUSES to write if the bundle has any data-integrity error (runs bundle_integrity_check first — a clean validator does NOT guarantee a clean upload). Destination MUST be inside one of the allowed roots (~/Desktop, ~/Downloads, ~/Documents, ~/.avni-skills-sdk/exports, or $SDK_EXPORT_DIR if set) — paths that escape are rejected. Tildes are resolved. Returns the absolute path of the written file.',
     {
       destPath: z.string().describe('Destination — either a directory (where the zip is named <Org>.zip) or a full file path ending in .zip. Tildes resolved (e.g. "~/Desktop"). Must resolve to a path inside an allowed export root.'),
     },
-    async ({ destPath }) => {
-      try {
-        // Determine org name from meta — try ../meta.json (session dir parent of bundle dir)
-        let org = "Bundle";
-        try {
-          const metaFp = path.join(bundleCwd, "..", "meta.json");
-          if (fs.existsSync(metaFp)) {
-            org = JSON.parse(fs.readFileSync(metaFp, "utf8")).org || org;
-          }
-        } catch {}
-
-        const jail = resolveExportPath(destPath, org);
-        if (!jail.ok) return errorResult(jail.error);
-        const finalPath = jail.finalPath;
-
-        // Ensure parent dir exists (it's already proven to be inside the jail).
-        fs.mkdirSync(path.dirname(finalPath), { recursive: true });
-        const result = await zipBundleDir(bundleCwd, finalPath);
-        return textResult({
-          ok: true,
-          zipPath: finalPath,
-          bytes: result?.bytes || (fs.existsSync(finalPath) ? fs.statSync(finalPath).size : 0),
-          message: `Bundle exported to ${finalPath}`,
-        });
-      } catch (e) {
-        return errorResult(`failed to export: ${e.message}`);
-      }
-    },
+    async ({ destPath }) => exportBundleToPath(bundleCwd, destPath),
   );
 }
 

@@ -31,6 +31,7 @@ import { generateBundle, validateBundle, zipBundle as zipBundleDir } from "./bun
 import { ensureSkillsStagedAt } from "./workspace.js";
 import { validateBundleRules } from "./rules-brain/validate.js";
 import { detectConceptCollisions, formatViolationMessage } from "./rules-brain/concept-gate.js";
+import { runBundleIntegrityCheck } from "./agents/bundle-mcp-server.js";
 
 const SESSIONS_DIR = process.env.SDK_SESSIONS_DIR || path.join(os.homedir(), ".avni-skills-sdk", "sessions");
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -84,6 +85,62 @@ function summariseValidation(dir) {
     groups[k] = (groups[k] || 0) + 1;
   }
   return { valid: r.valid, errors: r.errors.length, warnings: r.warnings.length, groups };
+}
+
+// FIX 1(a) — the INTEGRITY GATE, iteration-friendly half.
+//
+// `runBundleIntegrityCheck` had ZERO callers on the commit/inject path, so the
+// two server-only traps (FE_CONCEPT_NOT_OBJECT / Durga + ALT_INVALID_NAME /
+// Astitva, plus dangling REQUIRED refs) were tool+prose only — never a gate.
+// This runs the deterministic integrity check and FOLDS its severity:error
+// findings INTO the per-turn validation state so they surface to the agent
+// every turn exactly like validator errors (closing the "validator shows 0,
+// agent thinks done" hole). It does NOT hard-revert — the agent iterates.
+//
+// Returns a tight, structured summary; NEVER throws (a brain-graph load failure
+// degrades to a null/empty integrity result so the validator half still works).
+function summariseIntegrity(dir) {
+  try {
+    const { ok, findings } = runBundleIntegrityCheck(dir);
+    const errorFindings = findings.filter((f) => f.severity === "error");
+    const warningFindings = findings.filter((f) => f.severity === "warning");
+    const counts = {};
+    for (const f of findings) counts[f.code] = (counts[f.code] || 0) + 1;
+    return {
+      ok,
+      errorCount: errorFindings.length,
+      warningCount: warningFindings.length,
+      counts,
+      findings,
+    };
+  } catch (e) {
+    // Fail-safe: integrity unavailable ⇒ don't block the validator half. `ok:null`
+    // signals "not evaluated" so callers don't treat it as clean.
+    return { ok: null, errorCount: 0, warningCount: 0, counts: {}, findings: [], error: e.message };
+  }
+}
+
+// Combine the validator summary with the deterministic integrity summary into a
+// single per-turn validation object. Back-compat: keeps `valid`/`errors`/
+// `warnings`/`groups` (existing consumers rely on these), folding integrity
+// severity:error into `valid`+`errors` so a bundle that is validator-clean but
+// integrity-dirty is correctly reported NOT valid. The integrity detail is kept
+// clearly labeled under `integrity` so the two sources never blur together.
+function summariseValidationWithIntegrity(dir) {
+  const v = summariseValidation(dir);
+  const integrity = summariseIntegrity(dir);
+  const groups = { ...v.groups };
+  for (const [code, n] of Object.entries(integrity.counts)) {
+    groups[code] = (groups[code] || 0) + n;
+  }
+  return {
+    // integrity.ok === null (not evaluated) must NOT flip a valid bundle invalid.
+    valid: v.valid && integrity.ok !== false,
+    errors: v.errors + integrity.errorCount,
+    warnings: v.warnings + integrity.warningCount,
+    groups,
+    integrity,
+  };
 }
 
 // Run the Layer-4 rules validator across the bundle's rule fields.
@@ -337,23 +394,57 @@ export function currentValidatorStateText(id) {
   } catch (e) {
     return "";
   }
+  // FIX 1(a): also fold the deterministic INTEGRITY findings into the injected
+  // state so integrity errors surface to the agent every turn exactly like
+  // validator errors. Kept clearly LABELED and separate from the validator
+  // section so the two sources never blur. Never throws (summariseIntegrity
+  // fail-safes to an empty result).
+  const integrity = summariseIntegrity(bundleDir);
+  const integrityErrors = integrity.findings.filter((f) => f.severity === "error");
+  const integrityWarnings = integrity.findings.filter((f) => f.severity === "warning");
+
+  const validatorClean = r.valid && r.warnings.length === 0;
+  const integrityClean = integrityErrors.length === 0 && integrityWarnings.length === 0;
+
   let text;
-  if (r.valid && r.warnings.length === 0) {
-    text = "CURRENT VALIDATOR STATE (server-truth): ✓ bundle is clean — no errors, no warnings.";
+  if (validatorClean && integrityClean) {
+    text = "CURRENT VALIDATOR + INTEGRITY STATE (server-truth): ✓ bundle is clean — no validator errors, no integrity errors, no warnings.";
   } else {
-    const lines = ["CURRENT VALIDATOR STATE (server-truth — do not re-discover, do not guess error codes, do not fabricate codes):"];
-    if (r.errors.length) {
-      lines.push(`  errors (${r.errors.length}):`);
-      for (const e of r.errors.slice(0, 8)) lines.push(`    • ${e}`);
-      if (r.errors.length > 8) lines.push(`    … and ${r.errors.length - 8} more`);
+    const lines = ["CURRENT VALIDATOR + INTEGRITY STATE (server-truth — do not re-discover, do not guess error codes, do not fabricate codes):"];
+    // ── validator section ──
+    if (r.errors.length || r.warnings.length) {
+      lines.push("  VALIDATOR:");
+      if (r.errors.length) {
+        lines.push(`    errors (${r.errors.length}):`);
+        for (const e of r.errors.slice(0, 8)) lines.push(`      • ${e}`);
+        if (r.errors.length > 8) lines.push(`      … and ${r.errors.length - 8} more`);
+      }
+      if (r.warnings.length) {
+        lines.push(`    warnings (${r.warnings.length}):`);
+        for (const w of r.warnings.slice(0, 5)) lines.push(`      • ${w}`);
+        if (r.warnings.length > 5) lines.push(`      … and ${r.warnings.length - 5} more`);
+      }
+    } else {
+      lines.push("  VALIDATOR: ✓ clean.");
     }
-    if (r.warnings.length) {
-      lines.push(`  warnings (${r.warnings.length}):`);
-      for (const w of r.warnings.slice(0, 5)) lines.push(`    • ${w}`);
-      if (r.warnings.length > 5) lines.push(`    … and ${r.warnings.length - 5} more`);
+    // ── integrity section (FE_CONCEPT_NOT_OBJECT / ALT_INVALID_NAME / dangling refs) ──
+    if (integrityErrors.length || integrityWarnings.length) {
+      lines.push("  INTEGRITY (data-integrity checks the validator does NOT catch — a clean validator does NOT mean a clean upload):");
+      if (integrityErrors.length) {
+        lines.push(`    errors (${integrityErrors.length}):`);
+        for (const f of integrityErrors.slice(0, 8)) lines.push(`      • [${f.code}] ${f.file} ${f.locator} — ${f.message}`);
+        if (integrityErrors.length > 8) lines.push(`      … and ${integrityErrors.length - 8} more`);
+      }
+      if (integrityWarnings.length) {
+        lines.push(`    warnings (${integrityWarnings.length}):`);
+        for (const f of integrityWarnings.slice(0, 5)) lines.push(`      • [${f.code}] ${f.file} ${f.locator} — ${f.message}`);
+        if (integrityWarnings.length > 5) lines.push(`      … and ${integrityWarnings.length - 5} more`);
+      }
+    } else if (integrity.ok !== null) {
+      lines.push("  INTEGRITY: ✓ clean.");
     }
     lines.push("");
-    lines.push("If the user says \"what is the error?\" or \"fix the error\", refer to the items above verbatim. Codes are real (C-class = concepts, F-class = forms/formMappings, R-class = rules, G-class = enums) — use them exactly as shown. Do not invent a code that is not in this list.");
+    lines.push("If the user says \"what is the error?\" or \"fix the error\", refer to the items above verbatim. Validator codes are real (C-class = concepts, F-class = forms/formMappings, R-class = rules, G-class = enums); integrity codes (FE_CONCEPT_NOT_OBJECT, ALT_INVALID_NAME, MISSING_REQUIRED_REF, DANGLING_REF) are the server-only traps. Use them exactly as shown. Do not invent a code that is not in this list. The bundle is NOT ready to export until BOTH sections are error-free.");
     text = lines.join("\n");
   }
   VALIDATOR_CACHE.set(id, { sha: headSha, text, ts: Date.now() });
@@ -548,7 +639,10 @@ export async function commitWorkspaceChanges(id, summary) {
   const newTurn = meta.currentTurn + 1;
   git(dir, "commit", "-m", `turn ${newTurn}: ${summary}`);
   const sha = git(dir, "rev-parse", "HEAD").trim();
-  const validation = summariseValidation(dir);
+  // FIX 1(a): fold deterministic integrity errors into the stored per-turn
+  // validation result so `validation.valid` is false whenever the bundle would
+  // fail on upload — even when the local validator is green.
+  const validation = summariseValidationWithIntegrity(dir);
   const rulesValidation = await summariseRules(dir);
   meta.currentTurn = newTurn;
   meta.validationAtCurrent = validation;

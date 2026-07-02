@@ -251,11 +251,14 @@ async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, 
     baselineValidator = meta.validationAtCurrent || meta.validation || baselineValidator;
   } catch { /* best-effort — leave the empty baseline */ }
 
-  // 5. Dispatch the prompt. Story #13: SDK_EVAL_MODEL (evalModel) pins the run
-  // to one model so its results can be attributed in the matrix regenerator; it
-  // overrides any per-case model. Absent both, the server selects via the matrix
-  // and the chosen model is captured from the `start` event (dispatch.serverModel).
-  const dispatchModel = evalModel || caseDef.model || undefined;
+  // 5. Dispatch the prompt. FIX 3 (#13 review): a per-case `caseDef.model` is an
+  // EXPLICIT per-request pin (e.g. a frontier-only case) and must WIN over the
+  // run-wide SDK_EVAL_MODEL (evalModel) — otherwise a broad `SDK_EVAL_MODEL=haiku`
+  // sweep silently contaminates a case that pinned a frontier model. SDK_EVAL_MODEL
+  // still pins every case that does NOT set its own model. Absent both, the server
+  // selects via the matrix and the chosen model is captured from the `start`
+  // event (dispatch.serverModel).
+  const dispatchModel = caseDef.model || evalModel || undefined;
   let dispatch;
   try {
     dispatch = await dispatchPrompt({

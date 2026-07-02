@@ -167,9 +167,13 @@ export function deriveCategory({ mode = "edit", structural } = {}) {
 
 // ─── selection ──────────────────────────────────────────────────────
 //
-// Priority (highest first):
-//   1. SDK_MODEL env  — operator global override / kill-switch (STILL wins).
-//   2. requested      — the caller's explicit `model` in the /messages payload.
+// Priority (highest first) — FIX 3 (#13 review): an EXPLICIT per-request model
+// override must remain authoritative throughout, so the caller beats the
+// operator env:
+//   1. requested      — the caller's explicit `model` in the /messages payload.
+//                       "explicit per-request override remains throughout."
+//   2. SDK_MODEL env  — operator global override / kill-switch for requests that
+//                       do NOT pin a model.
 //   3. matrix         — the cheapest QUALIFIED model for the derived category.
 //   4. DEFAULT_MODEL  — the #11 default (claude-sonnet-4-6) when the matrix has
 //                       NO evidence for the category. This is the no-regression
@@ -190,13 +194,15 @@ export function selectModel(signals = {}) {
     env,
   } = signals;
 
+  // (1) An explicit caller `model` is authoritative — it beats the operator env.
+  if (typeof requested === "string" && requested.trim()) {
+    return { model: requested.trim(), reason: "explicit (caller specified)", source: "caller", category: null };
+  }
+
+  // (2) Operator global override / kill-switch for requests that don't pin a model.
   const envOverride = env !== undefined ? env : process.env.SDK_MODEL;
   if (typeof envOverride === "string" && envOverride.trim()) {
     return { model: envOverride.trim(), reason: "env:SDK_MODEL (operator override)", source: "override", category: null };
-  }
-
-  if (typeof requested === "string" && requested.trim()) {
-    return { model: requested.trim(), reason: "explicit (caller specified)", source: "caller", category: null };
   }
 
   const category = deriveCategory({ mode, structural });

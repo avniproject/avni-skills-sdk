@@ -12,6 +12,8 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { ensureAgentWorkspace } from "./workspace.js";
 import { listSkills, listBundleAuthoringSkills } from "./skills.js";
 import { createBundleMcpServer } from "./agents/bundle-mcp-server.js";
+import { BUNDLE_TOOL_NAME } from "./agents/bundle-mcp-tool-names.js";
+import { toolTiersFor, loadMatrix } from "./model-matrix.js";
 
 // Bash commands the agent is forbidden from running. The server is the sole
 // committer (it runs `git add -A && git commit` after each turn ends), so
@@ -280,6 +282,166 @@ Be concise. Cite skill files when consulting them.
 ${activeRulesBlock()}`;
 }
 
+// ─── FIX 2 — disallowedTools (SSRF / data-exfil surface) ─────────────
+//
+// Per the SDK docs, `allowedTools` is NOT a restriction — it is the set of tools
+// auto-approved WITHOUT a permission prompt ("List of tool names that are
+// auto-allowed without prompting for permission"). Under permissionMode
+// "bypassPermissions" everything is auto-approved anyway, so an empty/absent
+// allowedTools never confined the agent. The ACTUAL restriction is
+// `disallowedTools` — "These tools will be removed from the model's context and
+// cannot be used, even if they would otherwise be allowed." Everything below is
+// blocked at the SDK boundary regardless of prompt drift.
+//
+// WebFetch / WebSearch have no place in offline bundle authoring and are the
+// SSRF / data-exfil surface (an adversarial SRS could induce the agent to POST
+// bundle contents to an attacker URL). Task spawns uncontrolled sub-agents;
+// NotebookEdit is an unused write path. None are needed to author a bundle.
+export const BASELINE_DISALLOWED_TOOLS = Object.freeze([
+  "WebFetch", "WebSearch", "Task", "NotebookEdit",
+]);
+
+// ─── FIX 4 — real toolTiers (write / structural / export restriction) ──
+//
+// toolTiers were decorative (nothing read them). These are the tools a
+// READ-ONLY-tier model must NOT get: built-in writers plus the structural /
+// export MCP tools. A model the matrix marks read-only (not qualified for any
+// structural category) is steered away from data-mutating tools at the SDK
+// boundary — WITHOUT weakening any deterministic gate (they still run). Full-tier
+// models (write/structural/export) are unchanged; UNKNOWN models are left OPEN
+// (unknown ≠ weak) so no existing path regresses.
+export const WRITE_STRUCTURAL_EXPORT_TOOLS = Object.freeze([
+  "Write", "Edit", "NotebookEdit",
+  BUNDLE_TOOL_NAME.EXPORT_TO_PATH,     // export tier
+  BUNDLE_TOOL_NAME.SPEC_APPLY,         // structural mutation (whole-bundle patch)
+  BUNDLE_TOOL_NAME.GENERATE_BASELINE,  // structural mutation (author baseline)
+]);
+
+/**
+ * Compute the `disallowedTools` set for a dispatch given the selected model.
+ *
+ * Always includes BASELINE_DISALLOWED_TOOLS (SSRF/exfil). Additionally, IFF the
+ * matrix KNOWS `model` and marks it read-only-tier (no "write" tier), the
+ * write/structural/export tools are added — this is toolTiers made real. Unknown
+ * models and full-tier models get ONLY the baseline (no regression: unknown ≠
+ * weak, and the interim seed keeps every SELECTED model — sonnet/opus — full).
+ * `extra` lets a caller add its own restrictions. Never throws.
+ *
+ * @param {string} model
+ * @param {{ extra?: string[], matrix?: object }} [opts]
+ * @returns {string[]}
+ */
+export function disallowedToolsForModel(model, { extra = [], matrix } = {}) {
+  const set = new Set([...BASELINE_DISALLOWED_TOOLS, ...(Array.isArray(extra) ? extra : [])]);
+  try {
+    const m = matrix || loadMatrix();
+    const known = !!(m && m.models && m.models[model]);
+    if (known) {
+      const tiers = toolTiersFor(model, m);
+      if (!tiers.includes("write")) {
+        for (const t of WRITE_STRUCTURAL_EXPORT_TOOLS) set.add(t);
+      }
+    }
+  } catch {
+    // Matrix unavailable → baseline only (fail open, no regression).
+  }
+  return Array.from(set);
+}
+
+/**
+ * Build the SDK `query()` options for a dispatch. Extracted from runAgent so the
+ * assembled options (disallowedTools, tool tiers, mcpServers, skills) are unit-
+ * testable without an LLM call. Pure w.r.t. the API key (that env swap stays in
+ * runAgent around the actual query() call).
+ */
+export function buildQueryOptions(opts = {}) {
+  const {
+    model = "claude-haiku-4-5-20251001",
+    workspace,
+    systemPrompt = buildDefaultSystemPrompt(),
+    allowedTools,
+    disallowedTools,
+    permissionMode = "bypassPermissions",
+    skillScope = "all",
+    resume,
+  } = opts;
+
+  const cwd = workspace || ensureAgentWorkspace();
+  // A caller MAY still pass an explicit `allowedTools` to auto-approve a narrow
+  // set; when omitted we leave it undefined (auto-approve is moot under
+  // bypassPermissions). The real confinement is `disallowedTools` below.
+  const effectiveAllowedTools = allowedTools;
+  // FIX 2 + FIX 4: baseline SSRF/exfil block, plus tier-driven write/structural/
+  // export restriction for a known read-only-tier model, plus any caller extras.
+  const effectiveDisallowedTools = disallowedToolsForModel(model, { extra: disallowedTools });
+  const skillNames = (
+    skillScope === "bundle-authoring"
+      ? listBundleAuthoringSkills()
+      : listSkills()
+  ).map((s) => s.slug);
+
+  const queryOptions = {
+    cwd,
+    model,
+    systemPrompt,
+    ...(effectiveAllowedTools ? { allowedTools: effectiveAllowedTools } : {}),
+    // The ACTUAL restriction (see BASELINE_DISALLOWED_TOOLS / FIX 4). These
+    // tools are removed from the model's context regardless of permissionMode.
+    disallowedTools: effectiveDisallowedTools,
+    permissionMode,
+    // Isolate from the host's ~/.claude/* settings so we don't leak the
+    // user's personal skills/settings into this session. Empty array =
+    // SDK isolation mode.
+    settingSources: [],
+    // Explicitly enable our skills (filters out anything else the SDK
+    // might discover, and turns the Skill tool on).
+    skills: skillNames.length ? skillNames : "all",
+    // In-process MCP server exposing bundle-specific deterministic tools.
+    // Built per-request as a closure capturing `cwd` — required because
+    // in-process MCP handlers run in the host process and `process.cwd()`
+    // would resolve to the SERVER's startup dir, not the agent's cwd
+    // (confirmed via SDK source inspection — see Phase 7 audit notes).
+    //
+    // Only register the bundle MCP server when a workspace was explicitly
+    // passed (i.e. caller is a session-based endpoint with a real bundle
+    // dir). Sessionless callers like /v1/agent/query get an empty
+    // mcpServers map — the bundle tools have nothing to operate on.
+    mcpServers: workspace
+      ? { "avni-bundle": createBundleMcpServer(cwd) }
+      : {},
+    // PreToolUse gate — block forbidden Bash commands (git writes,
+    // recursive rm, sudo) BEFORE execution. The server is the sole
+    // committer; agent-initiated commits orphan the audit trail. See
+    // FORBIDDEN_BASH_PATTERNS above and audit of sess_7b4a7ad42b244487.
+    hooks: {
+      PreToolUse: [{
+        matcher: "Bash",
+        hooks: [async (input) => {
+          if (input?.hook_event_name !== "PreToolUse" || input?.tool_name !== "Bash") {
+            return { continue: true };
+          }
+          const cmd = input?.tool_input?.command;
+          const violation = checkForbiddenBash(cmd);
+          if (violation) {
+            return {
+              decision: "block",
+              reason: violation.reason,
+              hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                permissionDecision: "deny",
+                permissionDecisionReason: violation.reason,
+              },
+            };
+          }
+          return { continue: true };
+        }],
+      }],
+    },
+  };
+  if (resume) queryOptions.resume = resume;
+  return queryOptions;
+}
+
 /**
  * Run a one-shot agent query and yield events.
  *
@@ -289,7 +451,8 @@ ${activeRulesBlock()}`;
  * @param {string} [opts.model] — default claude-haiku-4-5-20251001
  * @param {string} [opts.workspace] — override cwd (default: staged avni-skills workspace)
  * @param {string} [opts.systemPrompt]
- * @param {string[]} [opts.allowedTools]
+ * @param {string[]} [opts.allowedTools] — tools auto-approved without a permission prompt (NOT a restriction; see buildQueryOptions)
+ * @param {string[]} [opts.disallowedTools] — extra tools to remove from the model's context (merged with the baseline SSRF/exfil block + any tier restriction)
  * @param {string} [opts.permissionMode]
  * @param {string} [opts.skillScope] — "bundle-authoring" (curated 7) | "all" (default = all)
  * @param {AbortController} [opts.abortController]
@@ -297,116 +460,20 @@ ${activeRulesBlock()}`;
  * @returns {AsyncIterable}
  */
 export async function* runAgent(opts) {
-  const {
-    prompt,
-    apiKey,
-    model = "claude-haiku-4-5-20251001",
-    workspace,
-    // Built per-call so the rules block reflects the active selection: the
-    // slim outcome contract by default, or the legacy hard rules iff
-    // SDK_LEGACY_RULES=1 (story #11 backout). See activeRulesBlock().
-    systemPrompt = buildDefaultSystemPrompt(),
-    allowedTools,
-    permissionMode = "bypassPermissions",
-    skillScope = "all",
-    abortController,
-    resume,
-  } = opts;
+  const { prompt, apiKey, abortController } = opts;
 
   if (!apiKey) throw new Error("apiKey is required (provide via Authorization header)");
   if (!prompt) throw new Error("prompt is required");
 
-  const cwd = workspace || ensureAgentWorkspace();
-  // Open MCP tool set (story #11). We no longer hand the SDK a hardcoded
-  // allowlist — the agent gets the full built-in tool set + every registered
-  // MCP tool. This is SAFE because the real guardrails are deterministic and
-  // independent of which tools are advertised:
-  //   • PreToolUse bash blocklist hook (below)   — blocks git writes / rm -rf / sudo
-  //   • post-turn unauthorized-mutation detector — reverts out-of-scope writes
-  //   • path-jail on bundle_export_to_path       — confines exports to an allowlist
-  //   • concept-collision interceptor + bundle_integrity_check + validator
-  //       — catch any bad mutation the agent makes via Write/Edit
-  // Built-in Write/Edit stay available on purpose: the agent edits the bundle
-  // via files and the gates catch bad mutations. (The tools:[] / spec_apply-only
-  // write path is #12 agent-mode, not here.) A caller MAY still pass an explicit
-  // `allowedTools` to narrow the set; when omitted we leave it undefined so the
-  // SDK exposes everything.
-  const effectiveAllowedTools = allowedTools;  // undefined ⇒ open tool set
-  const skillNames = (
-    skillScope === "bundle-authoring"
-      ? listBundleAuthoringSkills()
-      : listSkills()
-  ).map((s) => s.slug);
+  // Assemble the SDK options (cwd, tool tiers, disallowedTools, mcpServers,
+  // skills, hooks) via the extracted, unit-testable builder. See FIX 2 / FIX 4.
+  const queryOptions = buildQueryOptions(opts);
+  if (abortController) queryOptions.abortController = abortController;
 
   const prevKey = process.env.ANTHROPIC_API_KEY;
   process.env.ANTHROPIC_API_KEY = apiKey;
 
   try {
-    const queryOptions = {
-      cwd,
-      model,
-      systemPrompt,
-      // Only constrain the tool set if a caller explicitly narrowed it.
-      // Omitting the key entirely ⇒ open tool set (story #11). The deterministic
-      // gates — not an allowlist — are the guardrails.
-      ...(effectiveAllowedTools ? { allowedTools: effectiveAllowedTools } : {}),
-      permissionMode,
-      // Isolate from the host's ~/.claude/* settings so we don't leak the
-      // user's personal skills/settings into this session. Empty array =
-      // SDK isolation mode.
-      settingSources: [],
-      // Explicitly enable our skills (filters out anything else the SDK
-      // might discover, and turns the Skill tool on).
-      skills: skillNames.length ? skillNames : "all",
-      // In-process MCP server exposing bundle-specific deterministic tools.
-      // Built per-request as a closure capturing `cwd` — required because
-      // in-process MCP handlers run in the host process and `process.cwd()`
-      // would resolve to the SERVER's startup dir, not the agent's cwd
-      // (confirmed via SDK source inspection — see Phase 7 audit notes).
-      //
-      // Only register the bundle MCP server when a workspace was explicitly
-      // passed (i.e. caller is a session-based endpoint with a real bundle
-      // dir). Sessionless callers like /v1/agent/query get an empty
-      // mcpServers map — the bundle tools have nothing to operate on.
-      mcpServers: workspace
-        ? { "avni-bundle": createBundleMcpServer(cwd) }
-        : {},
-      // PreToolUse gate — block forbidden Bash commands (git writes,
-      // recursive rm, sudo) BEFORE execution. The server is the sole
-      // committer; agent-initiated commits orphan the audit trail. See
-      // FORBIDDEN_BASH_PATTERNS above and audit of sess_7b4a7ad42b244487.
-      hooks: {
-        PreToolUse: [{
-          matcher: "Bash",
-          hooks: [async (input) => {
-            if (input?.hook_event_name !== "PreToolUse" || input?.tool_name !== "Bash") {
-              return { continue: true };
-            }
-            const cmd = input?.tool_input?.command;
-            const violation = checkForbiddenBash(cmd);
-            if (violation) {
-              return {
-                decision: "block",
-                reason: violation.reason,
-                hookSpecificOutput: {
-                  hookEventName: "PreToolUse",
-                  permissionDecision: "deny",
-                  permissionDecisionReason: violation.reason,
-                },
-              };
-            }
-            return { continue: true };
-          }],
-        }],
-      },
-    };
-    if (abortController) queryOptions.abortController = abortController;
-    // Native SDK session continuation — the SDK rehydrates the prior
-    // transcript (incl. tool_use/tool_result pairing) and the new prompt is
-    // appended as the next turn. cwd MUST be identical to turn 1 or the SDK
-    // silently starts a fresh session.
-    if (resume) queryOptions.resume = resume;
-
     const result = query({ prompt, options: queryOptions });
     for await (const event of result) yield event;
   } finally {

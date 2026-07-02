@@ -192,8 +192,9 @@ ${wrappedUserPrompt}`;
 
     // Model selection (story #13): the evidence-based model-qualification
     // matrix (spec/model-qualification.json), replacing the #11 fixed default.
-    // Priority inside selectModel(): SDK_MODEL override > caller's explicit
-    // `model` > cheapest matrix-QUALIFIED model for the request's category >
+    // Priority inside selectModel() (FIX 3): caller's explicit `model` (an
+    // explicit per-request override remains authoritative) > SDK_MODEL operator
+    // override > cheapest matrix-QUALIFIED model for the request's category >
     // the #11 default fallback. NO regression: absent evidence for a category,
     // selection returns the #11 default (claude-sonnet-4-6) — never a silent
     // downgrade to a weaker model. Signals are cheap + evidence-grounded: the

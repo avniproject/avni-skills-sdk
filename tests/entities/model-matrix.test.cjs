@@ -107,15 +107,39 @@ test("selectModel: low-risk signal (structural:false) → cheapest qualified for
 
 // ─── selectModel: precedence ────────────────────────────────────────
 
-test("selectModel: SDK_MODEL env override wins (highest priority)", async () => {
+// FIX 3 (#13 review): an explicit caller `model` is an explicit per-request
+// override and MUST beat SDK_MODEL — the epic requires "explicit per-request
+// model override remains throughout". (This inverts the pre-FIX-3 order.)
+test("selectModel: caller's explicit model BEATS SDK_MODEL (FIX 3 precedence)", async () => {
   const M = await loadMatrixMod();
-  // Explicit env arg beats even an explicit caller model.
+  // Both a caller model AND an operator env are present → the caller wins.
   const r = M.selectModel({ mode: "edit", requested: "claude-opus-4-8", env: "claude-haiku-4-5" });
+  assert.equal(r.source, "caller", "explicit per-request model must win over SDK_MODEL");
+  assert.equal(r.model, "claude-opus-4-8");
+});
+
+test("selectModel: caller's explicit model beats process.env.SDK_MODEL too (FIX 3)", async () => {
+  const M = await loadMatrixMod();
+  const prev = process.env.SDK_MODEL;
+  process.env.SDK_MODEL = "claude-haiku-4-5";
+  try {
+    const r = M.selectModel({ mode: "edit", requested: "claude-opus-4-8" });
+    assert.equal(r.source, "caller");
+    assert.equal(r.model, "claude-opus-4-8");
+  } finally {
+    if (prev === undefined) delete process.env.SDK_MODEL; else process.env.SDK_MODEL = prev;
+  }
+});
+
+test("selectModel: SDK_MODEL still wins when the caller does NOT pin a model", async () => {
+  const M = await loadMatrixMod();
+  // No `requested` → the operator env override applies.
+  const r = M.selectModel({ mode: "edit", env: "claude-haiku-4-5" });
   assert.equal(r.source, "override");
   assert.equal(r.model, "claude-haiku-4-5");
 });
 
-test("selectModel: reads process.env.SDK_MODEL when env arg omitted", async () => {
+test("selectModel: reads process.env.SDK_MODEL when env arg omitted (no caller model)", async () => {
   const M = await loadMatrixMod();
   const prev = process.env.SDK_MODEL;
   process.env.SDK_MODEL = "claude-opus-4-8";
@@ -133,6 +157,18 @@ test("selectModel: caller's explicit model wins over the matrix (no env override
   const r = M.selectModel({ mode: "edit", requested: "claude-opus-4-8", env: null });
   assert.equal(r.source, "caller");
   assert.equal(r.model, "claude-opus-4-8");
+});
+
+// FIX 3 (runner.cjs): a per-case model must beat the run-wide SDK_EVAL_MODEL,
+// mirroring `dispatchModel = caseDef.model || evalModel`. Kept in sync with
+// tests/eval/lib/runner.cjs so a frontier-pinned case isn't contaminated by a
+// broad SDK_EVAL_MODEL sweep. (Pure logic mirror — the eval harness itself is
+// budget-gated and never runs in `npm test`.)
+test("eval dispatch precedence: per-case model beats SDK_EVAL_MODEL (FIX 3)", async () => {
+  const pick = (caseModel, evalModel) => caseModel || evalModel || undefined;
+  assert.equal(pick("claude-opus-4-8", "claude-haiku-4-5"), "claude-opus-4-8", "per-case pin wins");
+  assert.equal(pick(undefined, "claude-haiku-4-5"), "claude-haiku-4-5", "SDK_EVAL_MODEL pins cases with no model");
+  assert.equal(pick(undefined, ""), undefined, "neither set → server/matrix selects");
 });
 
 // ─── selectModel: NO-EVIDENCE FALLBACK (regression guard) ────────────
