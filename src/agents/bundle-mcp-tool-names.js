@@ -11,7 +11,7 @@
  * Fully-qualified MCP tool names exposed by the `avni-bundle` server.
  * Frozen so a stray mutation throws instead of corrupting downstream logs.
  * APPEND-ONLY: new tools get a new key + name; never rename/remove an existing one.
- * @type {Readonly<{ VALIDATOR_RUN: string, FIND_CONCEPT: string, SUMMARY: string, EXPORT_TO_PATH: string, INTEGRITY_CHECK: string, SPEC_APPLY: string, SPEC_EMIT: string }>}
+ * @type {Readonly<{ VALIDATOR_RUN: string, FIND_CONCEPT: string, SUMMARY: string, EXPORT_TO_PATH: string, INTEGRITY_CHECK: string, SPEC_APPLY: string, SPEC_EMIT: string, READ_SRS: string, GENERATE_BASELINE: string }>}
  */
 export const BUNDLE_TOOL_NAME = Object.freeze({
   VALIDATOR_RUN: "mcp__avni-bundle__bundle_validator_run",
@@ -22,6 +22,9 @@ export const BUNDLE_TOOL_NAME = Object.freeze({
   // APPENDED in story #11 (part B). New names only — never repurpose the above.
   SPEC_APPLY: "mcp__avni-bundle__spec_apply",
   SPEC_EMIT: "mcp__avni-bundle__spec_emit",
+  // APPENDED in story #12 (agent author mode). New names only.
+  READ_SRS: "mcp__avni-bundle__read_srs",
+  GENERATE_BASELINE: "mcp__avni-bundle__generate_baseline",
 });
 
 /**
@@ -36,4 +39,6 @@ export const BUNDLE_TOOL_NAMES = Object.freeze([
   BUNDLE_TOOL_NAME.INTEGRITY_CHECK,
   BUNDLE_TOOL_NAME.SPEC_APPLY,
   BUNDLE_TOOL_NAME.SPEC_EMIT,
+  BUNDLE_TOOL_NAME.READ_SRS,
+  BUNDLE_TOOL_NAME.GENERATE_BASELINE,
 ]);

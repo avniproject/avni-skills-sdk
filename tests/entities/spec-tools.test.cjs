@@ -78,11 +78,15 @@ test("frozen names: original 5 unchanged + spec_apply/spec_emit appended", async
   assert.equal(BUNDLE_TOOL_NAME.EXPORT_TO_PATH, "mcp__avni-bundle__bundle_export_to_path");
   assert.equal(BUNDLE_TOOL_NAME.INTEGRITY_CHECK, "mcp__avni-bundle__bundle_integrity_check");
 
-  // The two appended names.
+  // The two names appended in story #11 (part B).
   assert.equal(BUNDLE_TOOL_NAME.SPEC_APPLY, "mcp__avni-bundle__spec_apply");
   assert.equal(BUNDLE_TOOL_NAME.SPEC_EMIT, "mcp__avni-bundle__spec_emit");
 
-  // The list form: exactly 7, in order, the first 5 unchanged.
+  // The two names appended in story #12 (agent author mode).
+  assert.equal(BUNDLE_TOOL_NAME.READ_SRS, "mcp__avni-bundle__read_srs");
+  assert.equal(BUNDLE_TOOL_NAME.GENERATE_BASELINE, "mcp__avni-bundle__generate_baseline");
+
+  // The list form: exactly 9, in order, the first 5 unchanged.
   assert.deepEqual(BUNDLE_TOOL_NAMES, [
     "mcp__avni-bundle__bundle_validator_run",
     "mcp__avni-bundle__bundle_find_concept",
@@ -91,6 +95,8 @@ test("frozen names: original 5 unchanged + spec_apply/spec_emit appended", async
     "mcp__avni-bundle__bundle_integrity_check",
     "mcp__avni-bundle__spec_apply",
     "mcp__avni-bundle__spec_emit",
+    "mcp__avni-bundle__read_srs",
+    "mcp__avni-bundle__generate_baseline",
   ]);
 
   // Still frozen — a stray mutation must throw, not silently corrupt logs.

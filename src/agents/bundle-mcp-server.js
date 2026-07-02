@@ -17,10 +17,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { createRequire } from "node:module";
 import { z } from "zod";
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
-import { validateBundle, zipBundle as zipBundleDir } from "../bundle.js";
+import { validateBundle, generateBundle, zipBundle as zipBundleDir } from "../bundle.js";
 import { applySpec, emitSpec } from "../pipeline.js";
 import { BUNDLE_TOOL_NAMES as FROZEN_BUNDLE_TOOL_NAMES } from "./bundle-mcp-tool-names.js";
 
@@ -703,6 +704,299 @@ function buildSpecEmitTool(bundleCwd) {
   );
 }
 
+// ─── author mode: SRS reader + baseline bootstrap (story #12) ────────
+//
+// Author mode builds a bundle FROM requirements (an SRS) rather than editing an
+// uploaded one. The SRS is persisted by createSession under <session>/srs/; the
+// tools reach it via the session dir (the parent of bundleCwd) — the SAME
+// sibling-access pattern bundle_export_to_path uses to read ../meta.json.
+
+function sessionDirOf(bundleCwd) {
+  return path.join(bundleCwd, "..");
+}
+
+function readSessionMeta(bundleCwd) {
+  try {
+    const fp = path.join(sessionDirOf(bundleCwd), "meta.json");
+    if (!fs.existsSync(fp)) return null;
+    return JSON.parse(fs.readFileSync(fp, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+const MAX_SRS_INLINE = 8000; // chars — beyond this a text/JSON SRS is summarised, not dumped
+
+// Markdown-style heading extraction for prose SRS section navigation.
+function extractHeadings(text) {
+  const out = [];
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const m = line.match(/^(#{1,6})\s+(.+?)\s*$/);
+    if (m) out.push(m[2]);
+  }
+  return out;
+}
+
+// Return the text of the first heading whose title contains `name`
+// (case-insensitive), through to the next same-or-higher-level heading (or EOF).
+// null when no heading matches.
+function sliceSection(text, name) {
+  const lines = String(text || "").split(/\r?\n/);
+  const needle = String(name || "").toLowerCase();
+  let start = -1, startLevel = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^(#{1,6})\s+(.+?)\s*$/);
+    if (m && m[2].toLowerCase().includes(needle)) { start = i; startLevel = m[1].length; break; }
+  }
+  if (start === -1) return null;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    const m = lines[i].match(/^(#{1,6})\s+/);
+    if (m && m[1].length <= startLevel) { end = i; break; }
+  }
+  return lines.slice(start, end).join("\n");
+}
+
+/**
+ * Read the SRS attached to the session that owns `bundleCwd`.
+ * Returns an MCP CallToolResult. Never throws — an edit-mode session (no SRS)
+ * or a read failure surfaces as an actionable isError. Exported for unit tests.
+ */
+export function readSrsOnDir(bundleCwd, opts = {}) {
+  const section = opts && typeof opts.section === "string" ? opts.section.trim() : "";
+  const meta = readSessionMeta(bundleCwd);
+  if (!meta) {
+    return errorResult("could not read session meta (../meta.json) — read_srs needs a session-backed bundle directory.");
+  }
+  if (meta.mode !== "author" || !meta.srs) {
+    return errorResult(
+      "no SRS is attached to this session. read_srs is for AUTHOR-mode sessions created around an SRS; " +
+      "this is an edit-mode session (its bundle was generated from an uploaded SRS at turn 0). " +
+      "Read the bundle files directly (bundle_summary / Read) instead.",
+    );
+  }
+  const srs = meta.srs;
+  const srsDir = path.join(sessionDirOf(bundleCwd), "srs");
+  const head = {
+    kind: srs.kind,
+    externalPath: srs.externalPath || null,
+    hasGeneratorInputs: !!srs.hasGeneratorInputs,
+    available: Object.keys(srs.files || {}),
+  };
+
+  // JSON SRS — structured. Honour a section arg (top-level key); summarise large.
+  if (srs.files && srs.files.json) {
+    let doc;
+    try { doc = JSON.parse(fs.readFileSync(path.join(srsDir, "srs.json"), "utf8")); }
+    catch (e) { return errorResult(`SRS JSON could not be parsed: ${e.message}`); }
+    const isObj = doc && typeof doc === "object" && !Array.isArray(doc);
+    if (section && isObj) {
+      if (!(section in doc)) {
+        return textResult({ ...head, format: "json", section, error: `section "${section}" not found`, sections: Object.keys(doc) });
+      }
+      return textResult({ ...head, format: "json", section, content: doc[section] });
+    }
+    const full = JSON.stringify(doc);
+    if (full.length > MAX_SRS_INLINE && isObj) {
+      return textResult({
+        ...head, format: "json", truncated: true, totalChars: full.length,
+        sections: Object.keys(doc),
+        note: `SRS is large (${full.length} chars). Pass { section: "<key>" } to read one section.`,
+        preview: Object.fromEntries(Object.keys(doc).slice(0, 30).map((k) => [k, Array.isArray(doc[k]) ? `[${doc[k].length} items]` : typeof doc[k]])),
+      });
+    }
+    return textResult({ ...head, format: "json", content: doc });
+  }
+
+  // Text SRS — raw. Honour a section (heading) arg; summarise large.
+  if (srs.files && srs.files.text) {
+    let text;
+    try { text = fs.readFileSync(path.join(srsDir, "srs.txt"), "utf8"); }
+    catch (e) { return errorResult(`SRS text could not be read: ${e.message}`); }
+    const headings = extractHeadings(text);
+    if (section) {
+      const sec = sliceSection(text, section);
+      if (sec == null) return textResult({ ...head, format: "text", section, error: `section "${section}" not found`, headings });
+      return textResult({ ...head, format: "text", section, content: sec });
+    }
+    if (text.length > MAX_SRS_INLINE) {
+      return textResult({
+        ...head, format: "text", truncated: true, totalChars: text.length, headings,
+        note: `SRS is large (${text.length} chars). Pass { section: "<heading>" } to read one section, or Read ../srs/srs.txt directly.`,
+        preview: text.slice(0, MAX_SRS_INLINE),
+      });
+    }
+    return textResult({ ...head, format: "text", content: text });
+  }
+
+  // Only XLSX / external inputs — nothing textual to inline. Point the agent at
+  // generate_baseline (XLSX) or the external path (a doc to Read).
+  const notes = [];
+  if (srs.files && (srs.files.forms || srs.files.modelling)) {
+    notes.push("The SRS was provided as XLSX generator input(s) under ../srs/. Call generate_baseline to bootstrap a deterministic bundle from them, then refine.");
+  }
+  if (srs.externalPath) {
+    notes.push(`An external SRS path is recorded: ${srs.externalPath} — Read it directly for the requirements.`);
+  }
+  if (!notes.length) notes.push("No SRS content is attached to this session.");
+  return textResult({ ...head, format: "reference", note: notes.join(" ") });
+}
+
+// A MINIMAL VALID bundle skeleton: one Person subject type + its registration
+// form (a single Text concept) + the operational mirror + the required
+// empty entity files + org config + one address level. Proven validator-clean
+// AND integrity-clean (see tests/entities/agent-author-mode.test.cjs). Uses
+// fresh v4 UUIDs so the skeleton is generator-independent — the baseline the
+// agent gets when the session has no XLSX generator inputs. Exported for tests.
+export function buildMinimalSkeleton() {
+  const ST = crypto.randomUUID();
+  const OST = crypto.randomUUID();
+  const C = crypto.randomUUID();
+  const F = crypto.randomUUID();
+  const FEG = crypto.randomUUID();
+  const FE = crypto.randomUUID();
+  const FM = crypto.randomUUID();
+  const OC = crypto.randomUUID();
+  const EG = crypto.randomUUID();
+  const ALT = crypto.randomUUID();
+  return {
+    "subjectTypes.json": [{ name: "Individual", uuid: ST, active: true, type: "Person", allowMiddleName: true, allowProfilePicture: false, allowEmptyLocation: false, lastNameOptional: false, uniqueName: false, shouldSyncByLocation: true, settings: { displayRegistrationDetails: true, displayPlannedEncounters: true }, household: false, group: false, directlyAssignable: false, voided: false }],
+    "operationalSubjectTypes.json": { operationalSubjectTypes: [{ uuid: OST, subjectType: { uuid: ST, voided: false }, name: "Individual", voided: false }] },
+    "programs.json": [],
+    "operationalPrograms.json": { operationalPrograms: [] },
+    "encounterTypes.json": [],
+    "operationalEncounterTypes.json": { operationalEncounterTypes: [] },
+    "concepts.json": [{ name: "Name", uuid: C, dataType: "Text", active: true }],
+    "formMappings.json": [{ uuid: FM, formUUID: F, subjectTypeUUID: ST, formType: "IndividualProfile", formName: "Individual Registration", enableApproval: false }],
+    "organisationConfig.json": { uuid: OC, settings: { languages: ["en"], myDashboardFilters: [], searchFilters: [], enableMessaging: false } },
+    "groups.json": [{ uuid: EG, name: "Everyone", notEveryoneGroup: false }],
+    "groupPrivilege.json": [],
+    "addressLevelTypes.json": [{ uuid: ALT, name: "Village", level: 1, isRegistrationLocation: true }],
+    [`forms/Individual Registration_${F}.json`]: { name: "Individual Registration", uuid: F, formType: "IndividualProfile", formElementGroups: [{ uuid: FEG, name: "Name", displayOrder: 1, formElements: [{ name: "Name", uuid: FE, keyValues: [], concept: { name: "Name", uuid: C, dataType: "Text", active: true, media: [], answers: [] }, displayOrder: 1, type: "SingleSelect", mandatory: true }], timed: false, display: "Name" }], decisionRule: "", visitScheduleRule: "", validationRule: "", checklistsRule: "", decisionConcepts: [] },
+  };
+}
+
+function writeMinimalSkeleton(bundleCwd) {
+  const files = buildMinimalSkeleton();
+  const written = [];
+  for (const [rel, val] of Object.entries(files)) {
+    const fp = path.join(bundleCwd, rel);
+    fs.mkdirSync(path.dirname(fp), { recursive: true });
+    fs.writeFileSync(fp, JSON.stringify(val, null, 2));
+    written.push(rel);
+  }
+  return written.sort();
+}
+
+/**
+ * Bootstrap a baseline bundle for the author-mode session that owns `bundleCwd`,
+ * writing it into `bundleCwd`. Sources the baseline from the BRAIN generator when
+ * the session carries XLSX inputs; otherwise writes a minimal valid skeleton.
+ * Always runs validator + integrity AFTER and surfaces the status (never claims
+ * clean without proving it). Returns an MCP CallToolResult; never throws.
+ * Exported for unit tests.
+ */
+export function generateBaselineOnDir(bundleCwd) {
+  const meta = readSessionMeta(bundleCwd);
+  if (!meta) {
+    return errorResult("could not read session meta (../meta.json) — generate_baseline needs a session-backed bundle directory.");
+  }
+  if (meta.mode !== "author") {
+    return errorResult(
+      "generate_baseline is only for AUTHOR-mode sessions. An edit-mode session already has a deterministic " +
+      "first-pass bundle (generated from the uploaded SRS at turn 0) — there is no baseline to bootstrap.",
+    );
+  }
+
+  const srsDir = path.join(sessionDirOf(bundleCwd), "srs");
+  const srs = meta.srs || {};
+  let source;
+  let filesWritten;
+
+  // Prefer the BRAIN generator when the session carries usable XLSX inputs. This
+  // is the deterministic SRS→bundle generator DEMOTED to a tool: the same code
+  // edit mode runs at turn 0, but here the AGENT chooses to invoke it.
+  let formsPath = null;
+  if (srs.files && srs.files.forms && fs.existsSync(path.join(srsDir, "forms.xlsx"))) {
+    formsPath = path.join(srsDir, "forms.xlsx");
+  } else if (srs.externalPath && /\.xlsx?$/i.test(srs.externalPath) && fs.existsSync(srs.externalPath)) {
+    formsPath = srs.externalPath;
+  }
+
+  if (formsPath) {
+    const modellingCandidate = path.join(srsDir, "modelling.xlsx");
+    const modellingPath = (srs.files && srs.files.modelling && fs.existsSync(modellingCandidate)) ? modellingCandidate : null;
+    try {
+      generateBundle({ formsPath, modellingPath, org: meta.org || "Bundle", outDir: bundleCwd });
+      source = "brain-generator";
+    } catch (e) {
+      return errorResult(
+        `generate_baseline: the deterministic generator failed on the session's SRS XLSX: ${e.message}. ` +
+        `Fix the SRS spreadsheet, or hand-author the bundle (spec_apply / Edit).`,
+      );
+    }
+  } else {
+    try {
+      filesWritten = writeMinimalSkeleton(bundleCwd);
+      source = "minimal-skeleton";
+    } catch (e) {
+      return errorResult(`generate_baseline: failed to write the minimal skeleton: ${e.message}`);
+    }
+  }
+
+  // Surface the resulting status — NEVER claim clean without proving it. A dirty
+  // baseline (possible for a real SRS the generator can't fully satisfy) is
+  // reported truthfully so the agent knows what to refine; the minimal skeleton
+  // is guaranteed clean.
+  let validator, integrity;
+  try {
+    const v = validateBundle(bundleCwd);
+    validator = { valid: v.valid, errorCount: v.errors.length, warningCount: v.warnings.length, errors: v.errors.slice(0, 20), warnings: v.warnings.slice(0, 10) };
+  } catch (e) { validator = { valid: null, error: e.message }; }
+  try {
+    const { ok, findings } = runBundleIntegrityCheck(bundleCwd);
+    const counts = {};
+    for (const f of findings) counts[f.code] = (counts[f.code] || 0) + 1;
+    integrity = {
+      ok,
+      errorCount: findings.filter((f) => f.severity === "error").length,
+      warningCount: findings.filter((f) => f.severity === "warning").length,
+      counts, findings,
+    };
+  } catch (e) { integrity = { ok: null, error: e.message }; }
+
+  const clean = validator.valid === true && integrity.ok === true;
+  return textResult({
+    ok: true,
+    source,
+    clean,
+    ...(filesWritten ? { filesWritten } : {}),
+    validator,
+    integrity,
+    note: clean
+      ? `Baseline generated (${source}) and is validator+integrity CLEAN. Now refine it to satisfy the SRS, keeping it clean (zero errors) before export.`
+      : `Baseline generated (${source}) but is NOT yet clean — see validator/integrity above. Refine to zero errors before export.`,
+  });
+}
+
+function buildReadSrsTool(bundleCwd) {
+  return tool(
+    "read_srs",
+    "Read the SRS (requirements) attached to the CURRENT author-mode session so you can ground bundle authoring in the requirements instead of guessing. Returns the SRS structured (when it is JSON with sections/entities) or raw (when it is prose); a large SRS returns a summary + section list — pass { section } to read just one section. AUTHOR-mode only; an edit-mode session (bundle already generated from an uploaded SRS) returns an actionable error. Call this FIRST in author mode.",
+    { section: z.string().optional().describe("Optional: read a single named section/key of the SRS instead of the whole thing (use for a large SRS).") },
+    async ({ section }) => readSrsOnDir(bundleCwd, { section }),
+  );
+}
+
+function buildGenerateBaselineTool(bundleCwd) {
+  return tool(
+    "generate_baseline",
+    "Bootstrap a BASELINE bundle for the current author-mode session, written into the session bundle dir so you can then refine it. Source: if the session carries XLSX generator inputs, this runs the deterministic SRS→bundle generator (the same one edit mode runs at turn 0, now demoted to a tool you choose to call); otherwise it writes a MINIMAL VALID skeleton (one subject type + registration form + operational mirror) you can build on. Opt-in — you may instead hand-author via spec_apply/Edit. Returns { source, clean, validator, integrity }; it NEVER silently writes a dirty bundle — the resulting validator+integrity status is always surfaced. AUTHOR-mode only; a bad state returns an actionable error (never throws).",
+    {},
+    async () => generateBaselineOnDir(bundleCwd),
+  );
+}
+
 // ─── server factory ─────────────────────────────────────────────────
 
 /**
@@ -735,6 +1029,8 @@ export function createBundleMcpServer(bundleCwd) {
       buildIntegrityCheckTool(bundleCwd),
       buildSpecApplyTool(bundleCwd),
       buildSpecEmitTool(bundleCwd),
+      buildReadSrsTool(bundleCwd),
+      buildGenerateBaselineTool(bundleCwd),
     ],
     alwaysLoad: true,
   });
