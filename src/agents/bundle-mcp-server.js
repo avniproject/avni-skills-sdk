@@ -1124,65 +1124,14 @@ function writeMinimalSkeleton(bundleCwd) {
 }
 
 /**
- * Bootstrap a baseline bundle for the agent-mode session that owns `bundleCwd`,
- * writing it into `bundleCwd`. Sources the baseline from the BRAIN generator when
- * the session carries XLSX inputs; otherwise writes a minimal valid skeleton.
- * Always runs validator + integrity AFTER and surfaces the status (never claims
- * clean without proving it). Returns an MCP CallToolResult; never throws.
- * Exported for unit tests.
+ * Run validator + integrity on the freshly-written baseline and build the
+ * generate_baseline report. Extracted + EXPORTED so the "never reports
+ * clean-when-dirty" property (MINOR-1) is unit-testable against a deliberately
+ * dirty bundle: `clean` is DERIVED from the actual validator+integrity result,
+ * never hardcoded — this function returns clean:false whenever the bundle on
+ * disk has any validator error or integrity error. Never throws.
  */
-export function generateBaselineOnDir(bundleCwd) {
-  const meta = readSessionMeta(bundleCwd);
-  if (!meta) {
-    return errorResult("could not read session meta (../meta.json) — bundle_generate_baseline needs a session-backed bundle directory.");
-  }
-  if (meta.mode !== "agent") {
-    return errorResult(
-      "bundle_generate_baseline is only for AGENT-mode sessions. An baseline-mode session already has a deterministic " +
-      "first-pass bundle (generated from the uploaded SRS at turn 0) — there is no baseline to bootstrap.",
-    );
-  }
-
-  const srsDir = path.join(sessionDirOf(bundleCwd), "input");
-  const srs = meta.srs || {};
-  let source;
-  let filesWritten;
-
-  // Prefer the BRAIN generator when the session carries usable XLSX inputs. This
-  // is the deterministic SRS→bundle generator DEMOTED to a tool: the same code
-  // baseline mode runs at turn 0, but here the AGENT chooses to invoke it.
-  // LFI closure (MAJOR-1): the ONLY forms source is the session's own
-  // input/forms.xlsx — never a caller-supplied external path.
-  let formsPath = null;
-  if (srs.files && srs.files.forms && fs.existsSync(path.join(srsDir, "forms.xlsx"))) {
-    formsPath = path.join(srsDir, "forms.xlsx");
-  }
-
-  if (formsPath) {
-    const modellingCandidate = path.join(srsDir, "modelling.xlsx");
-    const modellingPath = (srs.files && srs.files.modelling && fs.existsSync(modellingCandidate)) ? modellingCandidate : null;
-    try {
-      generateBundle({ formsPath, modellingPath, org: meta.org || "Bundle", outDir: bundleCwd });
-      source = "brain-generator";
-    } catch (e) {
-      return errorResult(
-        `bundle_generate_baseline: the deterministic generator failed on the session's SRS XLSX: ${e.message}. ` +
-        `Fix the SRS spreadsheet, or hand-author the bundle (spec_apply / Edit).`,
-      );
-    }
-  } else {
-    try {
-      filesWritten = writeMinimalSkeleton(bundleCwd);
-      source = "minimal-skeleton";
-    } catch (e) {
-      return errorResult(`bundle_generate_baseline: failed to write the minimal skeleton: ${e.message}`);
-    }
-  }
-
-  // Surface the resulting status — NEVER claim clean without proving it. A dirty
-  // baseline (possible for a real SRS the generator can't fully satisfy) is
-  // reported truthfully so the agent knows what to refine; the minimal skeleton
-  // is guaranteed clean.
+export function baselineStatusReport(bundleCwd, { source, filesWritten } = {}) {
   let validator, integrity;
   try {
     const v = validateBundle(bundleCwd);
@@ -1214,6 +1163,86 @@ export function generateBaselineOnDir(bundleCwd) {
   });
 }
 
+// Copy the generated bundle files from `srcDir` INTO `destDir`, MERGING (dest's
+// own .git / .gitignore survive because srcDir has neither). This is why the
+// brain generator runs into a TEMP dir first: generate_bundle_v2.js rmSync's its
+// output dir before writing, which would otherwise destroy the session's git
+// repo (turn 0) and break every subsequent server commit.
+function copyGeneratedInto(srcDir, destDir) {
+  fs.cpSync(srcDir, destDir, { recursive: true, force: true });
+}
+
+/**
+ * Bootstrap a baseline bundle for the agent-mode session that owns `bundleCwd`,
+ * writing it into `bundleCwd`. Sources the baseline from the BRAIN generator
+ * (wrapping generateBundle against the session's input/ SRS) when the session
+ * carries XLSX inputs; otherwise writes a minimal valid skeleton. REFUSES in a
+ * baseline-mode session (already generated at turn 0). Always runs validator +
+ * integrity AFTER and surfaces the status (never claims clean without proving
+ * it — see baselineStatusReport). Returns an MCP CallToolResult; never throws.
+ * Exported for unit tests.
+ */
+export function generateBaselineOnDir(bundleCwd) {
+  const meta = readSessionMeta(bundleCwd);
+  if (!meta) {
+    return errorResult("could not read session meta (../meta.json) — bundle_generate_baseline needs a session-backed bundle directory.");
+  }
+  if (meta.mode !== "agent") {
+    return errorResult(
+      "bundle_generate_baseline is only for AGENT-mode sessions. A baseline-mode session already has a deterministic " +
+      "first-pass bundle (generated from the uploaded SRS at turn 0) — there is no baseline to bootstrap.",
+    );
+  }
+
+  const srsDir = path.join(sessionDirOf(bundleCwd), "input");
+  const srs = meta.srs || {};
+  let source;
+  let filesWritten;
+
+  // Prefer the BRAIN generator when the session carries usable XLSX inputs. This
+  // is the deterministic SRS→bundle generator DEMOTED to a tool: the same code
+  // baseline mode runs at turn 0, but here the AGENT chooses to invoke it.
+  // LFI closure (MAJOR-1): the ONLY forms source is the session's own
+  // input/forms.xlsx — never a caller-supplied external path.
+  let formsPath = null;
+  if (srs.files && srs.files.forms && fs.existsSync(path.join(srsDir, "forms.xlsx"))) {
+    formsPath = path.join(srsDir, "forms.xlsx");
+  }
+
+  if (formsPath) {
+    const modellingCandidate = path.join(srsDir, "modelling.xlsx");
+    const modellingPath = (srs.files && srs.files.modelling && fs.existsSync(modellingCandidate)) ? modellingCandidate : null;
+    // Generate into a TEMP dir, then copy in — the generator rmSync's its output
+    // dir, which would destroy the session's turn-0 git repo if pointed at
+    // bundleCwd directly (breaking every later server commit).
+    const tmpOut = fs.mkdtempSync(path.join(os.tmpdir(), "agent-baseline-"));
+    try {
+      generateBundle({ formsPath, modellingPath, org: meta.org || "Bundle", outDir: tmpOut });
+      copyGeneratedInto(tmpOut, bundleCwd);
+      source = "brain-generator";
+    } catch (e) {
+      return errorResult(
+        `bundle_generate_baseline: the deterministic generator failed on the session's SRS XLSX: ${e.message}. ` +
+        `Fix the SRS spreadsheet, or hand-author the bundle (spec_apply / Edit).`,
+      );
+    } finally {
+      try { fs.rmSync(tmpOut, { recursive: true, force: true }); } catch {}
+    }
+  } else {
+    try {
+      filesWritten = writeMinimalSkeleton(bundleCwd);
+      source = "minimal-skeleton";
+    } catch (e) {
+      return errorResult(`bundle_generate_baseline: failed to write the minimal skeleton: ${e.message}`);
+    }
+  }
+
+  // Surface the resulting status — NEVER claim clean without proving it (a real
+  // SRS the generator can't fully satisfy yields a dirty baseline, reported
+  // truthfully so the agent knows what to refine).
+  return baselineStatusReport(bundleCwd, { source, filesWritten });
+}
+
 function buildReadSrsTool(bundleCwd) {
   return tool(
     "bundle_read_srs",
@@ -1234,7 +1263,7 @@ function buildReadSrsTool(bundleCwd) {
 function buildGenerateBaselineTool(bundleCwd) {
   return tool(
     "bundle_generate_baseline",
-    "Bootstrap a BASELINE bundle for the current agent-mode session, written into the session bundle dir so you can then refine it. Source: if the session carries XLSX generator inputs, this runs the deterministic SRS→bundle generator (the same one baseline mode runs at turn 0, now demoted to a tool you choose to call); otherwise it writes a MINIMAL VALID skeleton (one subject type + registration form + operational mirror) you can build on. Opt-in — you may instead hand-author via spec_apply/Edit. Returns { source, clean, validator, integrity }; it NEVER silently writes a dirty bundle — the resulting validator+integrity status is always surfaced. AGENT-mode only; a bad state returns an actionable error (never throws).",
+    "Bootstrap a BASELINE bundle for the current agent-mode session, written into the session bundle dir so you can then refine it. Source: if the session carries XLSX generator inputs, this runs the deterministic SRS→bundle generator against the session's input/ SRS (the same one baseline mode runs at turn 0, now demoted to a tool you choose to call); otherwise it writes a MINIMAL VALID skeleton (one subject type + registration form + operational mirror) you can build on. Opt-in — you may instead hand-author via spec_apply/Edit. Returns { source, clean, validator, integrity }; it NEVER silently reports clean when the bundle is dirty — the resulting validator+integrity status is always surfaced. AGENT-mode only; it REFUSES in a baseline-mode session (already generated at turn 0) with an actionable error (never throws).",
     {},
     async () => generateBaselineOnDir(bundleCwd),
   );

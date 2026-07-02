@@ -377,6 +377,53 @@ test("bundle_generate_baseline: agent session lacking generator inputs writes a 
   assert.ok(out.filesWritten.includes("formMappings.json"));
 });
 
+test("bundle_generate_baseline (brain generator) PRESERVES the session git repo (MAJOR bug fix)", async () => {
+  freshRoot();
+  const sessions = await loadSessions();
+  const { generateBaselineOnDir } = await loadMcp();
+  const created = sessions.createSession({
+    mode: "agent", org: "GitOrg",
+    formsBuffer: buildFormsBuffer(), modellingBuffer: buildModellingBuffer(),
+  });
+  const dir = sessions.bundleDir(created.sessionId);
+  const out = jsonOf(generateBaselineOnDir(dir));
+  assert.equal(out.source, "brain-generator");
+  // The brain generator rmSync's its OWN output dir before writing — proving the
+  // session .git survived means we generated into a temp dir and copied in.
+  assert.ok(fs.existsSync(path.join(dir, ".git")), ".git must survive generate_baseline");
+  const commit = await sessions.commitWorkspaceChanges(created.sessionId, "commit generated baseline");
+  assert.equal(commit.noChanges, false, "generated files must be committable as a turn");
+  assert.ok(commit.turn >= 1, "the turn counter advances");
+});
+
+test("bundle_generate_baseline: NEVER reports clean when the bundle is dirty (MINOR-1)", async () => {
+  const { buildMinimalSkeleton, baselineStatusReport } = await loadMcp();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dirty-baseline-"));
+  try {
+    const files = buildMinimalSkeleton();
+    // Deliberately dirty the skeleton: flatten a formElement.concept to a bare
+    // UUID string (FE_CONCEPT_NOT_OBJECT). The validator passes; integrity fails.
+    const formKey = Object.keys(files).find((k) => k.startsWith("forms/"));
+    const fe = files[formKey].formElementGroups[0].formElements[0];
+    fe.concept = fe.concept.uuid; // bare string — the Durga trap
+    for (const [rel, val] of Object.entries(files)) {
+      const fp = path.join(dir, rel);
+      fs.mkdirSync(path.dirname(fp), { recursive: true });
+      fs.writeFileSync(fp, JSON.stringify(val, null, 2));
+    }
+    // This is the exact status computation generate_baseline runs. It must
+    // derive clean from the real result — this test fails if clean is hardcoded.
+    const out = jsonOf(baselineStatusReport(dir, { source: "minimal-skeleton" }));
+    assert.equal(out.clean, false, "must NOT report clean when integrity is dirty");
+    assert.equal(out.integrity.ok, false);
+    const codes = out.integrity.findings.map((f) => f.code);
+    assert.ok(codes.includes("FE_CONCEPT_NOT_OBJECT"), `expected FE_CONCEPT_NOT_OBJECT; got ${codes.join(",")}`);
+    assert.match(out.note, /NOT yet clean/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("bundle_generate_baseline: a baseline-mode session returns an actionable error, never throws", async () => {
   freshRoot();
   const sessions = await loadSessions();
