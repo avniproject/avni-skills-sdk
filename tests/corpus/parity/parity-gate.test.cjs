@@ -278,24 +278,41 @@ test("a missing uuid co-referenced by a COVERED and a formerly-graph-only edge �
 // would stop catching a FUTURE regression where someone breaks
 // `bundle_integrity_check` so it drops a detection OLD still makes.
 //
-// This test pins the gate's DISCRIMINATING POWER independent of the (now-closed)
-// graph-only gap. We feed the gate's REAL diff logic (run.cjs `runOrg`, the same
-// code the corpus runner uses) a deliberately-CRIPPLED NEW surface — a stub that
-// drops exactly one finding OLD legitimately has — and assert the gate reports
-// LOST ≥ 1. If a future change made the gate blind to a lost NEW detection, THIS
-// test goes red. The real `newSurface` is untouched; only this synthetic injection
-// is crippled.
+// This test pins the gate's DISCRIMINATING POWER *and* the key-shape protection
+// that makes that discrimination honest. It feeds the gate's REAL diff logic
+// (run.cjs `runOrg`, the same code the corpus runner uses) a deliberately-CRIPPLED
+// NEW surface. The crippling is REALISTIC and NON-EMPTY: on a bundle where ONE
+// missing uuid is co-referenced by a COVERED edge (formMapping.subjectTypeUUID)
+// AND a graph-only edge (encounterType.conceptUuid), the crippled NEW drops ONLY
+// the graph-only finding and KEEPS the covered one — exactly the regression where
+// `bundle_integrity_check` loses its yaml-graph FK coverage but keeps the file-map
+// half.
+//
+// This is the EXACT failure the set key must catch: with the correct
+// `class|fromKind|field|to` key the two co-referenced edges are DISTINCT members,
+// so dropping the graph-only one is a real LOST ≥ 1 (gate RED). With the
+// false-green `class|locator` key both edges collapse to one member — the surviving
+// covered edge MASKS the dropped graph-only one, LOST = 0, and this guard goes RED.
+// So a future downgrade of the key OR of bundle_integrity_check's coverage bites
+// here. An empty crippled surface (drop everything) would pass under BOTH keys and
+// would NOT exercise key-shape protection — hence the realistic co-referenced drop.
+// The real `newSurface` is untouched; only this synthetic injection is crippled.
 
-test("DIVERGENCE GUARD: a crippled NEW surface that drops a finding OLD has → gate reports LOST ≥ 1 (gate still discriminates)", async () => {
-  // A real dangling ref that BOTH surfaces legitimately detect today.
+test("DIVERGENCE GUARD: a crippled NEW that drops ONLY the graph-only edge of a co-referenced missing uuid → gate reports LOST ≥ 1 (discriminates + key-shape protected)", async () => {
+  const ET_UUID = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+  // ONE missing uuid, two DISTINCT edges to it: a covered edge and a graph-only edge.
   const dir = tmpBundle({
     subjectTypes: [{ name: "Individual", uuid: ST_UUID }],
+    encounterTypes: [{
+      name: "Visit", uuid: ET_UUID,
+      conceptUuid: MISSING_UUID,           // graph-only edge → MISSING_UUID
+    }],
     forms: [{ name: "F", uuid: FORM_UUID, formType: "IndividualProfile", formElementGroups: [] }],
     formMappings: [{
       uuid: "mmmmmmmm-mmmm-mmmm-mmmm-mmmmmmmmmmmm",
       formType: "IndividualProfile",
       formUUID: FORM_UUID,
-      subjectTypeUUID: MISSING_UUID, // ← dangling, detected by OLD and (honestly) NEW
+      subjectTypeUUID: MISSING_UUID,       // covered edge → SAME MISSING_UUID
     }],
   });
   try {
@@ -306,25 +323,46 @@ test("DIVERGENCE GUARD: a crippled NEW surface that drops a finding OLD has → 
       { oldSurface, newSurface });
     assert.equal(baseline.lost.length, 0,
       `baseline (real detectors) must be at parity. Got LOST: ${JSON.stringify(baseline.lost)}`);
-    assert.ok(baseline.oldCount >= 1, "OLD must legitimately detect the dangling ref");
+    assert.ok(baseline.oldCount >= 1, "OLD must legitimately detect the dangling refs");
 
-    // CRIPPLED NEW: a stub newSurface that omits ALL findings (simulating a future
-    // regression where bundle_integrity_check loses its FK/dangling coverage). The
-    // empty NEW set cannot satisfy any OLD member → every OLD detection is LOST.
-    const crippledNewSurface = async (_bundleDir) => {
-      const triples = [];
-      return { triples, set: toSet(triples), raw: { findings: [] } };
+    // CRIPPLED NEW: start from the REAL surface, then drop ONLY the graph-only
+    // encounterType.conceptUuid finding while KEEPING the co-referenced covered
+    // formMapping.subjectTypeUUID finding. This simulates bundle_integrity_check
+    // losing its yaml-graph FK half but retaining the file-map half. Non-empty on
+    // purpose: the surviving covered edge is what would MASK the drop under a
+    // false-green class|locator key — so this guard only passes when the key keeps
+    // the two co-referenced edges distinct.
+    const crippledNewSurface = async (bundleDir) => {
+      const real = await newSurface(bundleDir);
+      const triples = real.triples.filter((t) => t._field !== "encounterType.conceptUuid");
+      return { triples, set: toSet(triples), raw: real.raw };
     };
+
+    // Guard-the-guard: the crippling must actually leave a non-empty NEW surface
+    // (the covered edge survives) AND must have removed the graph-only edge.
+    const crippledSurface = await crippledNewSurface(dir);
+    assert.ok(crippledSurface.set.size >= 1,
+      "crippled NEW must stay NON-EMPTY (the covered edge survives) — an empty surface can't test key-shape protection");
+    assert.ok(
+      !crippledSurface.triples.some((t) => t._field === "encounterType.conceptUuid"),
+      "crippled NEW must have dropped the graph-only edge",
+    );
 
     const crippled = await runOrg({ org: "synthetic-divergence", bundleDir: dir },
       { oldSurface, newSurface: crippledNewSurface });
 
-    // The gate MUST flag the divergence: a NEW that loses an OLD detection ⇒ LOST ≥ 1.
+    // The gate MUST flag the divergence: NEW lost the graph-only edge ⇒ LOST ≥ 1.
+    // Under the correct class|fromKind|field|to key the two co-referenced edges are
+    // distinct members, so the dropped graph-only edge shows as LOST. Under a
+    // false-green class|locator key it would be masked by the surviving covered
+    // edge (LOST = 0) and THIS assertion would fail.
     assert.ok(crippled.lost.length >= 1,
-      `gate must report LOST ≥ 1 when NEW drops an OLD finding. Got: ${JSON.stringify(crippled.lost)}`);
+      `gate must report LOST ≥ 1 when NEW drops the graph-only edge of a co-referenced uuid. Got: ${JSON.stringify(crippled.lost)}`);
     assert.ok(
-      crippled.lost.some((t) => t.class === CLASS.DANGLING_REF && t.locator === MISSING_UUID),
-      "the LOST entry is the dangling ref the crippled NEW dropped",
+      crippled.lost.some((t) => t.class === CLASS.DANGLING_REF
+        && t.locator === MISSING_UUID
+        && t._field === "encounterType.conceptUuid"),
+      "the LOST entry is specifically the graph-only encounterType.conceptUuid edge the crippled NEW dropped (not masked by the co-referenced covered edge)",
     );
     // run.cjs exits non-zero when totalLost > 0 — this LOST ≥ 1 is exactly that
     // failing condition, so a real regression would turn the corpus gate RED.
