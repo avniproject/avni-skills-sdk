@@ -18,8 +18,9 @@ export function register(app) {
   //     bundle_read_srs) and/or an inline 'srs' field. NO external path is
   //     accepted (LFI closure). The agent reads the SRS via bundle_read_srs and
   //     optionally bootstraps via bundle_generate_baseline.
-  // No LLM call required at create time — caller iterates later via /edit (WoO),
-  // /apply-spec, or /messages (real agent, BYO key).
+  // No LLM call required at create time — caller iterates later via /edit (WoO)
+  // or /messages (real agent, BYO key; the agent applies YAML specs in-process
+  // via the spec_apply MCP tool — the /apply-spec route was retired in #11).
   app.post("/v1/sessions", async (req, res) => {
     try {
       const ct = req.headers["content-type"] || "";

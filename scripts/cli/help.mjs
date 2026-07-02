@@ -15,9 +15,6 @@ ${bold(":rulev")}         run Layer-4 rules validator (R1-R6) on every rule
 ${bold(":summary")}       deterministic bundle audit — entity counts, anomalies, rule stats (free)
 ${bold(":eval")}          LLM semantic-gap audit via /v1/sessions/:id/evaluate (~$0.05-0.20)
 ${bold(":refs")} <q>      find every reference to a UUID or name across the bundle. q = UUID or "Name"
-${bold(":apply")} <spec.yaml>
-                deterministic patch: parse YAML → materialise declarative rules → patch bundle → commit turn
-                Shows: structured diff (+added/~updated per file), compiled rule list, integrity check
 ${bold(":changes")} [N]      semantic diff for turn N (default = last) — per-file added/updated/removed entries
 ${bold(":diag")}              multi-agent failure visibility — schema breaks, circuit-breakers,
                 validator regressions, integrity issues, ambiguity loops, per-agent durations

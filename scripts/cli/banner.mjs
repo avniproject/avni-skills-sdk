@@ -125,7 +125,6 @@ export function renderSuggestions(sessMeta, validation, isResumed) {
     lines.push(dim("validator is clean. Try:"));
     lines.push("  " + cyan("free-text") + dim(" → \"add a Volunteer subject type with a registration form\""));
     lines.push("  " + cyan(":summary") + dim(" → deterministic bundle audit (free)"));
-    lines.push("  " + cyan(":apply <spec.yaml>") + dim(" → patch the bundle from a YAML spec"));
   } else {
     // Validator has errors — suggest concrete fixes per error class.
     lines.push(dim("validator found ") + red(`${errs} error${errs === 1 ? "" : "s"}`) +

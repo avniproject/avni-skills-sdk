@@ -22,7 +22,7 @@ export function makeDispatcher({ commands, sendMessage, state }) {
   // Flatten the command bundles into a single name → handler map. Each value
   // is `(sid, arg1?, rest?) => Promise<void>`; we wrap to normalise calling.
   const {
-    turns, rules, audit, workflows, observability, sessions,
+    turns, rules, audit, observability, sessions,
   } = commands;
 
   // `:model [name|alias]` — show or change the model used for free-text turns.
@@ -53,13 +53,12 @@ export function makeDispatcher({ commands, sendMessage, state }) {
         case "revert":  await turns.cmdRevert(sid, arg1); break;
         case "zip":     await turns.cmdZip(sid, arg1); break;
 
-        // rules + workflows
+        // rules
         case "rules":   await rules.cmdRules(sid); break;
         case "rulev": case "rules-validate":
                         await rules.cmdRuleValidate(sid); break;
         case "refs": case "references":
                         await rules.cmdRefs(sid, rest.join(" ")); break;
-        case "apply":   await workflows.cmdApply(sid, arg1); break;
 
         // audit
         case "summary": await audit.cmdSummary(sid); break;

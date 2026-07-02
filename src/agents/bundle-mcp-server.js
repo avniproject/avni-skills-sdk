@@ -709,12 +709,13 @@ function buildIntegrityCheckTool(bundleCwd) {
 
 // ─── spec round-trip tools (spec_apply / spec_emit) ─────────────────
 //
-// These wrap the pipeline's applySpec / emitSpec (the SAME code the
-// /v1/sessions/:id/apply-spec HTTP route drives) as in-process MCP tools so
+// These wrap the pipeline's applySpec / emitSpec as in-process MCP tools so
 // the agent can (a) apply a canonical YAML spec onto the bundle in one shot
 // and (b) round-trip the current bundle back into the canonical spec to diff
-// INTENT vs ARTIFACT. The HTTP route + POST /:id/edit are KEPT (demote-not-
-// delete: they remain the deterministic, LLM-free backout path).
+// INTENT vs ARTIFACT. They REPLACE the retired POST /:id/apply-spec HTTP route
+// (story #11) — deterministic YAML-spec application now happens in-process via
+// the agent, not by curling an endpoint. POST /:id/edit survives as the
+// LLM-free Wizard-of-Oz backout path.
 
 /**
  * Apply a canonical YAML spec onto the bundle at `bundleCwd`.
@@ -818,7 +819,7 @@ function buildSpecApplyTool(bundleCwd) {
       "{ ok, filesChanged, diffSummary, specIntegrity, integrityCheck }.",
     {
       spec: z.string().describe(
-        "The canonical YAML spec (the same format the /apply-spec route consumes): top-level " +
+        "The canonical YAML spec: top-level " +
           "org / subjectTypes / programs / encounterTypes / concepts / forms, etc.",
       ),
     },
