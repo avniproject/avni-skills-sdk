@@ -104,9 +104,20 @@ test('buildBundleGraph: missing files are tolerated (empty arrays)', () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('buildBundleGraph throws on missing/invalid bundleDir arg', () => {
-  assert.throws(() => buildBundleGraph(), /bundleDir/);
-  assert.throws(() => buildBundleGraph(null), /bundleDir/);
+test('buildBundleGraph throws when given neither a directory path nor a file map', () => {
+  // #14: buildBundleGraph now accepts a directory path (string) OR a file map
+  // object ({ "concepts.json": <parsed>, ... }). undefined / null match neither
+  // and must still throw the contract error naming both accepted input shapes.
+  assert.throws(() => buildBundleGraph(), /directory path \(string\) or a file map/);
+  assert.throws(() => buildBundleGraph(null), /directory path \(string\) or a file map/);
+  // Smoke the accepted file-map contract: an in-memory bundle builds a graph
+  // with zero disk I/O (the new input shape #14 added for SDK callers).
+  const g = buildBundleGraph({
+    'subjectTypes.json': [{ uuid: 'st-1', name: 'X' }],
+    'formMappings.json': [{ uuid: 'm-1', formType: 'IndividualProfile', formUUID: 'f-1', subjectTypeUUID: 'st-1' }],
+  });
+  assert.equal(g.counts.subjectType, 1);
+  assert.equal(g.counts.formMapping, 1);
 });
 
 // ─── Edge correctness: formMapping fans out 2 edges in clean bundle ─
@@ -206,9 +217,13 @@ test('integrityCheck: dangling formMapping.formUUID surfaces as ERROR', () => {
   const g = buildBundleGraph(dir);
   const ic = integrityCheck(g);
   assert.equal(ic.ok, false);
-  const danglingForm = ic.issues.find((i) => i.code === 'DANGLING_REF' && i.edge.to === badFormU);
-  assert.ok(danglingForm);
-  assert.equal(danglingForm.severity, 'error');
+  // #14: a REQUIRED dangling edge (formMapping.formUUID is required) surfaces as
+  // MISSING_REQUIRED_REF, not the old catch-all DANGLING_REF. The optional-ref
+  // case still emits DANGLING_REF (warning) — see the encounterType.conceptUuid
+  // test below. This mirrors bundle-integrity-check.test.cjs's contract.
+  const missingForm = ic.issues.find((i) => i.code === 'MISSING_REQUIRED_REF' && i.edge.to === badFormU);
+  assert.ok(missingForm, 'required dangling formUUID → MISSING_REQUIRED_REF');
+  assert.equal(missingForm.severity, 'error');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

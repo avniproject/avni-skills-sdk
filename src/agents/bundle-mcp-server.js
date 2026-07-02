@@ -508,7 +508,21 @@ export function runBundleIntegrityCheck(bundleCwd) {
 
   // (c) ALT_INVALID_NAME — for every addressLevelTypes.json entry, an empty name
   // or one containing < > = " ' is rejected by AVNI's LocationService on upload.
-  const alts = files["addressLevelTypes.json"];
+  // The deterministic generator emits a bare array, but server-round-tripped and
+  // hand-edited bundles can wrap the list ({ addressLevelTypes: [...] } or the
+  // generic { data: [...] } envelope) — same quirk the brain graph already
+  // tolerates for operational entities. Normalise to the array first so a wrapped
+  // shape is NOT silently skipped; the bare-array case is unchanged.
+  const altsRaw = files["addressLevelTypes.json"];
+  const alts = Array.isArray(altsRaw)
+    ? altsRaw
+    : (altsRaw && typeof altsRaw === "object" && !Array.isArray(altsRaw))
+        ? (Array.isArray(altsRaw.addressLevelTypes)
+            ? altsRaw.addressLevelTypes
+            : Array.isArray(altsRaw.data)
+              ? altsRaw.data
+              : null)
+        : null;
   if (Array.isArray(alts)) {
     alts.forEach((alt, i) => {
       const name = alt && typeof alt === "object" ? alt.name : alt;

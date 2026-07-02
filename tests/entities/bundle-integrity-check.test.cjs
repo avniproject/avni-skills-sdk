@@ -273,6 +273,54 @@ test("a clean bundle produces no FE_CONCEPT_NOT_OBJECT / ALT_INVALID_NAME findin
   cleanup(dir);
 });
 
+// ─── ALT_INVALID_NAME survives a wrapped addressLevelTypes shape (F6) ──
+//
+// The generator emits a bare array, but server-round-tripped / hand-edited
+// bundles can wrap it ({ addressLevelTypes: [...] } or { data: [...] }). The ALT
+// check used to run only for a bare Array, so a wrapped list silently skipped —
+// a false-clean. The normalisation must catch invalid names inside either wrapper.
+
+test("ALT_INVALID_NAME — wrapped { addressLevelTypes: [...] } shape is still checked", async () => {
+  const { runBundleIntegrityCheck } = await loadServer();
+  const dir = tmpBundle({
+    // Passed straight to JSON.stringify by tmpBundle → writes the wrapped object.
+    addressLevelTypes: {
+      addressLevelTypes: [
+        { name: "State", uuid: "alt-1", level: 2 },
+        { name: "<District>", uuid: "alt-2", level: 1 }, // invalid: angle brackets
+      ],
+    },
+  });
+  const { ok, findings } = runBundleIntegrityCheck(dir);
+  const alt = findings.filter((f) => f.code === "ALT_INVALID_NAME");
+  assert.equal(alt.length, 1, "wrapped shape must not silently skip the ALT check");
+  assert.equal(alt[0].severity, "error");
+  assert.equal(alt[0].locator, "[1].name");
+  assert.equal(ok, false);
+  cleanup(dir);
+});
+
+test("ALT_INVALID_NAME — generic { data: [...] } envelope is still checked", async () => {
+  const { runBundleIntegrityCheck } = await loadServer();
+  const dir = tmpBundle({
+    addressLevelTypes: { data: [{ name: "Level='Block'", uuid: "b1", level: 1 }] },
+  });
+  const { ok, findings } = runBundleIntegrityCheck(dir);
+  assert.equal(findings.filter((f) => f.code === "ALT_INVALID_NAME").length, 1);
+  assert.equal(ok, false);
+  cleanup(dir);
+});
+
+test("ALT_INVALID_NAME — wrapped shape with only clean names produces no finding", async () => {
+  const { runBundleIntegrityCheck } = await loadServer();
+  const dir = tmpBundle({
+    addressLevelTypes: { addressLevelTypes: [{ name: "State", uuid: "s1", level: 1 }] },
+  });
+  const { findings } = runBundleIntegrityCheck(dir);
+  assert.equal(findings.filter((f) => f.code === "ALT_INVALID_NAME").length, 0);
+  cleanup(dir);
+});
+
 // ─── FK / dangling-reference via the brain's yaml-driven graph ──────
 //
 // #14 (slice 2): the tool now drives FK integrity off the brain's
