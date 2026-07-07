@@ -1,37 +1,62 @@
-// 03-add-concept.cjs  (PENDING — registry stub)
+// 03-add-concept.cjs  (category: data-integrity)
 //
-// What this case WILL prove once implemented: when the user asks to "add a
-// new concept", the agent must call `bundle_find_concept` first to check
-// for a case-insensitive name collision (BUNDLE_HARD_RULES rule #6). Only
-// if the tool returns "SAFE to add" may the agent append a new concept.
+// What it proves: when the user asks to "add a concept" whose name COLLIDES
+// (case-insensitively) with an existing one, the agent must call
+// `bundle_find_concept` FIRST and must NOT append a duplicate. The base bundle
+// already has a "Religion" (Coded) concept; the user asks for "religion"
+// (lowercase). C3/D1 fire on case-insensitive concept-name collisions, so the
+// right move is to reuse — not add.
 //
-// Why it's stubbed:
-//   The assertion surface is wider than the high-value 5 — we need to
-//   verify (a) the tool was called BEFORE the Edit/Write, (b) the new
-//   concept landed in concepts.json with a valid v4 UUID, (c) operational
-//   files weren't disturbed, (d) no C3/D1 regression. The fixture also has
-//   to seed an existing "Religion" concept and the prompt has to ask for
-//   "religion" lowercase to test the case-insensitivity gate.
-//
-// Implementation sketch:
-//   setupFixture: buildBaseSrsBuffers (already has Religion)
-//   prompt:       "Add a new concept named 'religion' with dataType Text."
-//   assertions:
-//     - assertToolUsed(agentEvents, t => t.name.includes("bundle_find_concept"))
-//     - the tool call must come BEFORE any Edit on concepts.json
-//     - no NEW Religion-like concept in concepts.json (case-insensitive count stays 1)
-//     - no C3/D1 errors
-//
-// Estimated cost when implemented: ~$0.20
+// Expectations:
+//   • bundle_find_concept is called (and, if any concepts.json edit happens, it
+//     happens AFTER the lookup)
+//   • case-insensitive count of "religion" stays exactly 1 (no duplicate)
+//   • no C3/D1 (or any) validator regression vs the pre-dispatch baseline
 
 "use strict";
 
 module.exports = {
   name: "03-add-concept",
+  category: "data-integrity",
   description:
-    "[PENDING] Agent must call bundle_find_concept BEFORE adding a concept; refuse on case-insensitive collision.",
-  pending: true,
-  pendingReason:
-    "Assertion needs tool-ordering check (find_concept before Edit on concepts.json) — to be implemented in v0.3.",
+    "[data-integrity] Agent must call bundle_find_concept before adding a concept and refuse to duplicate on a case-insensitive collision.",
+
+  setupFixture: ({ fixture }) => fixture.buildBaseSrsBuffers({ org: "TestOrgAddConcept" }),
+
+  prompt:
+    "Add a new concept named 'religion' with dataType Text. " +
+    "Check for an existing concept first so we don't create a duplicate.",
+
+  maxTurns: 2,
   maxCostUsd: 0.20,
+
+  assertions: async (ctx) => {
+    const { assertions: A } = ctx;
+
+    // 1. The lookup gate ran.
+    A.assertToolUsed(ctx.agentEvents, (t) =>
+      String(t.name || "").includes("bundle_find_concept"),
+    );
+
+    // 2. If the agent edited concepts.json at all, the lookup must precede it.
+    const tools = A.listToolUses(ctx.agentEvents);
+    const editsConcepts = (t) =>
+      A.isFileEditTool(t) && /concepts\.json/.test(JSON.stringify(t.input || {}));
+    if (tools.some(editsConcepts)) {
+      A.assertToolOrder(ctx.agentEvents, {
+        first: (t) => String(t.name || "").includes("bundle_find_concept"),
+        then: editsConcepts,
+        label: "find_concept before concepts.json edit",
+      });
+    }
+
+    // 3. No duplicate "religion" concept.
+    A.assertConceptCountByName(ctx.bundleDir, "religion", 1);
+
+    // 4. No validator regression (C3/D1 etc.).
+    await A.assertNoValidatorRegression({
+      getValidator: ctx.getValidator,
+      baseline: ctx.baselineValidator,
+    });
+  },
 };

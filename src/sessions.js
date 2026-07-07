@@ -31,6 +31,7 @@ import { generateBundle, validateBundle, zipBundle as zipBundleDir } from "./bun
 import { ensureSkillsStagedAt } from "./workspace.js";
 import { validateBundleRules } from "./rules-brain/validate.js";
 import { detectConceptCollisions, formatViolationMessage } from "./rules-brain/concept-gate.js";
+import { runBundleIntegrityCheck } from "./agents/bundle-mcp-server.js";
 
 const SESSIONS_DIR = process.env.SDK_SESSIONS_DIR || path.join(os.homedir(), ".avni-skills-sdk", "sessions");
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -86,6 +87,62 @@ function summariseValidation(dir) {
   return { valid: r.valid, errors: r.errors.length, warnings: r.warnings.length, groups };
 }
 
+// FIX 1(a) — the INTEGRITY GATE, iteration-friendly half.
+//
+// `runBundleIntegrityCheck` had ZERO callers on the commit/inject path, so the
+// two server-only traps (FE_CONCEPT_NOT_OBJECT / Durga + ALT_INVALID_NAME /
+// Astitva, plus dangling REQUIRED refs) were tool+prose only — never a gate.
+// This runs the deterministic integrity check and FOLDS its severity:error
+// findings INTO the per-turn validation state so they surface to the agent
+// every turn exactly like validator errors (closing the "validator shows 0,
+// agent thinks done" hole). It does NOT hard-revert — the agent iterates.
+//
+// Returns a tight, structured summary; NEVER throws (a brain-graph load failure
+// degrades to a null/empty integrity result so the validator half still works).
+function summariseIntegrity(dir) {
+  try {
+    const { ok, findings } = runBundleIntegrityCheck(dir);
+    const errorFindings = findings.filter((f) => f.severity === "error");
+    const warningFindings = findings.filter((f) => f.severity === "warning");
+    const counts = {};
+    for (const f of findings) counts[f.code] = (counts[f.code] || 0) + 1;
+    return {
+      ok,
+      errorCount: errorFindings.length,
+      warningCount: warningFindings.length,
+      counts,
+      findings,
+    };
+  } catch (e) {
+    // Fail-safe: integrity unavailable ⇒ don't block the validator half. `ok:null`
+    // signals "not evaluated" so callers don't treat it as clean.
+    return { ok: null, errorCount: 0, warningCount: 0, counts: {}, findings: [], error: e.message };
+  }
+}
+
+// Combine the validator summary with the deterministic integrity summary into a
+// single per-turn validation object. Back-compat: keeps `valid`/`errors`/
+// `warnings`/`groups` (existing consumers rely on these), folding integrity
+// severity:error into `valid`+`errors` so a bundle that is validator-clean but
+// integrity-dirty is correctly reported NOT valid. The integrity detail is kept
+// clearly labeled under `integrity` so the two sources never blur together.
+function summariseValidationWithIntegrity(dir) {
+  const v = summariseValidation(dir);
+  const integrity = summariseIntegrity(dir);
+  const groups = { ...v.groups };
+  for (const [code, n] of Object.entries(integrity.counts)) {
+    groups[code] = (groups[code] || 0) + n;
+  }
+  return {
+    // integrity.ok === null (not evaluated) must NOT flip a valid bundle invalid.
+    valid: v.valid && integrity.ok !== false,
+    errors: v.errors + integrity.errorCount,
+    warnings: v.warnings + integrity.warningCount,
+    groups,
+    integrity,
+  };
+}
+
 // Run the Layer-4 rules validator across the bundle's rule fields.
 // Returns a tight summary suitable for inclusion in turn output.
 async function summariseRules(dir) {
@@ -111,10 +168,34 @@ async function summariseRules(dir) {
 // ───────────────────────────────────────────────────────────────────
 
 /**
- * Create a session. Runs deterministic generator on the uploaded SRS,
- * commits the first-pass bundle as turn 0, returns session info.
+ * Create a session.
+ *
+ * Two modes (story #12):
+ *   • "baseline" (DEFAULT) — the existing behaviour, byte-for-byte unchanged: runs
+ *     the deterministic generator on the uploaded SRS and commits the
+ *     first-pass bundle as turn 0. `formsBuffer` is required.
+ *   • "agent" — the session is created AROUND an SRS (requirements) instead of
+ *     an uploaded bundle. The bundle dir starts empty; the SRS is persisted so
+ *     the agent can read it (bundle_read_srs) and optionally bootstrap a
+ *     deterministic baseline (bundle_generate_baseline), then refine to clean.
+ *
+ * @param {Object} args
+ * @param {Buffer}  [args.formsBuffer]       Forms.xlsx (required in baseline mode; optional generator input in agent mode)
+ * @param {string}  [args.formsFilename]
+ * @param {Buffer}  [args.modellingBuffer]   Modelling.xlsx (optional generator input)
+ * @param {string}  [args.modellingFilename]
+ * @param {string}  [args.org="Bundle"]
+ * @param {"baseline"|"agent"} [args.mode="baseline"]
+ * @param {string|Object} [args.srs]         agent-mode SRS as inline text or JSON (string or already-parsed object)
  */
-export function createSession({ formsBuffer, formsFilename, modellingBuffer, modellingFilename, org = "Bundle" }) {
+export function createSession({ formsBuffer, formsFilename, modellingBuffer, modellingFilename, org = "Bundle", mode = "baseline", srs }) {
+  if (mode === "agent") {
+    return createAgentSession({ formsBuffer, modellingBuffer, org, srs });
+  }
+  if (mode !== "baseline") {
+    throw new Error(`unknown session mode: ${JSON.stringify(mode)} (expected "baseline" or "agent")`);
+  }
+  // ─── BASELINE MODE (default) — behaviour below is unchanged from before #12 ───
   if (!formsBuffer) throw new Error("formsBuffer required");
 
   const id = newId();
@@ -152,6 +233,7 @@ export function createSession({ formsBuffer, formsFilename, modellingBuffer, mod
   const meta = {
     sessionId: id,
     org,
+    mode: "baseline",
     createdAt: new Date().toISOString(),
     inputs: {
       forms: path.basename(formsPath),
@@ -165,9 +247,105 @@ export function createSession({ formsBuffer, formsFilename, modellingBuffer, mod
   return { sessionId: id, meta, validation };
 }
 
+// ─── agent mode (story #12) ─────────────────────────────────────────
+//
+// An agent-mode session is built AROUND requirements (an SRS), not an uploaded
+// bundle. Unlike baseline mode, we do NOT run the deterministic generator at create
+// time — the generator is DEMOTED from the pipeline to an agent-callable tool
+// (bundle_generate_baseline). The bundle dir starts empty (only .gitignore, so
+// git has a HEAD to commit turns against); the agent reads the SRS
+// (bundle_read_srs), optionally bootstraps a baseline, then refines to clean.
+//
+// The SRS/Excel binaries are persisted under <session>/input/ (a SIBLING of
+// <session>/bundle/, kept OUT of git) so the tools (which run with cwd =
+// <session>/bundle) can reach them as ../input/ — the same sibling-access
+// pattern bundle_export_to_path uses to read ../meta.json.
+function createAgentSession({ formsBuffer, modellingBuffer, org, srs }) {
+  const id = newId();
+  const dir = path.join(SESSIONS_DIR, id);
+  const inputDir = path.join(dir, "input");
+  const bDir = path.join(dir, "bundle");
+  fs.mkdirSync(inputDir, { recursive: true });
+  fs.mkdirSync(bDir, { recursive: true });
+
+  // Persist the SRS in whatever form(s) the caller supplied under input/. All
+  // are optional; an agent session may start from pure prose, from structured
+  // JSON, from XLSX generator inputs, or any combination. NO external path is
+  // accepted (LFI closure, MAJOR-1) — everything read later is the session's own
+  // input/ dir.
+  const srsMeta = { kind: "none", files: {}, hasGeneratorInputs: false };
+
+  if (typeof srs === "string" && srs.trim()) {
+    // Inline SRS text. Store as JSON when it parses to an object/array, else raw.
+    let parsed = null;
+    try { parsed = JSON.parse(srs); } catch { /* not JSON — treat as prose */ }
+    if (parsed !== null && typeof parsed === "object") {
+      fs.writeFileSync(path.join(inputDir, "srs.json"), JSON.stringify(parsed, null, 2));
+      srsMeta.files.json = "input/srs.json";
+      srsMeta.kind = "json";
+    } else {
+      fs.writeFileSync(path.join(inputDir, "srs.txt"), srs);
+      srsMeta.files.text = "input/srs.txt";
+      srsMeta.kind = "text";
+    }
+  } else if (srs && typeof srs === "object") {
+    // Already-parsed structured SRS object.
+    fs.writeFileSync(path.join(inputDir, "srs.json"), JSON.stringify(srs, null, 2));
+    srsMeta.files.json = "input/srs.json";
+    srsMeta.kind = "json";
+  }
+
+  if (formsBuffer) {
+    fs.writeFileSync(path.join(inputDir, "forms.xlsx"), formsBuffer);
+    srsMeta.files.forms = "input/forms.xlsx";
+    srsMeta.hasGeneratorInputs = true;
+    if (srsMeta.kind === "none") srsMeta.kind = "xlsx";
+  }
+  if (modellingBuffer) {
+    fs.writeFileSync(path.join(inputDir, "modelling.xlsx"), modellingBuffer);
+    srsMeta.files.modelling = "input/modelling.xlsx";
+  }
+
+  // .gitignore keeps the input/ binaries + agent-staging artifacts out of the
+  // bundle git history, and gives git a first tracked file so turn 0 is a real
+  // (near-empty) commit against which later turns diff.
+  fs.writeFileSync(path.join(bDir, ".gitignore"), ".claude/\ninput/\n");
+  git(bDir, "init", "-b", "main");
+  git(bDir, "config", "user.email", "agent@avni-skills-sdk");
+  git(bDir, "config", "user.name", "avni-skills-sdk");
+  git(bDir, "add", "-A");
+  git(bDir, "commit", "-m", "turn 0: empty workspace (agent mode)");
+
+  // Agent-mode sentinel (story #12 gotcha): the empty workspace is the EXPECTED
+  // starting point, not a defect. Do NOT run the raw validator here — it would
+  // record a dozen "Missing required file" errors in meta and scare the agent on
+  // turn 1. Record an explicit empty-workspace marker instead.
+  const validation = { valid: false, errors: 0, warnings: 0, groups: {}, emptyWorkspace: true };
+
+  const meta = {
+    sessionId: id,
+    org: org || "Bundle",
+    mode: "agent",
+    createdAt: new Date().toISOString(),
+    srs: srsMeta,
+    currentTurn: 0,
+    validationAtCurrent: validation,
+  };
+  writeMeta(id, meta);
+
+  return { sessionId: id, meta, validation };
+}
+
 export function getSession(id) {
   const meta = readMeta(id);
   return meta;
+}
+
+// Session mode (story #12). Absent on pre-#12 sessions → "baseline" (the historical
+// default), so old sessions and the byte-identical baseline path are unaffected.
+export function getSessionMode(id) {
+  try { return readMeta(id).mode === "agent" ? "agent" : "baseline"; }
+  catch { return "baseline"; }
 }
 
 // Persist the Claude Agent SDK's internal session id on first dispatch so
@@ -186,6 +364,30 @@ export function setSdkSessionId(id, sdkSessionId) {
 export function getSdkSessionId(id) {
   const meta = readMeta(id);
   return meta.sdkSessionId || null;
+}
+
+// Agent-mode empty-workspace sentinel (story #12 gotcha). Before authorship
+// begins the bundle dir is intentionally empty; the raw validator would report a
+// dozen "Missing required file" errors and turn 1 would burn "fixing" emptiness.
+// This sentinel is injected INSTEAD so the agent knows the empty state is the
+// expected starting point, not a defect list.
+export const AGENT_EMPTY_WORKSPACE_SENTINEL =
+  "CURRENT VALIDATOR + INTEGRITY STATE (server-truth): AGENT MODE — the workspace is EMPTY (no bundle authored yet). " +
+  "This is the EXPECTED starting point, NOT a set of errors to fix: do NOT treat missing bundle files as validator " +
+  "defects and do NOT spend this turn 'fixing' emptiness. Read the requirements with mcp__avni-bundle__bundle_read_srs " +
+  "(the uploaded spreadsheet(s) live in ../input/), then author the bundle — optionally bootstrap with " +
+  "mcp__avni-bundle__bundle_generate_baseline. The real validator + integrity state is reported normally once you have " +
+  "authored files.";
+
+// True when an agent-mode bundle dir holds no authored content yet (only git
+// bookkeeping / .gitignore / staged skills). Used to gate the sentinel above.
+function agentWorkspaceIsEmpty(dir) {
+  try {
+    const ignore = new Set([".git", ".gitignore", ".claude"]);
+    return !fs.readdirSync(dir).some((n) => !ignore.has(n));
+  } catch {
+    return true;
+  }
 }
 
 // Build a human-readable preamble describing the bundle's CURRENT validator
@@ -208,29 +410,73 @@ export function currentValidatorStateText(id) {
   const cached = VALIDATOR_CACHE.get(id);
   if (cached && cached.sha === headSha) return cached.text;
 
+  // Agent-mode empty-workspace sentinel (story #12 gotcha) — flows through the
+  // per-turn injection (currentValidatorStateText), not just the create
+  // response, so turn 1 doesn't see a dozen missing-file "errors".
+  let sessionMode;
+  try { sessionMode = readMeta(id).mode; } catch { sessionMode = undefined; }
+  if (sessionMode === "agent" && agentWorkspaceIsEmpty(bundleDir)) {
+    VALIDATOR_CACHE.set(id, { sha: headSha, text: AGENT_EMPTY_WORKSPACE_SENTINEL, ts: Date.now() });
+    return AGENT_EMPTY_WORKSPACE_SENTINEL;
+  }
+
   let r;
   try {
     r = validateBundle(bundleDir);
   } catch (e) {
     return "";
   }
+  // FIX 1(a): also fold the deterministic INTEGRITY findings into the injected
+  // state so integrity errors surface to the agent every turn exactly like
+  // validator errors. Kept clearly LABELED and separate from the validator
+  // section so the two sources never blur. Never throws (summariseIntegrity
+  // fail-safes to an empty result).
+  const integrity = summariseIntegrity(bundleDir);
+  const integrityErrors = integrity.findings.filter((f) => f.severity === "error");
+  const integrityWarnings = integrity.findings.filter((f) => f.severity === "warning");
+
+  const validatorClean = r.valid && r.warnings.length === 0;
+  const integrityClean = integrityErrors.length === 0 && integrityWarnings.length === 0;
+
   let text;
-  if (r.valid && r.warnings.length === 0) {
-    text = "CURRENT VALIDATOR STATE (server-truth): ✓ bundle is clean — no errors, no warnings.";
+  if (validatorClean && integrityClean) {
+    text = "CURRENT VALIDATOR + INTEGRITY STATE (server-truth): ✓ bundle is clean — no validator errors, no integrity errors, no warnings.";
   } else {
-    const lines = ["CURRENT VALIDATOR STATE (server-truth — do not re-discover, do not guess error codes, do not fabricate codes):"];
-    if (r.errors.length) {
-      lines.push(`  errors (${r.errors.length}):`);
-      for (const e of r.errors.slice(0, 8)) lines.push(`    • ${e}`);
-      if (r.errors.length > 8) lines.push(`    … and ${r.errors.length - 8} more`);
+    const lines = ["CURRENT VALIDATOR + INTEGRITY STATE (server-truth — do not re-discover, do not guess error codes, do not fabricate codes):"];
+    // ── validator section ──
+    if (r.errors.length || r.warnings.length) {
+      lines.push("  VALIDATOR:");
+      if (r.errors.length) {
+        lines.push(`    errors (${r.errors.length}):`);
+        for (const e of r.errors.slice(0, 8)) lines.push(`      • ${e}`);
+        if (r.errors.length > 8) lines.push(`      … and ${r.errors.length - 8} more`);
+      }
+      if (r.warnings.length) {
+        lines.push(`    warnings (${r.warnings.length}):`);
+        for (const w of r.warnings.slice(0, 5)) lines.push(`      • ${w}`);
+        if (r.warnings.length > 5) lines.push(`      … and ${r.warnings.length - 5} more`);
+      }
+    } else {
+      lines.push("  VALIDATOR: ✓ clean.");
     }
-    if (r.warnings.length) {
-      lines.push(`  warnings (${r.warnings.length}):`);
-      for (const w of r.warnings.slice(0, 5)) lines.push(`    • ${w}`);
-      if (r.warnings.length > 5) lines.push(`    … and ${r.warnings.length - 5} more`);
+    // ── integrity section (FE_CONCEPT_NOT_OBJECT / ALT_INVALID_NAME / dangling refs) ──
+    if (integrityErrors.length || integrityWarnings.length) {
+      lines.push("  INTEGRITY (data-integrity checks the validator does NOT catch — a clean validator does NOT mean a clean upload):");
+      if (integrityErrors.length) {
+        lines.push(`    errors (${integrityErrors.length}):`);
+        for (const f of integrityErrors.slice(0, 8)) lines.push(`      • [${f.code}] ${f.file} ${f.locator} — ${f.message}`);
+        if (integrityErrors.length > 8) lines.push(`      … and ${integrityErrors.length - 8} more`);
+      }
+      if (integrityWarnings.length) {
+        lines.push(`    warnings (${integrityWarnings.length}):`);
+        for (const f of integrityWarnings.slice(0, 5)) lines.push(`      • [${f.code}] ${f.file} ${f.locator} — ${f.message}`);
+        if (integrityWarnings.length > 5) lines.push(`      … and ${integrityWarnings.length - 5} more`);
+      }
+    } else if (integrity.ok !== null) {
+      lines.push("  INTEGRITY: ✓ clean.");
     }
     lines.push("");
-    lines.push("If the user says \"what is the error?\" or \"fix the error\", refer to the items above verbatim. Codes are real (C-class = concepts, F-class = forms/formMappings, R-class = rules, G-class = enums) — use them exactly as shown. Do not invent a code that is not in this list.");
+    lines.push("If the user says \"what is the error?\" or \"fix the error\", refer to the items above verbatim. Validator codes are real (C-class = concepts, F-class = forms/formMappings, R-class = rules, G-class = enums); integrity codes (FE_CONCEPT_NOT_OBJECT, ALT_INVALID_NAME, MISSING_REQUIRED_REF, DANGLING_REF) are the server-only traps. Use them exactly as shown. Do not invent a code that is not in this list. The bundle is NOT ready to export until BOTH sections are error-free.");
     text = lines.join("\n");
   }
   VALIDATOR_CACHE.set(id, { sha: headSha, text, ts: Date.now() });
@@ -425,7 +671,10 @@ export async function commitWorkspaceChanges(id, summary) {
   const newTurn = meta.currentTurn + 1;
   git(dir, "commit", "-m", `turn ${newTurn}: ${summary}`);
   const sha = git(dir, "rev-parse", "HEAD").trim();
-  const validation = summariseValidation(dir);
+  // FIX 1(a): fold deterministic integrity errors into the stored per-turn
+  // validation result so `validation.valid` is false whenever the bundle would
+  // fail on upload — even when the local validator is green.
+  const validation = summariseValidationWithIntegrity(dir);
   const rulesValidation = await summariseRules(dir);
   meta.currentTurn = newTurn;
   meta.validationAtCurrent = validation;

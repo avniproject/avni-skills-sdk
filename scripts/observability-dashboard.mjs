@@ -31,10 +31,23 @@ function arg(name, def) {
   return i < 0 ? def : process.argv[i + 1];
 }
 
+import fs from "node:fs";
+import path from "node:path";
+
 const SID = arg("session");
 const PORT = Number(arg("port", process.env.PORT || 3030));
 const REFRESH_MS = Number(arg("refresh", 2000));
 const BASE = `http://localhost:${PORT}`;
+
+// Eval pass-rate + cost panel (story #13). Reads the per-case JSONL the eval
+// runner appends when SDK_EVAL_RESULTS_JSONL is set (schema: one line per
+// counted case: { runId, model, date, name, category, status, cost, durationMs }).
+// API-free: this is a static file written by a prior budgeted eval run, never an
+// LLM call. Resolution order: --eval-jsonl arg > SDK_EVAL_RESULTS_JSONL env >
+// the conventional tests/eval/out/results.jsonl. Absent/empty → "no eval run yet".
+const SDK_DIR = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const EVAL_JSONL = arg("eval-jsonl",
+  process.env.SDK_EVAL_RESULTS_JSONL || path.join(SDK_DIR, "tests", "eval", "out", "results.jsonl"));
 
 if (!SID || !/^sess_[0-9a-f]{16}$/.test(SID)) {
   console.error(`
@@ -60,7 +73,8 @@ const agentTable = grid.set(0, 0, 6, 6, contrib.table, {
   label: " per-agent ",
   columnSpacing: 2,
   // Tight widths so the table fits in narrow tmux panes (~40-60 cols).
-  columnWidth: [12, 5, 4, 6, 5, 8],
+  // (schema_error column retired in #11 — the relay it counted is gone.)
+  columnWidth: [12, 5, 4, 6, 8],
   fg: "white",
   selectedFg: "white",
   selectedBg: "blue",
@@ -98,14 +112,24 @@ const failuresBox = grid.set(6, 0, 6, 6, blessed.box, {
   padding: { left: 1, right: 1 },
 });
 
-// Bottom-right (6 cols × 6 rows): recent steps tail.
+// Bottom-right, top half (6 cols × 3 rows): recent steps tail.
 // tags:true so the {gray-fg}/{green-fg}/{red-fg} icons render styled.
-const stepsLog = grid.set(6, 6, 6, 6, contrib.log, {
+const stepsLog = grid.set(6, 6, 3, 6, contrib.log, {
   label: " recent steps ",
   tags: true,
   fg: "white",
   selectedFg: "white",
   bufferLength: 200,
+});
+
+// Bottom-right, bottom half (6 cols × 3 rows): eval pass-rate + cost panel.
+// Static read of the eval results JSONL (story #13) — API-free.
+const evalBox = grid.set(9, 6, 3, 6, blessed.box, {
+  label: " eval ",
+  tags: true,
+  style: { fg: "white", border: { fg: "white" } },
+  border: { type: "line" },
+  padding: { left: 1, right: 1 },
 });
 
 // ─── Polling + rendering ────────────────────────────────────────────
@@ -125,6 +149,45 @@ async function fetchJson(p) {
 function fmtUsd(n) { return "$" + (n || 0).toFixed(4); }
 function fmtMs(n) { return n == null ? "?" : `${n}ms`; }
 function pad(s, w) { s = String(s); return s.length >= w ? s.slice(0, w) : s + " ".repeat(w - s.length); }
+
+// ─── Eval results reader (story #13) — API-free, static file ─────────
+// Parses the JSONL and returns, for the LATEST release, per-model
+// { pass, total, cost }, plus how many releases the file holds. Returns null
+// when the file is absent/empty/unparseable (caller shows "no eval run yet").
+function readEvalResults(jsonlPath) {
+  let raw;
+  try { raw = fs.readFileSync(jsonlPath, "utf8"); } catch { return null; }
+  const rows = [];
+  for (const line of raw.split("\n")) {
+    const s = line.trim();
+    if (!s) continue;
+    try { rows.push(JSON.parse(s)); } catch { /* skip malformed */ }
+  }
+  if (rows.length === 0) return null;
+
+  // A "release" = one runId (fallback to date). Pick the latest by date then runId.
+  const releaseKey = (r) => r.runId || r.date || "unknown";
+  const releases = [...new Set(rows.map(releaseKey))];
+  const sortStr = (r) => `${r.date || ""}|${r.runId || ""}`;
+  const latestRow = rows.reduce((a, b) => (sortStr(b) > sortStr(a) ? b : a), rows[0]);
+  const latestKey = releaseKey(latestRow);
+  const latestRows = rows.filter((r) => releaseKey(r) === latestKey);
+
+  const byModel = {};
+  for (const r of latestRows) {
+    const m = r.model || "unspecified";
+    if (!byModel[m]) byModel[m] = { pass: 0, total: 0, cost: 0 };
+    byModel[m].total += 1;
+    if (r.status === "pass") byModel[m].pass += 1;
+    byModel[m].cost += r.cost || 0;
+  }
+  return {
+    latestKey,
+    latestDate: latestRow.date || null,
+    releaseCount: releases.length,
+    byModel,
+  };
+}
 
 async function refresh() {
   const [diag, cost, steps] = await Promise.all([
@@ -159,13 +222,12 @@ async function refresh() {
       a.agent,
       String(a.turns),
       String(a.ok),
-      String(a.schema_error || 0),
       String(a.aborted || 0),
       fmtUsd(a.cost_usd),
     ]);
-    if (rows.length === 0) rows.push(["(no agent turns yet)", "", "", "", "", ""]);
+    if (rows.length === 0) rows.push(["(no agent turns yet)", "", "", "", ""]);
     agentTable.setData({
-      headers: ["agent", "turns", "ok", "schema", "abort", "cost"],
+      headers: ["agent", "turns", "ok", "abort", "cost"],
       data: rows,
     });
   }
@@ -180,14 +242,15 @@ async function refresh() {
   // ── Failures text listing — non-zero categories highlighted red.
   if (diag?.failures) {
     const f = diag.failures;
+    // (schema_errors category retired in #11.) Guard each with `|| []` so a
+    // future route trim can never crash the panel.
     const items = [
-      ["schema errors",     f.schemaErrors.length],
-      ["circuit breaks",    f.circuitBreaks.length],
-      ["agent errors",      f.agentErrors.length],
-      ["validator regress", f.validatorRegressions.length],
-      ["integrity issues",  f.integrityIssues.length],
-      ["semantic failures", f.semanticFailures.length],
-      ["ambiguity loops",   f.ambiguityLoops.length],
+      ["circuit breaks",    (f.circuitBreaks || []).length],
+      ["agent errors",      (f.agentErrors || []).length],
+      ["validator regress", (f.validatorRegressions || []).length],
+      ["integrity issues",  (f.integrityIssues || []).length],
+      ["semantic failures", (f.semanticFailures || []).length],
+      ["ambiguity loops",   (f.ambiguityLoops || []).length],
     ];
     const lines = items.map(([label, n]) => {
       const tag = n > 0 ? `{red-fg}{bold}${String(n).padStart(3)}{/}` : `{gray-fg}${String(n).padStart(3)}{/}`;
@@ -197,6 +260,39 @@ async function refresh() {
     lines.unshift(total > 0 ? `{red-fg}${total} total failure(s){/}` : `{green-fg}no failures yet{/}`);
     lines.splice(1, 0, "");
     failuresBox.setContent(lines.join("\n"));
+  }
+
+  // ── Eval pass-rate + cost panel (static JSONL read; API-free).
+  {
+    const ev = readEvalResults(EVAL_JSONL);
+    if (!ev) {
+      evalBox.setContent(
+        `{gray-fg}no eval run yet{/}\n\n` +
+        `  looked in:\n` +
+        `  {gray-fg}${EVAL_JSONL.replace(SDK_DIR + "/", "")}{/}\n\n` +
+        `  run a budgeted sweep with\n` +
+        `  {bold}SDK_EVAL_RESULTS_JSONL=<path> npm run eval{/}`
+      );
+    } else {
+      const models = Object.entries(ev.byModel).sort((a, b) => a[0].localeCompare(b[0]));
+      let tPass = 0, tTotal = 0, tCost = 0;
+      const lines = [
+        `{bold}latest run{/} ${ev.latestDate || ev.latestKey}` +
+          (ev.releaseCount > 1 ? ` {gray-fg}(+${ev.releaseCount - 1} older){/}` : ""),
+        "",
+      ];
+      for (const [m, s] of models) {
+        tPass += s.pass; tTotal += s.total; tCost += s.cost;
+        const pct = s.total ? Math.round((s.pass / s.total) * 100) : 0;
+        const tag = pct === 100 ? "{green-fg}" : pct >= 70 ? "{yellow-fg}" : "{red-fg}";
+        const label = m.replace(/^claude-/, "");
+        lines.push(`${tag}${String(s.pass)}/${String(s.total)} ${String(pct).padStart(3)}%{/}  ${pad(label, 20)} ${fmtUsd(s.cost)}`);
+      }
+      const tPct = tTotal ? Math.round((tPass / tTotal) * 100) : 0;
+      lines.push("");
+      lines.push(`{bold}total{/} ${tPass}/${tTotal} (${tPct}%) · ${fmtUsd(tCost)}`);
+      evalBox.setContent(lines.join("\n"));
+    }
   }
 
   // ── Steps log (tail only the new entries since last poll). Tight format

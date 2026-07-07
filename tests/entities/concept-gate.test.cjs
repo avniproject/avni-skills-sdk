@@ -85,7 +85,8 @@ test("violation message mentions both UUIDs + suggests reuse", async () => {
   assert.ok(msg.includes(UUID_A));
   assert.ok(msg.includes(UUID_B));
   assert.match(msg, /reuse/i);
-  assert.match(msg, /find-concept/i);
+  assert.match(msg, /bundle_find_concept/);
+  assert.doesNotMatch(msg, /\/Users\//); // no hardcoded absolute machine path
 });
 
 test("accepts dict-shaped concepts.json ({concepts: [...]})", async () => {

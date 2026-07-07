@@ -41,9 +41,7 @@ import { renderHeader, renderBundleStats, renderSuggestions } from "./cli/banner
 import { makeTurnsCommands }         from "./cli/commands/turns.mjs";
 import { makeRulesCommands }         from "./cli/commands/rules.mjs";
 import { makeAuditCommands }         from "./cli/commands/audit.mjs";
-import { makeWorkflowsCommands }     from "./cli/commands/workflows.mjs";
 import { makeObservabilityCommands } from "./cli/commands/observability.mjs";
-import { makeAgentsCommands }        from "./cli/commands/agents.mjs";
 import { makeSessionsCommands }      from "./cli/commands/sessions.mjs";
 import { makeDispatcher }            from "./cli/dispatch.mjs";
 
@@ -188,9 +186,7 @@ const commands = {
   turns:         makeTurnsCommands({ http, SDK_DIR }),
   rules:         makeRulesCommands({ http, SCRIPTS_DIR }),
   audit:         makeAuditCommands({ http, BASE }),
-  workflows:     makeWorkflowsCommands({ http }),
   observability: makeObservabilityCommands({ http }),
-  agents:        makeAgentsCommands({ http, BASE, state }),
   sessions:      makeSessionsCommands({ http, state, attachSession }),
 };
 const { handleLine } = makeDispatcher({ commands, sendMessage, state });

@@ -16,6 +16,7 @@
 
 module.exports = {
   name: "01-explain-c5-error",
+  category: "no-thrash",
   description:
     "Agent must quote the C5 validator error verbatim from the injected state — no rediscovery, no fabricated codes.",
 

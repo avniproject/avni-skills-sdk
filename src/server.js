@@ -5,9 +5,9 @@
 // full module map.
 //
 // Auth: BYO Anthropic key. Caller passes it as `Authorization: Bearer sk-ant-...`
-// for all /v1/agent/* and /v1/sessions/:id/{messages,agent-messages,evaluate}
+// for all /v1/agent/* and /v1/sessions/:id/{messages,evaluate}
 // endpoints. Deterministic endpoints (/v1/skills/*, /v1/bundles/generate,
-// /v1/sessions/:id/{edit,apply-spec,rules,...}) require no key.
+// /v1/sessions/:id/{edit,rules,...}) require no key.
 //
 // Endpoints (complete list registered by src/routes/index.js):
 //   GET    /health
@@ -28,9 +28,8 @@
 //   GET    /v1/sessions/:id/turns/:n/diff  unified diff for a turn
 //   POST   /v1/sessions/:id/edit        Wizard-of-Oz edit (no LLM): apply pre-supplied
 //                                        file changes as a turn. Body: { summary, edits }
-//   POST   /v1/sessions/:id/apply-spec  apply YAML spec via pipeline (deterministic)
-//   POST   /v1/sessions/:id/messages    Phase-4 agent edit (BYO key, SSE)
-//   POST   /v1/sessions/:id/agent-messages  WS5 multi-agent dispatch (BYO key, SSE)
+//   POST   /v1/sessions/:id/messages    agent edit (BYO key, SSE, single linear agent)
+//                                        (YAML-spec application: spec_apply MCP tool, not a route)
 //   GET    /v1/sessions/:id/{transcript,steps,cost,diagnostics}  observability
 //   GET    /v1/sessions/:id/rules                                rules-brain readers
 //   GET    /v1/sessions/:id/rules/validation

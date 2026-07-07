@@ -50,6 +50,17 @@ const CASES_DIR = path.join(__dirname, "cases");
 const APIKEY = process.env.ANTHROPIC_API_KEY || "";
 const BUDGET = Number(process.env.SDK_EVAL_BUDGET_USD || "5.00");
 const FILTER = process.env.SDK_EVAL_FILTER ? new RegExp(process.env.SDK_EVAL_FILTER) : null;
+// Story #13: per-model eval attribution for the model-qualification matrix.
+//   SDK_EVAL_MODEL         — pin the whole run to one model (recorded per case);
+//                            the matrix regenerator groups results by model.
+//   SDK_EVAL_RESULTS_JSONL — append one JSON line per counted case here so a
+//                            multi-model sweep accumulates into a single file
+//                            that `scripts/build-model-matrix.mjs --in` consumes.
+//   SDK_EVAL_RUN_ID        — override the auto run id (else eval-<ts>).
+const EVAL_MODEL = process.env.SDK_EVAL_MODEL || "";
+const RESULTS_JSONL = process.env.SDK_EVAL_RESULTS_JSONL || "";
+const RUN_ID = process.env.SDK_EVAL_RUN_ID || `eval-${Date.now()}${EVAL_MODEL ? "-" + EVAL_MODEL : ""}`;
+const RUN_DATE = new Date().toISOString().slice(0, 10);
 
 // ─── case discovery ────────────────────────────────────────────────
 
@@ -221,7 +232,7 @@ async function main() {
     let result;
     try {
       result = await runCase({
-        caseDef: def, http, apiKey: APIKEY, sessionsDir, envOverrides, log: () => {},
+        caseDef: def, http, apiKey: APIKEY, sessionsDir, envOverrides, evalModel: EVAL_MODEL, log: () => {},
       });
     } catch (e) {
       result = {
@@ -244,6 +255,25 @@ async function main() {
 
     results.push(result);
     runningCost += (result.cost || 0);
+
+    // Story #13: append this case to the results JSONL the matrix regenerator
+    // consumes. Only pass/fail are decisive; the regenerator ignores the rest.
+    if (RESULTS_JSONL && (result.status === "pass" || result.status === "fail")) {
+      try {
+        fs.appendFileSync(RESULTS_JSONL, JSON.stringify({
+          runId: RUN_ID,
+          model: result.model || EVAL_MODEL || null,
+          date: RUN_DATE,
+          name: result.name,
+          category: result.category || def.category || null,
+          status: result.status,
+          cost: result.cost || 0,
+          durationMs: result.durationMs || 0,
+        }) + "\n");
+      } catch (e) {
+        eprint(red(`  could not append to SDK_EVAL_RESULTS_JSONL (${RESULTS_JSONL}): ${e.message}`));
+      }
+    }
 
     const tag = result.status === "pass"
       ? green("PASS")
@@ -281,6 +311,8 @@ async function main() {
   const report = {
     cases: results.map((r) => ({
       name: r.name,
+      category: r.category || null,
+      model: r.model || null,
       status: r.status,
       turnsUsed: r.turnsUsed || 0,
       cost: r.cost || 0,
@@ -298,6 +330,10 @@ async function main() {
       totalDuration,
       budget: BUDGET,
       filter: FILTER ? FILTER.source : null,
+      runId: RUN_ID,
+      date: RUN_DATE,
+      model: EVAL_MODEL || null,
+      resultsJsonl: RESULTS_JSONL || null,
     },
   };
   process.stdout.write(JSON.stringify(report, null, 2) + "\n");

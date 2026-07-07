@@ -18,6 +18,7 @@
 
 module.exports = {
   name: "10-no-thrash",
+  category: "no-thrash",
   description:
     "Pure-question prompt → no edits, no thrash warning, bounded output tokens.",
 

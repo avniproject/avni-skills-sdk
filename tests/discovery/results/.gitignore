@@ -1,0 +1,3 @@
+# Discovery harness writes per-scenario + combined JSONL here at runtime.
+# Keep the directory tracked, ignore the generated results.
+*.jsonl

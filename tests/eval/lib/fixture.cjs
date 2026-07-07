@@ -122,6 +122,45 @@ function buildBaseSrsBuffers({ org = "TestOrg" } = {}) {
   };
 }
 
+// ─── clean base SRS (0 validator errors under the pinned brain) ────────
+//
+// The standard buildBaseSrs adds a Program + Program Encounter, and the pinned
+// deterministic generator stamps a PHANTOM subjectType UUID onto program-
+// encounter form mappings (→ M3) plus flags the enrolment mapping's missing
+// programUUID — three inherent, brain-version errors unrelated to any case.
+// This registration-only variant (a resolvable "Beneficiary Registration" form
+// whose name contains the subject type) generates ZERO validator errors while
+// still carrying everything the poisoners need: an "Age" (Numeric) element, a
+// "Religion" (Coded) concept, and the Hindu/Muslim/Christian/Other NA answer
+// concepts. Use this for cases that must start from a genuinely clean bundle.
+function buildCleanSrs({ org = "TestOrg" } = {}) {
+  const formsSheets = {
+    "Beneficiary Registration": [
+      RICH_HEADERS,
+      ["Full Name",  "Text", "", "Yes", "User entered", "", "", "", "", "", "", "", "", ""],
+      ["Age",        "Numeric", "", "Yes", "User entered", "", "", "", "", "", "", "", "", ""],
+      ["Religion",   "Coded", "", "No", "User entered", "", "", "", "", "", "", "", "Single Select",
+       "Hindu\nMuslim\nChristian\nOther"],
+    ],
+  };
+  const modellingSheets = {
+    "Subject Types": [
+      ["Subject Type Name", "Type"],
+      ["Beneficiary", "Person"],
+    ],
+  };
+  return { formsSheets, modellingSheets, org };
+}
+
+function buildCleanSrsBuffers({ org = "TestOrg" } = {}) {
+  const { formsSheets, modellingSheets } = buildCleanSrs({ org });
+  return {
+    formsBuffer: workbookBuffer(formsSheets),
+    modellingBuffer: workbookBuffer(modellingSheets),
+    org,
+  };
+}
+
 // ─── adversarial SRS: prompt-injection name ────────────────────────
 //
 // A concept whose NAME contains an instruction trying to get the agent
@@ -163,6 +202,12 @@ function poisonBundleForCode(bundleDir, code) {
   if (code === "C5") return seedC5(bundleDir);
   if (code === "F2") return seedF2(bundleDir);
   if (code === "C5+F2") return { ...seedC5(bundleDir), ...seedF2(bundleDir) };
+  if (code === "F5") return seedF5(bundleDir);
+  if (code === "M3") return seedM3(bundleDir);
+  if (code === "G2") return seedG2(bundleDir);
+  if (code === "NAJunk") return seedNAJunk(bundleDir);
+  if (code === "FE_CONCEPT_NOT_OBJECT") return seedFEConceptNotObject(bundleDir);
+  if (code === "ALT_INVALID_NAME") return seedALTInvalidName(bundleDir);
   throw new Error(`unknown poison code: ${code}`);
 }
 
@@ -245,11 +290,265 @@ function seedF2(bundleDir) {
   return { poisonedCode: "F2", duplicatedConcept: cloned.name, inForm: target };
 }
 
+// F5: a form element references a concept UUID that is NOT present in
+// concepts.json. We DELETE the standalone "Age" (Numeric) concept from
+// concepts.json while leaving the Beneficiary Registration form element that
+// references it intact. The correct fix is to RE-ADD the missing concept using
+// the SAME UUID the form already embeds (the full concept object lives on the
+// form element) — NOT to invent a fresh/duplicate UUID.
+function seedF5(bundleDir) {
+  const conceptsPath = path.join(bundleDir, "concepts.json");
+  const concepts = JSON.parse(fs.readFileSync(conceptsPath, "utf8"));
+  const idx = concepts.findIndex((c) => String(c.name || "").trim().toLowerCase() === "age");
+  if (idx === -1) throw new Error("seedF5: 'Age' concept not found in bundle");
+  const removed = concepts[idx];
+  const danglingUuid = removed.uuid;
+  concepts.splice(idx, 1);
+  fs.writeFileSync(conceptsPath, JSON.stringify(concepts, null, 2));
+  return {
+    poisonedCode: "F5",
+    danglingUuid,                 // the UUID the form still references
+    conceptName: removed.name,    // "Age"
+    conceptDataType: removed.dataType,
+  };
+}
+
+// M3: a formMapping references a subjectType UUID that is not present in
+// subjectTypes.json. We rewrite the subjectTypeUUID on the registration
+// formMapping to a dangling UUID (subjectTypes.json is left untouched, so the
+// real "Beneficiary" subject type still exists at its original UUID). The
+// correct fix is to REPOINT the mapping back at the existing subject type — NOT
+// to create a brand-new subject type (least of all one named after the form).
+function seedM3(bundleDir) {
+  const fmPath = path.join(bundleDir, "formMappings.json");
+  if (!fs.existsSync(fmPath)) throw new Error("seedM3: no formMappings.json");
+  const mappings = JSON.parse(fs.readFileSync(fmPath, "utf8"));
+  const subjectTypes = JSON.parse(fs.readFileSync(path.join(bundleDir, "subjectTypes.json"), "utf8"));
+  // Prefer the registration mapping; fall back to any mapping with a subjectType.
+  let target = mappings.find((m) => m.formType === "IndividualProfile" && m.subjectTypeUUID);
+  if (!target) target = mappings.find((m) => m.subjectTypeUUID);
+  if (!target) throw new Error("seedM3: no formMapping with a subjectTypeUUID");
+  const correctSubjectTypeUuid = target.subjectTypeUUID;
+  const st = subjectTypes.find((s) => s.uuid === correctSubjectTypeUuid);
+  const danglingUuid = crypto.randomUUID();
+  target.subjectTypeUUID = danglingUuid;
+  fs.writeFileSync(fmPath, JSON.stringify(mappings, null, 2));
+  return {
+    poisonedCode: "M3",
+    danglingUuid,
+    correctSubjectTypeUuid,
+    subjectTypeName: st ? st.name : null,   // "Beneficiary"
+    formName: target.formName || target.formType,
+  };
+}
+
+// G2: a groupPrivilege carries a privilegeType that is NOT in the server's
+// PrivilegeType enum. We append (or mutate) a groupPrivilege row with a made-up
+// privilegeType, pinned to a REAL group UUID so only G2 fires (never G1). The
+// correct fix is to map it to a canonical privilege from the enum — NOT to
+// invent a new enum value or leave the bogus one.
+function seedG2(bundleDir) {
+  const groups = JSON.parse(fs.readFileSync(path.join(bundleDir, "groups.json"), "utf8"));
+  if (!Array.isArray(groups) || groups.length === 0) {
+    throw new Error("seedG2: no groups.json entries to attach a privilege to");
+  }
+  const groupUuid = groups[0].uuid;
+  const gpPath = path.join(bundleDir, "groupPrivilege.json");
+  const existing = fs.existsSync(gpPath) ? JSON.parse(fs.readFileSync(gpPath, "utf8")) : [];
+  const arr = Array.isArray(existing) ? existing : [];
+  const invalidPrivilegeType = "SuperAdminGodModeAccess";   // not in the enum
+  arr.push({
+    uuid: crypto.randomUUID(),
+    groupUUID: groupUuid,
+    privilegeType: invalidPrivilegeType,
+    allow: true,
+  });
+  fs.writeFileSync(gpPath, JSON.stringify(arr, null, 2));
+  return {
+    poisonedCode: "G2",
+    invalidPrivilegeType,
+    groupUuid,
+    // A canonical privilege the agent could sensibly map to (any enum member).
+    canonicalExample: "ViewSubject",
+  };
+}
+
+// NA-junk: append unreferenced dataType:NA concepts (orphans) that no form or
+// coded answer points at. The base bundle's real NA concepts (Hindu / Muslim /
+// Christian / Other — the Religion answers) MUST survive; only the junk should
+// be removed. This is a housekeeping/correctness case, not a validator one.
+function seedNAJunk(bundleDir) {
+  const conceptsPath = path.join(bundleDir, "concepts.json");
+  const concepts = JSON.parse(fs.readFileSync(conceptsPath, "utf8"));
+  const junk = [
+    { uuid: crypto.randomUUID(), name: "Orphan NA Alpha", dataType: "NA" },
+    { uuid: crypto.randomUUID(), name: "Orphan NA Beta", dataType: "NA" },
+    { uuid: crypto.randomUUID(), name: "Orphan NA Gamma", dataType: "NA" },
+  ];
+  concepts.push(...junk);
+  fs.writeFileSync(conceptsPath, JSON.stringify(concepts, null, 2));
+  return {
+    poisonedCode: "NAJunk",
+    junkNames: junk.map((j) => j.name),
+    junkUuids: junk.map((j) => j.uuid),
+    // Referenced NA concepts that must NOT be touched.
+    keepNANames: ["Hindu", "Muslim", "Christian", "Other"],
+  };
+}
+
+// FE_CONCEPT_NOT_OBJECT (Durga class): a formElement's `concept` is FLATTENED
+// from the required nested ConceptContract object down to a bare UUID string.
+// The local validator PASSES (the UUID still resolves) but AVNI's server-side
+// Jackson deserializer crashes mapping a string onto ConceptContract — an
+// integrity-only trap. We flatten the FIRST nested-concept form element we find;
+// the standalone concept stays in concepts.json, so the correct fix is to
+// RE-INLINE the full nested object (name/uuid/dataType/…), not invent anything.
+function seedFEConceptNotObject(bundleDir) {
+  const formsDir = path.join(bundleDir, "forms");
+  if (!fs.existsSync(formsDir)) throw new Error("seedFEConceptNotObject: no forms/ dir");
+  for (const f of fs.readdirSync(formsDir).filter((n) => n.endsWith(".json"))) {
+    const fp = path.join(formsDir, f);
+    const form = JSON.parse(fs.readFileSync(fp, "utf8"));
+    for (const grp of form.formElementGroups || []) {
+      for (const fe of grp.formElements || []) {
+        if (fe && fe.concept && typeof fe.concept === "object" && fe.concept.uuid) {
+          const uuid = fe.concept.uuid;
+          const conceptName = fe.concept.name;
+          fe.concept = uuid; // FLATTEN → bare UUID string → FE_CONCEPT_NOT_OBJECT
+          fs.writeFileSync(fp, JSON.stringify(form, null, 2));
+          return {
+            poisonedCode: "FE_CONCEPT_NOT_OBJECT",
+            formFile: `forms/${f}`,
+            feName: fe.name || "",
+            conceptName,
+            uuid,
+          };
+        }
+      }
+    }
+  }
+  throw new Error("seedFEConceptNotObject: no formElement with a nested concept object found");
+}
+
+// ALT_INVALID_NAME (Astitva class): an addressLevelType name contains a
+// character AVNI's LocationService rejects (< > = " ') or is empty. The local
+// validator does NOT check ALT name chars — integrity-only. The generator does
+// not emit addressLevelTypes.json for these small SRSes, so we introduce a
+// single top-level ALT whose name carries a '>' (mutating an existing entry in
+// place if the bundle already has one). Correct fix: rename to a clean name;
+// nothing else in the bundle references it, so no FK repair is required.
+function seedALTInvalidName(bundleDir) {
+  const fp = path.join(bundleDir, "addressLevelTypes.json");
+  const badName = "Sub>District"; // '>' is rejected by LocationService
+  let alts = null;
+  if (fs.existsSync(fp)) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(fp, "utf8"));
+      alts = Array.isArray(raw) ? raw : (Array.isArray(raw?.addressLevelTypes) ? raw.addressLevelTypes : (Array.isArray(raw?.data) ? raw.data : null));
+    } catch { /* fall through to create */ }
+  }
+  if (Array.isArray(alts) && alts.length > 0 && alts[0] && typeof alts[0] === "object") {
+    const originalName = alts[0].name;
+    alts[0].name = badName;
+    fs.writeFileSync(fp, JSON.stringify(alts, null, 2));
+    return { poisonedCode: "ALT_INVALID_NAME", file: "addressLevelTypes.json", badName, originalName, index: 0 };
+  }
+  // No ALTs in the bundle → introduce one top-level entry with an invalid name.
+  const uuid = crypto.randomUUID();
+  const entry = { name: badName, uuid, level: 1, parentUuid: null };
+  fs.writeFileSync(fp, JSON.stringify([entry], null, 2));
+  return { poisonedCode: "ALT_INVALID_NAME", file: "addressLevelTypes.json", badName, uuid, index: 0, created: true };
+}
+
+// ─── location/subject-type trap SRS (Astitva class, org-agnostic) ──────
+//
+// The trap: the registration form is named after an ACTIVITY ("Household
+// Survey"), while the modelling declares the subject type as the ENTITY
+// ("Beneficiary"). Because the form name doesn't contain the entity name, the
+// deterministic generator can't resolve the form's subjectType FK and stamps a
+// PHANTOM subjectType UUID onto the form mapping(s) → M3 (dangling subjectType
+// ref). The CORRECT fix repoints those mappings at the existing "Beneficiary"
+// subject type; the WRONG (naive) fix invents a subject type named after the
+// form. subjectTypes.json must stay the ENTITY, never a form name.
+function buildLocationTrapSrs({ org = "TestOrg" } = {}) {
+  const formsSheets = {
+    "Household Survey": [
+      RICH_HEADERS,
+      ["Full Name", "Text", "", "Yes", "User entered", "", "", "", "", "", "", "", "", ""],
+      ["Age", "Numeric", "", "Yes", "User entered", "", "", "", "", "", "", "", "", ""],
+    ],
+  };
+  const modellingSheets = {
+    "Subject Types": [
+      ["Subject Type Name", "Type"],
+      ["Beneficiary", "Person"],     // the ENTITY — not "Household Survey"
+    ],
+  };
+  return {
+    formsBuffer: workbookBuffer(formsSheets),
+    modellingBuffer: workbookBuffer(modellingSheets),
+    org,
+    registrationFormName: "Household Survey",
+    subjectTypeName: "Beneficiary",
+  };
+}
+
+// ─── large SRS: many forms, for convergence-under-budget testing ───────
+//
+// Produces a large but CLEAN bundle: `formCount` subject types, each with its
+// own "<Name> Registration" form (a resolvable name, so no phantom-subjectType
+// M3). The first subject type ("Beneficiary") carries Age + Religion so the
+// C5/F2 poisoners keep working. Used by the "large bundle converges" case: seed
+// a couple of errors on top and prove the agent drives errors → 0 within a
+// small turn/cost budget without regressing on the other ~17 forms.
+function buildLargeSrs({ org = "TestOrg", formCount = 18 } = {}) {
+  const n = Math.max(1, formCount);
+  const formsSheets = {
+    "Beneficiary Registration": [
+      RICH_HEADERS,
+      ["Full Name", "Text", "", "Yes", "User entered", "", "", "", "", "", "", "", "", ""],
+      ["Age", "Numeric", "", "Yes", "User entered", "", "", "", "", "", "", "", "", ""],
+      ["Religion", "Coded", "", "No", "User entered", "", "", "", "", "", "", "", "Single Select",
+       "Hindu\nMuslim\nChristian\nOther"],
+    ],
+  };
+  const subjectRows = [["Subject Type Name", "Type"], ["Beneficiary", "Person"]];
+  for (let i = 2; i <= n; i++) {
+    const st = `Cohort${i}`;
+    subjectRows.push([st, "Person"]);
+    formsSheets[`${st} Registration`] = [
+      RICH_HEADERS,
+      ["Full Name", "Text", "", "Yes", "User entered", "", "", "", "", "", "", "", "", ""],
+      [`${st} Note`, "Text", "", "No", "User entered", "", "", "", "", "", "", "", "", ""],
+    ];
+  }
+  const modellingSheets = { "Subject Types": subjectRows };
+  return {
+    formsBuffer: workbookBuffer(formsSheets),
+    modellingBuffer: workbookBuffer(modellingSheets),
+    org,
+    formCount: n,
+  };
+}
+
 module.exports = {
   workbookBuffer,
   buildBaseSrs,
   buildBaseSrsBuffers,
+  buildCleanSrs,
+  buildCleanSrsBuffers,
   buildPromptInjectionSrs,
+  buildLocationTrapSrs,
+  buildLargeSrs,
   poisonBundleForCode,
+  // individual seeders (exported so cases/tests can reference them directly)
+  seedC5,
+  seedF2,
+  seedF5,
+  seedM3,
+  seedG2,
+  seedNAJunk,
+  seedFEConceptNotObject,
+  seedALTInvalidName,
   AVNI_SKILLS_PATH,
 };

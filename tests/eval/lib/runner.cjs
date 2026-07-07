@@ -56,11 +56,14 @@ function makeHttp(base) {
   };
 }
 
-async function createSession(http, { formsBuffer, modellingBuffer, org }) {
+async function createSession(http, { formsBuffer, modellingBuffer, org, mode }) {
   const fd = new FormData();
   fd.set("forms", new Blob([formsBuffer]), "forms.xlsx");
   if (modellingBuffer) fd.set("modelling", new Blob([modellingBuffer]), "modelling.xlsx");
   fd.set("org", org || "TestOrg");
+  // story #12: mode:'agent' starts an EMPTY workspace with the SRS in input/;
+  // default (omitted) is baseline (deterministic generator at turn 0).
+  if (mode) fd.set("mode", mode);
   return http.postMultipart("/v1/sessions", fd);
 }
 
@@ -122,6 +125,10 @@ async function dispatchPrompt({ http, sid, prompt, apiKey, model, timeoutMs }) {
   let costUsd = 0;
   let inputTokens = 0, outputTokens = 0;
   let lastEventTs = Date.now();
+  // Story #13: the server's `start` SSE event reports the model selectModel()
+  // actually chose (respecting SDK_MODEL / caller model / matrix). Capturing it
+  // lets the model-matrix regenerator attribute each case result to a model.
+  let serverModel = null;
 
   while (true) {
     const { value, done } = await reader.read();
@@ -135,7 +142,9 @@ async function dispatchPrompt({ http, sid, prompt, apiKey, model, timeoutMs }) {
       let data;
       try { data = JSON.parse(dataLine); } catch { continue; }
       lastEventTs = Date.now();
-      if (evName === "agent") {
+      if (evName === "start") {
+        if (data && typeof data.model === "string") serverModel = data.model;
+      } else if (evName === "agent") {
         agentEvents.push(data);
         if (data.type === "result" && typeof data.total_cost_usd === "number") {
           costUsd = data.total_cost_usd;
@@ -166,16 +175,18 @@ async function dispatchPrompt({ http, sid, prompt, apiKey, model, timeoutMs }) {
     inputTokens,
     outputTokens,
     lastEventTs,
+    serverModel,
   };
 }
 
 // ─── one-case driver ───────────────────────────────────────────────
 
-async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, log = () => {} }) {
+async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, evalModel = "", log = () => {} }) {
   const start = Date.now();
   if (caseDef.pending) {
     return {
       name: caseDef.name,
+      category: caseDef.category || null,
       status: "pending",
       pendingReason: caseDef.pendingReason || "not yet implemented",
       durationMs: Date.now() - start,
@@ -200,11 +211,13 @@ async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, 
   }
   const { formsBuffer, modellingBuffer, org = "TestOrg" } = fx;
   if (!formsBuffer) return errResult(caseDef, "setupFixture didn't return formsBuffer", start);
+  // story #12: a case may pin the session mode ('agent' | 'baseline'); default baseline.
+  const sessionMode = caseDef.mode || fx.mode;
 
   // 2. Create session
   let session;
   try {
-    session = await createSession(http, { formsBuffer, modellingBuffer, org });
+    session = await createSession(http, { formsBuffer, modellingBuffer, org, mode: sessionMode });
   } catch (e) {
     return errResult(caseDef, `create session failed: ${e.message}`, start);
   }
@@ -234,14 +247,30 @@ async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, 
     } catch { return null; }
   })();
 
-  // 5. Dispatch the prompt
+  // Pre-dispatch validator snapshot — the BASELINE. Cases assert on the DELTA
+  // the agent is responsible for (assertNoValidatorRegression), so inherent
+  // fixture/brain-version errors that predate the turn never cause a false fail.
+  let baselineValidator = { errors: 0, warnings: 0, groups: {} };
+  try {
+    const meta = await http.getJson(`/v1/sessions/${sid}`);
+    baselineValidator = meta.validationAtCurrent || meta.validation || baselineValidator;
+  } catch { /* best-effort — leave the empty baseline */ }
+
+  // 5. Dispatch the prompt. FIX 3 (#13 review): a per-case `caseDef.model` is an
+  // EXPLICIT per-request pin (e.g. a frontier-only case) and must WIN over the
+  // run-wide SDK_EVAL_MODEL (evalModel) — otherwise a broad `SDK_EVAL_MODEL=haiku`
+  // sweep silently contaminates a case that pinned a frontier model. SDK_EVAL_MODEL
+  // still pins every case that does NOT set its own model. Absent both, the server
+  // selects via the matrix and the chosen model is captured from the `start`
+  // event (dispatch.serverModel).
+  const dispatchModel = caseDef.model || evalModel || undefined;
   let dispatch;
   try {
     dispatch = await dispatchPrompt({
       http, sid,
       prompt: caseDef.prompt,
       apiKey,
-      model: caseDef.model,
+      model: dispatchModel,
       timeoutMs: caseDef.timeoutMs || 180_000,
     });
   } catch (e) {
@@ -276,6 +305,7 @@ async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, 
     inputTokens: dispatch.inputTokens,
     outputTokens: dispatch.outputTokens,
     preDispatchSha,
+    baselineValidator,
     assertions,
     envOverrides,
     async getValidator() {
@@ -318,9 +348,12 @@ async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, 
   }
 
   const durationMs = Date.now() - start;
+  const usedModel = dispatch.serverModel || dispatchModel || null;
   if (assertErr) {
     return {
       name: caseDef.name,
+      category: caseDef.category || null,
+      model: usedModel,
       status: "fail",
       error: assertErr.message,
       stack: assertErr.stack,
@@ -335,6 +368,8 @@ async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, 
 
   return {
     name: caseDef.name,
+    category: caseDef.category || null,
+    model: usedModel,
     status: "pass",
     turnsUsed: dispatch.turnEvent?.noChanges ? 0 : 1,
     cost: dispatch.costUsd,
@@ -348,6 +383,8 @@ async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, 
 function errResult(caseDef, message, start, extra = {}) {
   return {
     name: caseDef.name,
+    category: caseDef.category || null,
+    model: extra.dispatch?.serverModel || null,
     status: "fail",
     error: message,
     turnsUsed: 0,

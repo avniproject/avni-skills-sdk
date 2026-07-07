@@ -18,15 +18,13 @@ avni-skills-sdk (this repo, body)
   │     ├── bundles.js              ← POST /v1/bundles/generate
   │     ├── agent-query.js          ← POST /v1/agent/query
   │     ├── sessions-lifecycle.js   ← POST/GET/DELETE /v1/sessions + files + turns + diff + zip + revert
-  │     ├── sessions-edit.js        ← POST /:id/edit + POST /:id/apply-spec
-  │     ├── sessions-messages.js    ← /:id/messages (Phase 4) + /:id/agent-messages (WS5)
+  │     ├── sessions-edit.js        ← POST /:id/edit (Wizard-of-Oz; apply-spec route retired in #11 → spec_apply MCP tool)
+  │     ├── sessions-messages.js    ← /:id/messages (single linear agent, slim contract)
   │     ├── sessions-observability.js ← /:id/{transcript,steps,cost,diagnostics}
   │     ├── sessions-rules.js       ← /:id/rules + /rules/validation + PUT /rules
   │     └── sessions-summary-evaluate.js  ← /summary, /evaluate, /wallet[/reset]
   ├── src/middleware/multipart.js ← small multipart parser (used by /bundles/generate)
   ├── src/pipeline.js            ← WS2 orchestrator: parse YAML → materialise rules → patch
-  ├── src/agent-output-schema.js ← WS5 structured-output contract + validator
-  ├── src/agents/                ← WS5 agent configs (spec / bundle-config / review)
   ├── src/skills.js              ← reads avni-skills/*/SKILL.md + bundle-authoring filter
   ├── src/bundle.js              ← wraps avni-skills's generator + validator
   ├── src/workspace.js           ← stages avni-skills as .claude/skills/ for the SDK
@@ -38,13 +36,14 @@ avni-skills-sdk (this repo, body)
   ├── src/locks.js               ← per-session async mutex (serialises concurrent writes)
   ├── src/logging.js             ← structured logger (one place for rate-limit/prune/security events)
   ├── src/middleware/rate-limit.js ← per-IP rate-limit middleware (429s logged)
-  ├── src/security/post-turn-detector.js ← diffs the working tree after each turn,
-  │                                  reverts out-of-scope writes, rejects the turn
+  ├── src/security/post-turn-detector.js ← after each turn, reverts commits authored
+  │                                  by a non-server identity and rejects the turn
   ├── src/agents/bundle-mcp-server.js     ← per-request factory createBundleMcpServer(bundleCwd)
-  │                                  exposes 4 in-process MCP tools to the agent
+  │                                  exposes 10 in-process MCP tools to the agent
   ├── src/agents/bundle-mcp-tool-names.js ← FROZEN tool-name constants (see rule §7)
-  ├── src/agent.js               ← Claude Agent SDK wrapper (BYO key)
-  ├── src/router.js              ← prompt → model routing (haiku ↔ sonnet)
+  ├── src/agent.js               ← Claude Agent SDK wrapper (BYO key); slim outcome
+  │                                  contract (default) / legacy hard rules (SDK_LEGACY_RULES=1);
+  │                                  open tool set; defaultModel() (SDK_MODEL override)
   ├── src/rules-brain/           ← R1–R6 acorn-based JS-rule validator + vendored
   │                                  rules-config DeclarativeRuleHolder
   ├── scripts/sdk-cli.mjs        ← thin REPL entrypoint (args + boot + readline loop)
@@ -61,11 +60,12 @@ avni-skills-sdk (this repo, body)
         ├── dispatch.mjs           ← makeDispatcher — ":command args" routing
         └── commands/              ← REPL command bundles (factory functions)
               ├── turns.mjs           ← :turns, :diff, :files, :read, :state, :revert, :zip
-              ├── rules.mjs           ← :rules, :rulev, :refs, :rename, :add-form
+              ├── rules.mjs           ← :rules, :rulev, :refs
               ├── audit.mjs           ← :summary, :eval
               ├── workflows.mjs       ← :apply
-              ├── observability.mjs   ← :transcript, :steps, :cost, :changes, :diag
-              └── agents.mjs          ← :agent, :model
+              └── observability.mjs   ← :transcript, :steps, :cost, :changes, :diag
+              (:model is an inline override in dispatch.mjs; the :agent/:rename/:add-form
+               deterministic-edit commands were retired in story #11)
   └── tests/eval/                ← real-LLM regression scenarios (gated on
                                     SDK_EVAL_BUDGET_USD + ANTHROPIC_API_KEY);
                                     the ONLY place model behaviour is exercised
@@ -139,16 +139,16 @@ If you find yourself reaching for a hardcoded fallback, the SRS author needs to 
 
 ### 5b. Adding / editing is the agent's job, not a CLI command
 
-When a user asks to add a subject type, program, encounter type, concept, or form, **do not reach for a workflow script as a user-facing command**. The flow is: agent reads the current bundle → case-insensitive name lookup → upsert (update in place if exists, append otherwise, copying field shapes from existing neighbours verbatim) → Edit/Write back → server commits the diff as a new turn. See `BUNDLE_HARD_RULES` rule #5 in `src/agent.js`.
+When a user asks to add a subject type, program, encounter type, concept, or form, **do not reach for a workflow script as a user-facing command**. The flow is: agent reads the current bundle → case-insensitive name lookup → upsert (update in place if exists, append otherwise, copying field shapes from existing neighbours verbatim) → Edit/Write back → server commits the diff as a new turn. The deterministic edit scripts (`add-form` / `add-subject-type` / `rename-concept-uuid`) were retired in story #11 — the slim `BUNDLE_OUTCOME_CONTRACT` (items 4–6) states the required end-state, and the deterministic gates (`bundle_integrity_check`, the yaml-driven graph, the concept-collision interceptor, the post-turn detector) catch any bad mutation. Only `scripts/recovery/fix-formelement-concept-shape.mjs` (the Durga recovery primitive) survives.
 
-For the **{add-form, find-concept}** path specifically the agent SHOULD prefer the in-process MCP tools over raw Bash or workflow scripts:
+For concept lookup + validation the agent SHOULD prefer the in-process MCP tools over raw Bash:
 
 - `mcp__avni-bundle__bundle_find_concept` — case-insensitive concept lookup by name or UUID (replaces `Bash grep`)
 - `mcp__avni-bundle__bundle_validator_run` — validator with structured output (replaces `Bash node …/bundle_validator.js`)
 - `mcp__avni-bundle__bundle_summary` — deterministic anomaly summary
 - `mcp__avni-bundle__bundle_export_to_path` — path-jailed ZIP export
 
-These give atomicity + auditability for free; the corresponding `scripts/workflows/*.mjs` scripts remain available as deterministic primitives the agent MAY invoke via Bash when the MCP tool doesn't cover the shape, but they are not the primary surface.
+These give atomicity + auditability for free.
 
 ### 6. The lockfile is committed
 
@@ -167,17 +167,20 @@ These strings appear verbatim in every persisted `transcript.jsonl` and `steps.j
 
 ### 8. Code-enforced rules vs prompt rules
 
-`BUNDLE_HARD_RULES` (in `src/agent.js`) is guidance injected into the agent's system prompt. The model is *asked* to follow it. Items 10–12 of those rules are ALSO enforced by code, independent of prompt drift:
+The active rules block (in `src/agent.js`) is the slim `BUNDLE_OUTCOME_CONTRACT` — guidance injected into the agent's system prompt, stating the required end-state. It became the default in story #11; the full legacy `BUNDLE_HARD_RULES` prose is kept behind the `SDK_LEGACY_RULES=1` backout (see `activeRulesBlock()`). Crucially, every invariant either block describes is ALSO enforced by code, independent of prompt drift — the prose is now a thin layer over deterministic gates:
 
 | Rule intent | Code that enforces it |
 |---|---|
 | No destructive shell (git writes, `rm -rf`, `sudo`) | PreToolUse Bash hook in `src/agent.js` |
 | No out-of-scope file mutations per turn | `src/security/post-turn-detector.js` — diffs working tree post-turn, reverts violations, rejects the turn |
+| `formElement.concept` shape + `addressLevelType` name chars (server rejects, validator doesn't) | `bundle_integrity_check` (FE_CONCEPT_NOT_OBJECT + ALT_INVALID_NAME), **now a code-enforced commit/export gate** — its error findings are folded into the per-turn validation state at commit (`summariseIntegrity` in `src/sessions.js`, surfaced to the agent every turn) and are a **hard ship gate** at export (`exportBundleToPath` / `bundle_export_to_path` refuses to zip on any severity:error finding). No longer prose/tool-only. |
+| Dangling UUID refs / FK coherence | yaml-driven bundle graph + validator + `bundle_integrity_check` (MISSING_REQUIRED_REF = error, blocks export; DANGLING_REF = warning) |
+| C3/D1 case-insensitive concept-name collisions | concept-collision interceptor + `bundle_find_concept` |
 | ZIP export must land inside an allowlisted path | Path-jail in `src/agents/bundle-mcp-server.js` (`bundle_export_to_path`) — allowlist: `~/Desktop`, `~/Downloads`, `~/Documents`, `~/.avni-skills-sdk/exports`, `$SDK_EXPORT_DIR` |
 | No concurrent writes to the same session | Per-session async mutex in `src/locks.js` |
 | Inbound traffic capped | Per-IP rate-limit middleware in `src/middleware/rate-limit.js` |
 
-When you add a new rule: if it is safety-critical, write the code-enforcement first and link it from `BUNDLE_HARD_RULES`. Prompt-only rules are documentation of intent, not guarantees.
+When you add a new rule: if it is safety-critical, write the code-enforcement first and link it from the outcome contract. Prompt-only rules are documentation of intent, not guarantees.
 
 ---
 

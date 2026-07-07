@@ -91,7 +91,8 @@ test("cost.jsonl persists the agent field across process restart", async () => {
 // We replicate the rules here as a guard against accidental changes.
 
 function classifyFailures(turnCommits) {
-  const schemaErrors        = turnCommits.filter((e) => (e.schemaErrors || []).length > 0);
+  // schema_errors (relay AGENT_OUTPUT_SCHEMA violations) was retired in #11 —
+  // a single linear agent has no output-schema contract to break.
   const circuitBreaks       = turnCommits.filter((e) => e.aborted);
   const integrityIssues     = turnCommits.filter((e) => e.integrity && !e.integrity.ok);
 
@@ -114,20 +115,8 @@ function classifyFailures(turnCommits) {
     }
   }
 
-  return { schemaErrors, circuitBreaks, integrityIssues, validatorRegressions, semanticFailures };
+  return { circuitBreaks, integrityIssues, validatorRegressions, semanticFailures };
 }
-
-test("diagnostics: schema_errors flagged when turn_commit has non-empty schemaErrors", () => {
-  const events = [
-    { turn: 1, agent: "spec", schemaErrors: ["no json block found"] },
-    { turn: 2, agent: "spec", schemaErrors: [] },
-    { turn: 3, agent: "bundle-config", schemaErrors: ["intent: required"] },
-  ];
-  const f = classifyFailures(events);
-  assert.equal(f.schemaErrors.length, 2);
-  assert.equal(f.schemaErrors[0].turn, 1);
-  assert.equal(f.schemaErrors[1].turn, 3);
-});
 
 test("diagnostics: circuit_breaks flagged when aborted=true on turn_commit", () => {
   const events = [
@@ -198,7 +187,6 @@ test("diagnostics: clean session reports zero failures across all categories", (
     },
   ];
   const f = classifyFailures(events);
-  assert.equal(f.schemaErrors.length, 0);
   assert.equal(f.circuitBreaks.length, 0);
   assert.equal(f.validatorRegressions.length, 0);
   assert.equal(f.integrityIssues.length, 0);

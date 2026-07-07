@@ -1,0 +1,164 @@
+# spec-format.yaml — machine-readable Avni bundle entity contract.
+#
+# A compact, declarative map: entity → file, required keys, FK fields, and the
+# closed enum sets. Companion to entity-shapes.md (the human-readable version)
+# and fk-matrix.yaml (the canonical FK/edge rules). This file is hand-authored
+# reference for the avni-bundle-spec skill; the FK matrix is the source of truth
+# for edge presence — when they disagree, fk-matrix.yaml wins.
+#
+# `fkFields` map: field → { target, presence }. presence is required | optional |
+# conditional (conditional = decided by the carrying form's formType — see
+# fk-matrix.yaml formTypes block).
+
+version: 1
+
+entities:
+  concept:
+    file: concepts.json
+    shape: array
+    requiredKeys: [name, uuid, dataType]
+    uniqueBy: { name: case-insensitive, uuid: exact }   # C3/D1, D2
+    enums:
+      dataType: &dataType
+        - Numeric
+        - Text
+        - Notes
+        - Coded
+        - NA
+        - Date
+        - DateTime
+        - Time
+        - Duration
+        - Image
+        - ImageV2
+        - Id
+        - Video
+        - Subject
+        - Location
+        - PhoneNumber
+        - GroupAffiliation
+        - Audio
+        - File
+        - QuestionGroup
+        - Encounter
+    notes:
+      - "Coded concepts carry answers[]; each answer.uuid must resolve to a standalone concept (C5)."
+      - "A name used as a question concept may not also be an answer concept (C7)."
+
+  form:
+    file: forms/*.json
+    shape: one-file-per-form
+    requiredKeys: [name, uuid, formType, formElementGroups]
+    enums:
+      formType: &formType
+        - IndividualProfile
+        - ProgramEnrolment
+        - ProgramExit
+        - ProgramEncounter
+        - ProgramEncounterCancellation
+        - Encounter
+        - IndividualEncounterCancellation
+    invariants:
+      FE_CONCEPT_NOT_OBJECT: "formElements[].concept is ALWAYS a nested object { name, uuid, dataType, ... }, never a bare UUID string. Invisible to the validator; crashes the server (Durga)."
+      F1: "displayOrder unique within a formElementGroup."
+      F2: "the same concept UUID must not appear twice as non-voided elements in one form."
+    fkFields:
+      "formElementGroups[].formElements[].concept.uuid": { target: concept, presence: required }   # F5
+
+  subjectType:
+    file: subjectTypes.json
+    shape: array
+    requiredKeys: [name, uuid, type]
+
+  program:
+    file: programs.json
+    shape: array
+    requiredKeys: [name, uuid]
+    fkFields:
+      subjectTypeUuid: { target: subjectType, presence: optional }
+
+  encounterType:
+    file: encounterTypes.json
+    shape: array
+    requiredKeys: [name, uuid]
+    fkFields:
+      programUuid: { target: program, presence: optional }
+      conceptUuid: { target: concept, presence: optional }   # display concept
+
+  formMapping:
+    file: formMappings.json
+    shape: array
+    requiredKeys: [uuid, formUUID, subjectTypeUUID]
+    fkFields:
+      formUUID:          { target: form,          presence: required }
+      subjectTypeUUID:   { target: subjectType,   presence: required }
+      programUUID:       { target: program,       presence: conditional }   # by formType — see fk-matrix.yaml
+      encounterTypeUUID: { target: encounterType, presence: conditional }
+    notes:
+      - "Which conditional FK is required is decided by the carrying form's formType (fk-matrix.yaml formTypes)."
+      - "programUUID appears among cancellation types ONLY for ProgramEncounterCancellation."
+
+  operationalSubjectType:
+    file: operationalSubjectTypes.json
+    shape: array-or-wrapped   # { operationalSubjectTypes: [...] } | [...]
+    fkFields:
+      subjectTypeUUID: { target: subjectType, presence: required }
+
+  operationalProgram:
+    file: operationalPrograms.json
+    shape: array-or-wrapped
+    fkFields:
+      programUUID: { target: program, presence: required }
+
+  operationalEncounterType:
+    file: operationalEncounterTypes.json
+    shape: array-or-wrapped
+    fkFields:
+      encounterTypeUUID: { target: encounterType, presence: required }
+
+  addressLevelType:
+    file: addressLevelTypes.json
+    shape: array
+    requiredKeys: [name, uuid]
+    invariants:
+      ALT_INVALID_NAME: "name is non-empty and contains none of < > = \" '. Avni LocationService rejects ^.*[<>=\"'].*$ (Astitva). Invisible to the validator."
+    fkFields:
+      parentUuid: { target: addressLevelType, presence: optional }
+
+  groupRole:
+    file: groupRoles.json
+    shape: array
+    fkFields:
+      groupSubjectTypeUUID:  { target: subjectType, presence: required }
+      memberSubjectTypeUUID: { target: subjectType, presence: required }
+
+  groupPrivilege:
+    file: groupPrivilege.json
+    shape: array
+    enums:
+      privilegeType:   # G2
+        - ViewSubject
+        - RegisterSubject
+        - VoidSubject
+        - EditSubject
+        - EnrolSubject
+        - UnVoidSubject
+        - ExitEnrolment
+        - VoidEnrolment
+        - UnVoidEnrolment
+        - ViewVisit
+        - PerformVisit
+        - EditVisit
+        - CancelVisit
+        - ScheduleVisit
+        - VoidVisit
+        - UnVoidVisit
+        - ViewChecklist
+        - EditChecklist
+
+# Pre-export gate: a bundle is ready iff BOTH return zero errors.
+gates:
+  - tool: mcp__avni-bundle__bundle_validator_run
+    covers: "28-code server mirror (C/F/M/G/D)"
+  - tool: mcp__avni-bundle__bundle_integrity_check
+    covers: "FK dangling refs + FE_CONCEPT_NOT_OBJECT + ALT_INVALID_NAME"

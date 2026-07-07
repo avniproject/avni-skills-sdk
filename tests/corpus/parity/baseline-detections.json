@@ -1,0 +1,30 @@
+{
+  "_meta": {
+    "generated": "2026-06-16T06:30:54.057Z",
+    "detectors": [
+      "checkIntegrityOnFileMap",
+      "graph.integrityCheck"
+    ],
+    "note": "OLD detection surface (the two detectors being consolidated), normalised to {class,file,locator} triples. The NEW bundle_integrity_check must lose none of these. Validator (bundle_validator.js) findings are OUT OF SCOPE and excluded. Org keys are salted hashes — the committed witness never enumerates the corpus's NGO membership (CLAUDE.md §2). Real org names print to the terminal only.",
+    "orgCount": 17
+  },
+  "orgs": {
+    "org_068e8ef83415": [],
+    "org_40cd23872824": [],
+    "org_570740095d1c": [],
+    "org_e2591e258171": [],
+    "org_411d132c47ec": [],
+    "org_fa883b4956b0": [],
+    "org_05f38843f0c7": [],
+    "org_b6faff78fbbf": [],
+    "org_efc903fe7fb5": [],
+    "org_23cee79afc61": [],
+    "org_56d3a93e4f68": [],
+    "org_a09706ede7e3": [],
+    "org_9d1a6e2edb44": [],
+    "org_e3e70900ae9b": [],
+    "org_5fb84070a6bc": [],
+    "org_cbf2ac273687": [],
+    "org_163e45d0055d": []
+  }
+}

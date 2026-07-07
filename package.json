@@ -6,20 +6,27 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "test:entities": "node --test tests/entities/*.test.cjs",
+    "test:entities": "node --test tests/entities/*.test.cjs tests/corpus/parity/*.test.cjs",
+    "test:discovery-unit": "node --test tests/discovery/*.test.cjs",
     "test:bundle": "node tests/bundle-harness.cjs",
     "test:multi-org": "node scripts/multi-org-run.js",
     "test:corpus": "node tests/corpus/run.cjs",
-    "test": "npm run test:entities",
+    "test": "node --test tests/entities/*.test.cjs tests/discovery/*.test.cjs scripts/recovery/*.test.cjs",
     "eval": "node tests/eval/run.cjs",
     "eval:cheap": "SDK_EVAL_FILTER='01|07|10' node tests/eval/run.cjs",
+    "eval:discovery": "node tests/discovery/run.cjs",
+    "discovery:report": "node scripts/discovery-report.mjs",
+    "build:bundle-spec-skill": "node scripts/build-bundle-spec-skill.mjs",
     "start": "bash scripts/repl-with-dashboard.sh",
     "dev": "node --watch src/server.js",
     "cli": "node scripts/sdk-cli.mjs",
     "verify": "node scripts/sdk-cli.mjs --demo",
     "verify:dryrun": "bash -c 'node scripts/dryrun-phase-4.mjs --forms \"$0\" --modelling \"$1\" --org \"${2:-Demo}\"'",
     "corpus:validate": "node tests/corpus/run.cjs",
+    "corpus:parity": "node tests/corpus/parity/run.cjs",
+    "corpus:parity:snapshot": "node tests/corpus/parity/snapshot.cjs",
     "dashboard": "node scripts/observability-dashboard.mjs",
+    "head-to-head": "node scripts/head-to-head.mjs",
     "repl:observed": "bash scripts/repl-with-dashboard.sh"
   },
   "engines": {
@@ -37,6 +44,7 @@
     "archiver": "^7.0.1",
     "blessed": "^0.1.81",
     "blessed-contrib": "^4.11.0",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "xlsx": "^0.18.5"
   }
 }

@@ -10,9 +10,17 @@ import * as steplog from "../steplog.js";
 import { readMultipart } from "../middleware/multipart.js";
 
 export function register(app) {
-  // Create a new session from an SRS upload. Runs the deterministic generator
-  // as turn 0. No LLM call required — caller can iterate later via /edit (WoO)
-  // or /messages (real agent, BYO key).
+  // Create a new session.
+  //   • mode=baseline (DEFAULT): from an SRS upload. Runs the deterministic
+  //     generator as turn 0. Requires the 'forms' file. Byte-for-byte unchanged.
+  //   • mode=agent (story #12): from requirements. The bundle starts empty; the
+  //     SRS is attached as a 'forms'/'modelling' XLSX (kept in input/, read via
+  //     bundle_read_srs) and/or an inline 'srs' field. NO external path is
+  //     accepted (LFI closure). The agent reads the SRS via bundle_read_srs and
+  //     optionally bootstraps via bundle_generate_baseline.
+  // No LLM call required at create time — caller iterates later via /edit (WoO)
+  // or /messages (real agent, BYO key; the agent applies YAML specs in-process
+  // via the spec_apply MCP tool — the /apply-spec route was retired in #11).
   app.post("/v1/sessions", async (req, res) => {
     try {
       const ct = req.headers["content-type"] || "";
@@ -20,26 +28,35 @@ export function register(app) {
         return res.status(400).json({ error: "Content-Type must be multipart/form-data" });
       }
       const { fields, files } = await readMultipart(req);
-      if (!files.forms) return res.status(400).json({ error: "missing 'forms' file (Forms.xlsx)" });
+      const mode = fields.mode === "agent" ? "agent" : "baseline";
+      if (mode === "baseline" && !files.forms) {
+        return res.status(400).json({ error: "missing 'forms' file (Forms.xlsx)" });
+      }
+      if (mode === "agent" && !files.forms && !files.modelling && !fields.srs) {
+        return res.status(400).json({ error: "agent mode requires at least one SRS source: a 'forms'/'modelling' XLSX file (read via bundle_read_srs), or an 'srs' field (inline text/JSON)" });
+      }
 
       const result = sessions.createSession({
-        formsBuffer: files.forms.buffer,
-        formsFilename: files.forms.filename,
+        mode,
+        formsBuffer: files.forms?.buffer,
+        formsFilename: files.forms?.filename,
         modellingBuffer: files.modelling?.buffer,
         modellingFilename: files.modelling?.filename,
         org: fields.org || "Bundle",
+        srs: fields.srs,
       });
       // Seed transcript + step log with the creation event.
       try {
         transcript.appendEvent(result.sessionId, {
           kind: "system",
           action: "session_created",
+          mode,
           org: fields.org || "Bundle",
           validation: result.validation,
         });
         steplog.logStep(result.sessionId, {
           kind: "session_create",
-          meta: { org: fields.org || "Bundle", errors: result.validation?.errors ?? 0 },
+          meta: { mode, org: fields.org || "Bundle", errors: result.validation?.errors ?? 0 },
         });
       } catch (logErr) {
         // Logging must not fail the create call. Worst case the session has no
