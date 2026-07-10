@@ -10,6 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { summarizeBundle } from "./summarizer.js";
+import { BLOCKED_ACCOUNT_MCP_SERVERS, blockAccountMcpPreToolUseHook } from "../agent.js";
 
 const SYSTEM_PROMPT = `You are a senior AVNI implementation reviewer.
 
@@ -94,6 +95,12 @@ export async function evaluateBundle({ bundleDir, apiKey, model = "claude-haiku-
         model,
         systemPrompt: SYSTEM_PROMPT,
         allowedTools: [], // no tools — single-pass reasoning
+        // Block the operator's claude.ai account MCP integrations here too — this
+        // is the second query() call site; allowedTools:[] is not a restriction
+        // under bypassPermissions (see src/agent.js FIX 2/5). Both layers:
+        // context removal (disallowedTools) + guaranteed PreToolUse deny hook.
+        disallowedTools: [...BLOCKED_ACCOUNT_MCP_SERVERS],
+        hooks: { PreToolUse: [blockAccountMcpPreToolUseHook()] },
         settingSources: [],
         permissionMode: "bypassPermissions",
       },

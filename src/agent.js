@@ -301,6 +301,60 @@ export const BASELINE_DISALLOWED_TOOLS = Object.freeze([
   "WebFetch", "WebSearch", "Task", "NotebookEdit",
 ]);
 
+// ─── FIX 5 — block the operator's claude.ai account MCP integrations ──
+//
+// The Claude Agent SDK injects the operator's claude.ai account-connected MCP
+// integrations (Google Drive, Gmail, Calendar — tools named mcp__claude_ai_*)
+// into every dispatch. These are NOT governed by `settingSources: []` (which
+// only isolates on-disk settings files) nor by our `mcpServers` option. An
+// offline bundle-authoring agent has no need for them, and Drive/Gmail read+
+// create tools are a data-exfiltration surface. We block them two ways:
+//   (1) disallowedTools server patterns → removes the known servers from the
+//       model's context (see disallowedToolsForModel), and
+//   (2) a matcher-less PreToolUse deny hook keyed on the mcp__claude_ai_ prefix
+//       → guaranteed enforcement, future-proof against new account connections.
+// Our own in-process tools (mcp__avni-bundle__*) do NOT carry this prefix, so
+// they are unaffected.
+export const BLOCKED_ACCOUNT_MCP_TOOL_PREFIX = "mcp__claude_ai_";
+
+export const BLOCKED_ACCOUNT_MCP_SERVERS = Object.freeze([
+  "mcp__claude_ai_Google_Drive",
+  "mcp__claude_ai_Gmail",
+  "mcp__claude_ai_Google_Calendar",
+]);
+
+/** True iff `name` is a claude.ai account MCP tool (any server under the prefix). */
+export function isBlockedAccountMcpTool(name) {
+  return typeof name === "string" && name.startsWith(BLOCKED_ACCOUNT_MCP_TOOL_PREFIX);
+}
+
+/**
+ * A matcher-less PreToolUse hook entry that denies any claude.ai account MCP
+ * tool call. Matcher-less → the SDK evaluates it for every tool; it returns a
+ * hard deny for mcp__claude_ai_* and passes everything else through. Shared by
+ * buildQueryOptions and the /summary evaluator so both query() call sites are
+ * covered from one source of truth.
+ */
+export function blockAccountMcpPreToolUseHook() {
+  return {
+    hooks: [async (input) => {
+      if (input?.hook_event_name !== "PreToolUse" || !isBlockedAccountMcpTool(input?.tool_name)) {
+        return { continue: true };
+      }
+      const reason = `BLOCKED: claude.ai account MCP integration '${input.tool_name}' is not available to this agent`;
+      return {
+        decision: "block",
+        reason,
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: reason,
+        },
+      };
+    }],
+  };
+}
+
 // ─── FIX 4 — real toolTiers (write / structural / export restriction) ──
 //
 // toolTiers were decorative (nothing read them). These are the tools a
@@ -332,7 +386,11 @@ export const WRITE_STRUCTURAL_EXPORT_TOOLS = Object.freeze([
  * @returns {string[]}
  */
 export function disallowedToolsForModel(model, { extra = [], matrix } = {}) {
-  const set = new Set([...BASELINE_DISALLOWED_TOOLS, ...(Array.isArray(extra) ? extra : [])]);
+  const set = new Set([
+    ...BASELINE_DISALLOWED_TOOLS,
+    ...BLOCKED_ACCOUNT_MCP_SERVERS,
+    ...(Array.isArray(extra) ? extra : []),
+  ]);
   try {
     const m = matrix || loadMatrix();
     const known = !!(m && m.models && m.models[model]);
@@ -435,7 +493,11 @@ export function buildQueryOptions(opts = {}) {
           }
           return { continue: true };
         }],
-      }],
+      },
+      // FIX 5 — deny any claude.ai account MCP integration (Drive/Gmail/Calendar
+      // + any future connection). Matcher-less → evaluated for every tool.
+      blockAccountMcpPreToolUseHook(),
+      ],
     },
   };
   if (resume) queryOptions.resume = resume;

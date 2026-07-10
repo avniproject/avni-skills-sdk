@@ -179,6 +179,7 @@ The active rules block (in `src/agent.js`) is the slim `BUNDLE_OUTCOME_CONTRACT`
 | ZIP export must land inside an allowlisted path | Path-jail in `src/agents/bundle-mcp-server.js` (`bundle_export_to_path`) — allowlist: `~/Desktop`, `~/Downloads`, `~/Documents`, `~/.avni-skills-sdk/exports`, `$SDK_EXPORT_DIR` |
 | No concurrent writes to the same session | Per-session async mutex in `src/locks.js` |
 | Inbound traffic capped | Per-IP rate-limit middleware in `src/middleware/rate-limit.js` |
+| Operator's claude.ai account MCP integrations (Google Drive / Gmail / Calendar, `mcp__claude_ai_*`) never reachable by the agent (data-exfil surface; not governed by `settingSources: []`) | FIX 5 in `src/agent.js`: `BLOCKED_ACCOUNT_MCP_SERVERS` folded into `disallowedTools` (removes the known servers from the model's context) **plus** a matcher-less `blockAccountMcpPreToolUseHook()` that hard-denies any `mcp__claude_ai_*` call (future-proof against new connections). Applied to BOTH `query()` call sites — `buildQueryOptions` and `src/agents/evaluator.js`. Our own `mcp__avni-bundle__*` tools are unaffected. |
 
 When you add a new rule: if it is safety-critical, write the code-enforcement first and link it from the outcome contract. Prompt-only rules are documentation of intent, not guarantees.
 
