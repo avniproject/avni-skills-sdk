@@ -60,3 +60,19 @@ test("bundleActiveNames tolerates missing files", () => {
     assert.equal(n[k].size, 0, `${k} empty`);
   }
 });
+
+test("bundleActiveNames unwraps { key: [...] }-shaped files", () => {
+  const dir = tmpBundle({
+    "subjectTypes.json": { subjectTypes: [{ name: "Student" }, { name: "Gone", voided: true }] },
+  });
+  const n = bundleActiveNames(dir);
+  assert.deepEqual([...n.subjectTypes].sort(), ["student"]);
+});
+
+test("bundleActiveNames excludes voided formMappings", () => {
+  const dir = tmpBundle({
+    "formMappings.json": [{ formName: "Student Register" }, { formName: "Old Map", voided: true }],
+  });
+  const n = bundleActiveNames(dir);
+  assert.deepEqual([...n.formMappings].sort(), ["student register"]);
+});
