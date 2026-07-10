@@ -44,6 +44,9 @@ tests/resources/doorstep/*.zip
 tests/resources/doorstep/uat/
 tests/resources/doorstep/parity-gap.json
 
+# Superpowers SDD scratch (progress ledger, task briefs) — never committed
+.superpowers/
+
 # Env / secrets
 .env
 .env.*
