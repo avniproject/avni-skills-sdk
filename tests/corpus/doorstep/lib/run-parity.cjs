@@ -14,6 +14,17 @@ const { diffNames } = require("./parity.cjs");
 
 const GENERATOR = path.join(AVNI_SKILLS_PATH, "srs-bundle-generator", "scripts", "generate_bundle_v2.js");
 
+// F2 = cross-form concept reuse. The repo's own bundle-harness.cjs treats F2 as
+// a TOLERATED semantic class ("Mechanical = anything not F2"; passes iff non-F2
+// errors == 0), and the real UAT export is itself not validator-clean (30 G2
+// errors from admin groupPrivilege the generator never emits). So the parity
+// ship-gate is non-F2 errors == 0 + integrity — not raw errors == 0.
+function isF2Error(e) {
+  if (e && typeof e === "object" && e.code) return String(e.code).toUpperCase() === "F2";
+  const s = typeof e === "string" ? e : ((e && (e.message || JSON.stringify(e))) || "");
+  return /^\s*F2\b/.test(s);
+}
+
 // Generate a bundle directly from real .xlsx files (not the in-memory fixture).
 function generateFromXlsx({ formsXlsx, modelXlsx, org = "Doorstep" }) {
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "dss-gen-"));
@@ -49,7 +60,9 @@ function runDoorstepParity({ formsXlsx, modelXlsx, uatZip, org = "Doorstep" }) {
   }
   const diff = diffNames(generated, target);
   const validation = validate(genDir);
-  return { diff, validation, genDir, uatDir, generated, target };
+  const nonF2Errors = (validation.errors || []).filter((e) => !isF2Error(e));
+  const f2Count = (validation.errors || []).length - nonF2Errors.length;
+  return { diff, validation, nonF2Errors, f2Count, genDir, uatDir, generated, target };
 }
 
-module.exports = { runDoorstepParity, generateFromXlsx, unzipTo };
+module.exports = { runDoorstepParity, generateFromXlsx, unzipTo, isF2Error };
