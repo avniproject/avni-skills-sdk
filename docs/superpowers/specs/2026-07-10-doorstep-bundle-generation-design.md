@@ -173,6 +173,42 @@ The bulk of the effort is **data (workbook authoring), not code**:
 
 ---
 
+## Phase 3 outcome — VERIFIED ✅ (2026-07-10)
+
+**Answer to the driving question: YES** — this repo's generic generator can produce the
+Doorstep bundle from the org's own (enhanced) scoping inputs. Verified locally against the
+real files via `node scripts/doorstep-parity.mjs` (with `DSS_FORMS`/`DSS_MODEL` pointed at
+the enhanced workbooks), **exit 0**:
+
+```
+validator errors: 0 total (0 F2 tolerated, 0 non-F2 blocking)
+PARITY: PASS
+  subjectTypes: 5/5   programs: 4/4   encounterTypes: 6/6   forms: 25/25
+```
+
+All four gate classes reach 100% name-parity with the deployed UAT; 0 non-F2 errors
+(0 total). Remaining `extra` entries (a few auto-created cancellations, location-hierarchy
+prose in the informational `addressLevelTypes` class) are outside the gate and don't affect
+the result.
+
+**Enhancements applied** (the "missing detail reasonably expected from the org" — all in the
+local, gitignored enhanced workbooks; the generator was NOT modified):
+- **Curated the Forms workbook** to the 19 real form sheets (dropping ~16 prose/modelling
+  sheets that the generator's positional-fallback column detection was mis-parsing as forms —
+  this alone cleared the ~40 spurious extras *and* all 81 F2 errors, which came from prose
+  sheets like "Discussion Notes"). Renamed sheets to the UAT form names
+  (e.g. "…Drop out"→"…Program Exit", "FLN Tracking"→"FLN Program Tracking").
+- **Authored the 4 missing Enrolment forms** (FLN/Reading/Library/Remedial) — no sheet existed;
+  their existence is required for the 4 `ProgramEnrolment` forms.
+- **Added** the "Remedial Program Tracking" encounter+form and the "Donor Associations" (Group)
+  subject type to the Modelling workbook; set program Exit-Form names to the UAT names; removed
+  the voided "Donor Association" program (kept as 4 active). The generator auto-created the 6
+  Cancellation forms → 19 + 6 = 25.
+
+**Reproduce locally:** stage the raw files (see `tests/resources/doorstep/README.md`), rebuild
+the enhanced workbooks from the raw ones per the enhancement list above, then run the CLI with
+`DSS_FORMS`/`DSS_MODEL` overrides. Enhanced workbooks + build script stay gitignored (§2).
+
 ## Definition of done
 
 1. `tests/corpus/doorstep/` harness exists, runs the synthetic fixture in CI (committed, green),

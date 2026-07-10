@@ -43,6 +43,7 @@ tests/resources/doorstep/*.xlsx
 tests/resources/doorstep/*.zip
 tests/resources/doorstep/uat/
 tests/resources/doorstep/parity-gap.json
+tests/resources/doorstep/*.local.mjs
 
 # Superpowers SDD scratch (progress ledger, task briefs) — never committed
 .superpowers/
