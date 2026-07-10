@@ -7,6 +7,8 @@ test("normalizeName lowercases, trims, collapses whitespace, strips voided suffi
   assert.equal(normalizeName("  FLN   Enrolment "), "fln enrolment");
   assert.equal(normalizeName("Donor Association (voided~2240)"), "donor association");
   assert.equal(normalizeName("Attendance (voided~23177)"), "attendance");
+  assert.equal(normalizeName(null), "");
+  assert.equal(normalizeName(undefined), "");
 });
 
 test("isVoided detects the voided flag and the name marker", () => {
@@ -14,4 +16,6 @@ test("isVoided detects the voided flag and the name marker", () => {
   assert.equal(isVoided({ name: "Attendance (voided~23177)", voided: false }), true);
   assert.equal(isVoided({ name: "FLN", voided: false }), false);
   assert.equal(isVoided({ name: "FLN" }), false);
+  assert.equal(isVoided(null), false);
+  assert.equal(isVoided("not-an-object"), false);
 });
