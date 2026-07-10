@@ -11,7 +11,7 @@
     "test:bundle": "node tests/bundle-harness.cjs",
     "test:multi-org": "node scripts/multi-org-run.js",
     "test:corpus": "node tests/corpus/run.cjs",
-    "test": "node --test tests/entities/*.test.cjs tests/discovery/*.test.cjs scripts/recovery/*.test.cjs",
+    "test": "node --test tests/entities/*.test.cjs tests/discovery/*.test.cjs tests/corpus/doorstep/*.test.cjs tests/corpus/doorstep/lib/*.test.cjs scripts/recovery/*.test.cjs",
     "eval": "node tests/eval/run.cjs",
     "eval:cheap": "SDK_EVAL_FILTER='01|07|10' node tests/eval/run.cjs",
     "eval:discovery": "node tests/discovery/run.cjs",
