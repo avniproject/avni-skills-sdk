@@ -25,7 +25,15 @@ function generateFromXlsx({ formsXlsx, modelXlsx, org = "Doorstep" }) {
 function unzipTo(zip) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dss-uat-"));
   execSync(`unzip -o "${zip}" -d "${dir}"`, { stdio: ["ignore", "pipe", "pipe"] });
-  return dir;
+  // Auto-descend a single wrapper directory (e.g. a zip that extracts into
+  // `<dir>/Door Step School UAT/subjectTypes.json` instead of `<dir>/subjectTypes.json`).
+  let root = dir;
+  if (!fs.existsSync(path.join(root, "subjectTypes.json"))) {
+    const entries = fs.readdirSync(root, { withFileTypes: true });
+    const dirs = entries.filter((e) => e.isDirectory());
+    if (entries.length === 1 && dirs.length === 1) root = path.join(root, dirs[0].name);
+  }
+  return root;
 }
 
 function runDoorstepParity({ formsXlsx, modelXlsx, uatZip, org = "Doorstep" }) {
@@ -33,6 +41,12 @@ function runDoorstepParity({ formsXlsx, modelXlsx, uatZip, org = "Doorstep" }) {
   const uatDir = unzipTo(uatZip);
   const generated = bundleActiveNames(genDir);
   const target = bundleActiveNames(uatDir);
+  const targetTotal = ["subjectTypes", "programs", "encounterTypes", "forms"]
+    .reduce((n, k) => n + target[k].size, 0);
+  if (targetTotal === 0) {
+    throw new Error(`UAT reference bundle at ${uatDir} has zero active entities — ` +
+      `check the zip layout (a nested wrapper directory would cause this). Refusing to report a vacuous parity PASS.`);
+  }
   const diff = diffNames(generated, target);
   const validation = validate(genDir);
   return { diff, validation, genDir, uatDir, generated, target };

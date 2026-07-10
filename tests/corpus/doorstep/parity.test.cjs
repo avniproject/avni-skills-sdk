@@ -47,7 +47,11 @@ const skipReason = process.env.RUN_DOORSTEP_REAL !== "1"
 
 test("real Doorstep inputs: entity-graph parity vs UAT", { skip: runReal ? false : skipReason }, () => {
   const { runDoorstepParity } = require("./lib/run-parity.cjs");
-  const { diff, validation } = runDoorstepParity({ formsXlsx: FORMS_XLSX, modelXlsx: MODEL_XLSX, uatZip: UAT_ZIP });
+  const { diff, validation, target } = runDoorstepParity({ formsXlsx: FORMS_XLSX, modelXlsx: MODEL_XLSX, uatZip: UAT_ZIP });
+  assert.equal(target.subjectTypes.size, 5, "UAT should have 5 active subject types");
+  assert.equal(target.programs.size, 4, "UAT should have 4 active programs");
+  assert.equal(target.encounterTypes.size, 6, "UAT should have 6 active encounter types");
+  assert.equal(target.forms.size, 25, "UAT should have 25 active forms");
   assert.equal(validation.errors.length, 0, `validator errors: ${JSON.stringify(validation.errors, null, 2)}`);
   assert.equal(diff.pass, true, `\n${formatParityReport(diff)}`);
 });

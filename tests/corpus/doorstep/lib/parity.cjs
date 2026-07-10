@@ -17,7 +17,7 @@ function diffNames(generated, target, gateClasses = GATE_CLASSES) {
   for (const k of ALL_CLASSES) {
     classes[k] = diffOne(generated[k] || new Set(), target[k] || new Set());
   }
-  const pass = gateClasses.every((k) => classes[k].missing.length === 0);
+  const pass = gateClasses.every((k) => (classes[k]?.missing.length ?? 0) === 0);
   return { classes, pass };
 }
 
