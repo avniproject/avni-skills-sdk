@@ -37,6 +37,12 @@ fixtures/
 **/*-prod-*
 *-errors.csv
 **/training_data/
+# Doorstep proprietary org data — local-only, never committed (rule §2).
+# (*.zip is NOT globally ignored, so guard the whole dir + its artifacts.)
+tests/resources/doorstep/*.xlsx
+tests/resources/doorstep/*.zip
+tests/resources/doorstep/uat/
+tests/resources/doorstep/parity-gap.json
 
 # Env / secrets
 .env
