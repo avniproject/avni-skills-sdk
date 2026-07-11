@@ -48,10 +48,8 @@ const ORGS = [
   { org: "Bal Kalyan Sangh", tier: "proprietary",
     inputs: { srs: res("bks", "Bal Kalyan Sangh Scoping Document_.xlsx"), modelling: res("bks", "Bal Kalyan Sangh Modelling Document.xlsx") },
     oracle: { zip: res("bks", "Bal Kalyan Sangh.zip") } },
-  // Gubbachi: only modelling workbooks were provided (no forms/scoping doc), so
-  // there is nothing to generate forms from → oracle-only (generation skips).
   { org: "Gubbachi", tier: "proprietary",
-    inputs: { modelling: res("gubbachi", "Gubbachi New Scope Modeling.xlsx") },
+    inputs: { srs: res("gubbachi", "Gubbachi New Program Scoping Document - 22.03.2026.xlsx"), modelling: res("gubbachi", "Gubbachi New Scope Modeling.xlsx") },
     oracle: { zip: res("gubbachi", "Gubbachi.zip") } },
 ];
 
