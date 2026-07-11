@@ -31,7 +31,13 @@ import { generateBundle, validateBundle, zipBundle as zipBundleDir } from "./bun
 import { ensureSkillsStagedAt } from "./workspace.js";
 import { validateBundleRules } from "./rules-brain/validate.js";
 import { detectConceptCollisions, formatViolationMessage } from "./rules-brain/concept-gate.js";
-import { runBundleIntegrityCheck } from "./agents/bundle-mcp-server.js";
+import { runBundleIntegrityCheck, buildCrlScopingCtx, findReferencesOnDir } from "./agents/bundle-mcp-server.js";
+// Phase 4 — the CRL per-change gate. crlGate/reviewSpec are only ever called
+// inside function bodies below (never at module top-level), so the
+// sessions.js → crl/review.js → bundle-mcp-server.js import graph stays a clean
+// (function-body-only) cycle. See src/crl/review.js for the CRIT-1 key-guard
+// that makes a keyless gate a no-op rather than a throw.
+import { crlGate, reviewSpec } from "./crl/review.js";
 
 const SESSIONS_DIR = process.env.SDK_SESSIONS_DIR || path.join(os.homedir(), ".avni-skills-sdk", "sessions");
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -605,29 +611,190 @@ export function ensureSessionSkillsStaged(id) {
   return ensureSkillsStagedAt(dir);
 }
 
+// ─── CRL per-change gate (Phase 4 — wire the compliance-guided review layer
+// into the edit loop) ────────────────────────────────────────────────────
+
+// Parse `git status -z --porcelain` into a flat changed-file list. Extracted
+// so commitWorkspaceChanges can call it TWICE (once to seed the CRL delta, once
+// more after the gate runs to pick up a scrub's own edits) without duplicating
+// the NUL-safe parsing. Exported for direct unit testing.
+export function listWorkingTreeChanges(dir) {
+  const status = git(dir, "status", "-z", "--porcelain");
+  if (!status) return [];
+  return status.split("\0").filter((e) => e.length >= 4).map((e) => e.slice(3));
+}
+
+// Collect every `{uuid: "..."}` leaf in a parsed bundle-file JSON value,
+// regardless of whether the file's top level is an array of entities
+// (concepts.json), a single entity object (organisationConfig.json,
+// forms/*.json), or a named-array wrapper (operationalSubjectTypes.json:
+// {operationalSubjectTypes:[...]}) — walking generically avoids hardcoding a
+// per-file shape map that would silently miss a class of entity.
+function collectUuids(node, out) {
+  if (node == null) return;
+  if (Array.isArray(node)) { for (const e of node) collectUuids(e, out); return; }
+  if (typeof node === "object") {
+    if (typeof node.uuid === "string") out.add(node.uuid);
+    for (const v of Object.values(node)) collectUuids(v, out);
+  }
+}
+
+// Extract every entity uuid touched by this turn's changed files: current
+// on-disk uuids (additions/edits) UNIONED with pre-turn (sinceSha) uuids
+// (removals/renames) — a removed/renamed entity's stale uuid is exactly what a
+// dangling reference hides behind, so it must be scanned too, not just the
+// surviving ones.
+function extractChangedEntityUuids(dir, changedFiles, sinceSha) {
+  const uuids = new Set();
+  for (const rel of changedFiles) {
+    if (!rel.endsWith(".json")) continue; // .gitignore etc. never carry a reviewable uuid
+    try { collectUuids(JSON.parse(fs.readFileSync(path.join(dir, rel), "utf8")), uuids); }
+    catch { /* removed this turn, or unparsable mid-edit — sinceSha below still catches a prior version */ }
+    if (sinceSha) {
+      try { collectUuids(JSON.parse(git(dir, "show", `${sinceSha}:${rel}`)), uuids); }
+      catch { /* file didn't exist at sinceSha — fine */ }
+    }
+  }
+  return [...uuids];
+}
+
+// Merge N RefResult objects (bundle-mcp-server.js findReferencesOnDir's shape,
+// verified: {ok, query, totalReferences, filesAffected, byFile, references})
+// into one — same field names, unioned across every changed entity, so a
+// consumer that only reads {ok, totalReferences, filesAffected, byFile,
+// references} can't tell a merged blastRadius from a single-entity call.
+function mergeRefResults(results) {
+  const references = [];
+  for (const r of results) {
+    if (!r || !r.ok) continue;
+    for (const ref of r.references) references.push(ref);
+  }
+  const byFile = {};
+  for (const r of references) (byFile[r.file] ||= []).push(r);
+  return {
+    ok: true,
+    query: { mode: "blast-radius", value: results.map((r) => r && r.query && r.query.value).filter(Boolean) },
+    totalReferences: references.length,
+    filesAffected: Object.keys(byFile).length,
+    byFile,
+    references,
+  };
+}
+
+// Build the delta the review layer scopes itself to for THIS turn (contract
+// §2.4): the changed-file list, the diff against the turn's pre-commit HEAD,
+// and the MERGED blast radius (MAJ-5) — every dependent of every entity this
+// turn touched, found via findReferencesOnDir per entity and unioned. `diff` is
+// computed against the `sinceSha` PARAMETER, never the literal string "HEAD":
+// commitWorkspaceChanges calls this AFTER committing the turn (MAJ-1), so by the
+// time this runs HEAD already IS the new commit and `sinceSha` is its parent;
+// `git diff <sinceSha>` (single-ref form) compares the current working
+// tree/HEAD state to that ref regardless of what "HEAD" now points to, which is
+// exactly the turn's diff either way this is called (pre-commit dirty tree, or
+// post-commit clean one). Exported for direct testing.
+export function buildCrlDelta(dir, changedFiles, sinceSha) {
+  let diff = "";
+  try { diff = sinceSha ? git(dir, "diff", sinceSha) : git(dir, "diff", "HEAD"); }
+  catch { /* no HEAD yet (fresh repo, turn 0) */ }
+  const changedUuids = extractChangedEntityUuids(dir, changedFiles, sinceSha);
+  const blastRadius = mergeRefResults(changedUuids.map((uuid) => findReferencesOnDir(dir, { uuid })));
+  return { changedFiles, sinceSha, diff, blastRadius };
+}
+
+// Fail-safe wrapper around crlGate — NEVER throws. A CRL failure (missing
+// compliance doc, crl module load error, brain graph unavailable) degrades to
+// `pass:null` ("not evaluated" — must NOT be read as clean OR dirty) so it can
+// never block or corrupt an otherwise-good turn, mirroring the exact fail-safe
+// stance summariseIntegrity already has for the integrity gate. Exported so the
+// degrade shape is directly unit-testable without forcing a real crlGate
+// internal failure.
+export async function runCrlGateSafely(dir, delta) {
+  try {
+    return await crlGate(dir, { delta, scopingCtx: buildCrlScopingCtx(dir), hitl: true });
+  } catch (e) {
+    return { pass: null, review: null, retries: 0, escalated: false, error: e.message };
+  }
+}
+
+// O-1 — spec-artifact detection. A "spec-mutating turn" is one whose changed
+// files include a canonical spec artifact authored into the bundle
+// (spec.yaml / spec.yml / *.spec.yaml / *.spec.yml). Ordinary bundle-authoring
+// turns (concepts.json / forms/*.json / …) never match, so the spec gate stays
+// dormant unless a real spec artifact is being edited — zero effect on the
+// existing bundle-only flow.
+function specArtifactOf(changedFiles) {
+  return changedFiles.find((f) => /^spec\.ya?ml$|\.spec\.ya?ml$/.test(f)) || null;
+}
+
+// Fail-safe reviewSpec wrapper (O-1) — gates the intermediate spec artifact
+// against spec-template.yaml, judging INTENT coverage (never server-compliance,
+// which the bundle gate owns). Same commit-first precondition as the bundle
+// gate: the turn is already committed, so reviewSpec (which materialises into
+// its own temp dir) can only ever read the just-committed spec. NEVER throws —
+// a malformed spec degrades to pass:null, exactly like runCrlGateSafely.
+export async function runSpecGateSafely(dir, specRelPath) {
+  try {
+    const specText = fs.readFileSync(path.join(dir, specRelPath), "utf8");
+    const review = await reviewSpec(specText, { scopingCtx: buildCrlScopingCtx(dir) });
+    return { pass: review.ok, review, retries: 0, escalated: !!review.escalate };
+  } catch (e) {
+    return { pass: null, review: null, retries: 0, escalated: false, error: e.message };
+  }
+}
+
 /**
- * Snapshot whatever the agent (or a caller) wrote into the bundle dir as a
- * new turn. Honours `.gitignore`, so staged skills are excluded.
+ * Snapshot whatever the agent (or a caller) wrote into the bundle dir as a new
+ * turn. Honours `.gitignore`, so staged skills are excluded.
  *
- * Returns { turn, sha, summary, validation, changedFiles, noChanges }.
+ * Order (contract IC-6): listWorkingTreeChanges → concept-collision interceptor
+ * → COMMIT THE AGENT'S TURN → CRL gate (unless SDK_CRL_GATE=="off") → follow-up
+ * commit if the gate's executor applied a scrub → persist meta.crlAtCurrent →
+ * return.
+ *
+ * The agent's turn is committed BEFORE the CRL gate runs (MAJ-1). Pre-fix, the
+ * gate ran on the dirty, not-yet-committed tree, so HEAD was still the PRIOR
+ * turn when the executor's revert-on-regression guardrail
+ * (`git checkout HEAD -- <file>`) could fire — silently discarding this turn's
+ * uncommitted edits (non-recoverable; not in reflog). Committing first means
+ * HEAD already IS this turn by the time the gate runs, so a HEAD-relative
+ * revert can only ever target this turn's own pre-prune state. If the gate's
+ * executor applies a scrub, it lands as a SEPARATE follow-up commit
+ * (`turn N.crl: ...`) — never folded into the agent's own commit, so the two
+ * provenances stay distinguishable in history. This does NOT bump
+ * meta.currentTurn a second time — it is still "turn N" from the caller's view.
+ * (`revertToTurn(N)` lands on the pre-scrub `turn N:` commit — its
+ * message-prefix match ignores `turn N.crl:` — so reverting always gets the
+ * agent's own edit, pre-scrub.)
+ *
+ * The gate NEVER hard-blocks the commit — same iterate-don't-revert posture as
+ * the integrity fold (FIX 1(a)); an escalation is surfaced (crlGate field +
+ * meta.crlAtCurrent + the next turn's injected preamble), not enforced by
+ * refusing to commit.
+ *
+ * Returns { turn, sha, summary, validation, rulesValidation, crlGate, specGate?,
+ * changedFiles, noChanges }.
  *   `noChanges: true` is returned when the working tree was clean (no commit
- *   was created and the turn counter was NOT incremented).
+ *   was created and the turn counter was NOT incremented) — the CRL gate does
+ *   NOT run on a no-op turn, nor on a concept-collision-rejected turn (both
+ *   return before reaching it). `crlGate`/`specGate` are likewise absent on both.
  */
 export async function commitWorkspaceChanges(id, summary) {
   const dir = bundleDir(id);
-  // Detect changes against HEAD ignoring .gitignored paths.
-  // Use `-z` so entries are NUL-separated and filenames are NEVER quoted —
-  // safe for paths with spaces / unicode. Each entry is `XY filename` (3-char
-  // prefix). For renames/copies (R/C), the original path follows as its own
-  // NUL-terminated entry; we treat that as a separate listing.
-  const status = git(dir, "status", "-z", "--porcelain");
-  if (!status) {
+  // Detect changes against HEAD ignoring .gitignored paths (NUL-safe parse —
+  // filenames are never quoted, safe for spaces / unicode).
+  const changedFiles = listWorkingTreeChanges(dir);
+  if (changedFiles.length === 0) {
     const meta = readMeta(id);
     return { turn: meta.currentTurn, sha: null, summary, agentActionSummary: "no changes", validation: meta.validationAtCurrent, rulesValidation: meta.rulesValidationAtCurrent, changedFiles: [], noChanges: true };
   }
-  const changedFiles = status.split("\0").filter((e) => e.length >= 4).map((e) => e.slice(3));
 
-  // CONCEPT-COLLISION INTERCEPTOR — runs BEFORE git add/commit.
+  // Pre-turn HEAD — the CRL delta's `sinceSha`. Defensive try/catch even though
+  // turn 0 always commits at session create (both baseline and agent mode), so
+  // HEAD exists in practice by the time any real turn is committed.
+  let beforeSha = null;
+  try { beforeSha = git(dir, "rev-parse", "HEAD").trim(); } catch { /* fresh repo */ }
+
+  // CONCEPT-COLLISION INTERCEPTOR — runs BEFORE git add/commit, unchanged.
   // If concepts.json was modified and the new version introduces a concept
   // whose name case-insensitively collides with an existing one, revert
   // concepts.json (and ONLY concepts.json) and return a rejected-turn.
@@ -666,22 +833,66 @@ export async function commitWorkspaceChanges(id, summary) {
     }
   }
 
+  // COMMIT THE AGENT'S TURN — FIRST, before the CRL gate runs (MAJ-1).
   git(dir, "add", "-A");
   const meta = readMeta(id);
   const newTurn = meta.currentTurn + 1;
   git(dir, "commit", "-m", `turn ${newTurn}: ${summary}`);
+
+  // CRL PER-CHANGE GATE (Phase 4) — runs once per mutating, non-rejected turn,
+  // against the now-clean, just-committed tree. Gated behind SDK_CRL_GATE
+  // (MAJ-12) so the eval harness can boot the server with the gate OFF: Phase 3
+  // and Phase 4 share one server process once both merge, and an unbudgeted
+  // per-turn AI call inside an eval case would both blow its cost accounting and
+  // risk collateral drift the case never asked for.
+  const crlGateEnabled = process.env.SDK_CRL_GATE !== "off";
+  const crlGateResult = crlGateEnabled
+    ? await runCrlGateSafely(dir, buildCrlDelta(dir, changedFiles, beforeSha))
+    : { pass: null, review: null, retries: 0, escalated: false, disabled: true };
+
+  // O-1 — if this turn authored/edited a canonical spec artifact, ALSO gate the
+  // spec against spec-template.yaml (same commit-first ordering; reviewSpec
+  // reads the just-committed spec). Only when the gate is enabled and a spec
+  // artifact actually changed — a bundle-only turn carries no specGate.
+  const specArtifact = specArtifactOf(changedFiles);
+  const specGateResult = (crlGateEnabled && specArtifact)
+    ? await runSpecGateSafely(dir, specArtifact)
+    : undefined;
+
+  // If the gate's executor applied a scrub, land it as a FOLLOW-UP commit
+  // against the turn just committed above.
+  const postGateChanges = listWorkingTreeChanges(dir);
+  if (postGateChanges.length > 0) {
+    git(dir, "add", "-A");
+    git(dir, "commit", "-m", `turn ${newTurn}.crl: automated compliance scrub`);
+  }
+
   const sha = git(dir, "rev-parse", "HEAD").trim();
+  const finalChangedFiles = [...new Set([...changedFiles, ...postGateChanges])];
   // FIX 1(a): fold deterministic integrity errors into the stored per-turn
   // validation result so `validation.valid` is false whenever the bundle would
-  // fail on upload — even when the local validator is green.
+  // fail on upload — even when the local validator is green. Computed against
+  // the FINAL tree (post-scrub, if any), so the agent never sees stale state.
   const validation = summariseValidationWithIntegrity(dir);
   const rulesValidation = await summariseRules(dir);
   meta.currentTurn = newTurn;
   meta.validationAtCurrent = validation;
   meta.rulesValidationAtCurrent = rulesValidation;
+  // Durable cross-session state (Phase 4): meta.json is the session's durable
+  // on-disk record (SDK_SESSIONS_DIR survives reboots — see file header). This
+  // is what lets a bundle resumed cold show a fresh turn the same review
+  // outcome — including a still-unresolved HITL escalation — via
+  // currentValidatorStateText (Task 5).
+  meta.crlAtCurrent = crlGateResult;
+  if (specGateResult !== undefined) meta.specCrlAtCurrent = specGateResult;
   writeMeta(id, meta);
-  const agentActionSummary = summariseAgentAction(changedFiles);
-  return { turn: newTurn, sha: sha.slice(0, 12), summary, agentActionSummary, validation, rulesValidation, changedFiles, noChanges: false };
+  const agentActionSummary = summariseAgentAction(finalChangedFiles);
+  return {
+    turn: newTurn, sha: sha.slice(0, 12), summary, agentActionSummary,
+    validation, rulesValidation, crlGate: crlGateResult,
+    ...(specGateResult !== undefined ? { specGate: specGateResult } : {}),
+    changedFiles: finalChangedFiles, noChanges: false,
+  };
 }
 
 // One-line description of what the agent actually did this turn, derived from

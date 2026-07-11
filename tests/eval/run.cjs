@@ -122,6 +122,13 @@ async function bootServer({ port, sessionsDir, envOverrides = {} }) {
     ...process.env,
     PORT: String(port),
     SDK_SESSIONS_DIR: sessionsDir,
+    // MAJ-12 — disable the Phase-4 per-turn CRL gate in the eval server. Once
+    // Phase 4 wires crlGate into commitWorkspaceChanges, every committed turn
+    // inside an eval case would otherwise fire an unbudgeted server-side AI gate
+    // (outside dispatch.costUsd) and could prune pre-existing fixture entries,
+    // tripping a case's "no collateral drift" assertion through no fault of the
+    // agent. Individual cases may still override via their own envOverrides.
+    SDK_CRL_GATE: "off",
     ...envOverrides,
   };
   // We pipe stdio to a log file so the harness output stays clean. On
