@@ -252,6 +252,38 @@ function buildConceptsDetail(rows) {
   return out;
 }
 
+// Families that must be ABSENT (undefined) when they have no active rows, so the
+// emitter's truthy/non-empty passthrough guard omits the key entirely.
+function undefinedIfEmpty(rows) { return rows && rows.length ? rows : undefined; }
+
+function buildGroupRoles(rows, identityIndex) {
+  const active = (rows || []).filter(notVoided).map((r) => {
+    const out = {
+      role: r.role || "",
+      groupSubjectType: identityIndex.resolve(r.groupSubjectTypeUUID) || "",
+      memberSubjectType: identityIndex.resolve(r.memberSubjectTypeUUID) || "",
+    };
+    if (r.maximumNumberOfMembers != null) out.maximumNumberOfMembers = r.maximumNumberOfMembers;
+    if (r.minimumNumberOfMembers != null) out.minimumNumberOfMembers = r.minimumNumberOfMembers;
+    if (r.primary) out.primary = true;
+    return out;
+  });
+  return undefinedIfEmpty(active);
+}
+
+function buildIdentifierSources(rows) {
+  const active = (rows || []).filter(notVoided).map((s) => {
+    const out = { name: s.name || "" };
+    if (s.type) out.type = s.type;
+    const prefix = s.options && typeof s.options === "object" ? s.options.prefix : undefined;
+    if (prefix) out.prefix = prefix;
+    if (s.minLength != null) out.minLength = s.minLength;
+    if (s.maxLength != null) out.maxLength = s.maxLength;
+    return out;
+  });
+  return undefinedIfEmpty(active);
+}
+
 export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
   if (!fileMap || typeof fileMap !== "object") {
     throw new Error("bundleToRichEntities: fileMap object required");
@@ -298,5 +330,7 @@ export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
     groups: groups.map((g) => ({ name: g.name, has_all_privileges: !!g.hasAllPrivileges })),
     forms,
     concepts_detail: buildConceptsDetail(arrOf(fileMap, "concepts.json")),
+    group_roles: buildGroupRoles(arrOf(fileMap, "groupRole.json"), idx),
+    identifier_sources: buildIdentifierSources(arrOf(fileMap, "identifierSource.json")),
   };
 }

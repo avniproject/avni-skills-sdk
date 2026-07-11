@@ -219,3 +219,32 @@ test("bundleToRichEntities: concepts_detail also reads hiAbsolute/hiNormal (SDK-
   assert.equal(c.highAbsolute, 180);
   assert.equal(c.highNormal, 100);
 });
+
+// ─── Task 7 — groupRoles + identifierSources ────────────────────────
+
+test("bundleToRichEntities: real phulwari groupRole resolves role + both subject-type UUIDs to names", { skip: skipNoCorpus }, async () => {
+  const { readRichBundleFileMap, buildIdentityIndex, bundleToRichEntities } = await loadEmit();
+  const fileMap = readRichBundleFileMap(loadOracle(phulwariRow));
+  const e = bundleToRichEntities(fileMap, { identityIndex: buildIdentityIndex(fileMap) });
+  const role = e.group_roles.find((r) => r.role === "Phulwari Child");
+  assert.equal(role.groupSubjectType, "Phulwari");
+  assert.equal(role.memberSubjectType, "Child");
+  assert.equal(role.maximumNumberOfMembers, 25);
+  assert.equal(role.groupSubjectTypeUUID, undefined);
+  assert.equal(role.memberSubjectTypeUUID, undefined);
+});
+
+test("bundleToRichEntities: identifier_sources omitted when the only row is voided (real phulwari)", { skip: skipNoCorpus }, async () => {
+  const { readRichBundleFileMap, bundleToRichEntities } = await loadEmit();
+  const e = bundleToRichEntities(readRichBundleFileMap(loadOracle(phulwariRow)));
+  assert.equal(e.identifier_sources, undefined);
+});
+
+test("bundleToRichEntities: identifier_sources reads prefix from options.prefix (real community non-voided row)", { skip: skipNoCommunity }, async () => {
+  const { readRichBundleFileMap, bundleToRichEntities } = await loadEmit();
+  const e = bundleToRichEntities(readRichBundleFileMap(loadOracle(communityRow)));
+  const src = e.identifier_sources.find((s) => s.name === "JSCS sample identifier source");
+  assert.ok(src, `sources: ${(e.identifier_sources || []).map((s) => s.name).join(", ")}`);
+  assert.equal(src.type, "userBasedIdentifierGenerator");
+  assert.equal(src.minLength, 5);
+});
