@@ -177,3 +177,39 @@ test("crlGate: a persistently-broken bundle (no forward progress) stops WITHOUT 
   assert.equal(typeof result.escalated, "boolean");
   cleanup(dir);
 });
+
+// ─── LIVE full round trip (opt-in): proves CRIT-1/CRIT-2/MAJ-7 end-to-end ───
+test("reviewBundle: live full round trip — real model call reads real bundle content, flags the seeded orphan, feeds a real executor prune, reports real cost", async (t) => {
+  if (!process.env.ANTHROPIC_API_KEY) { t.skip("ANTHROPIC_API_KEY not set — eval-style test, opt-in"); return; }
+  const { reviewBundle } = await loadReview();
+  const dir = tmpBundle(cleanBundle());
+  // No `files` passed — reviewBundle must build the projection itself (CRIT-2)
+  // purely from bundleDir.
+  const result = await reviewBundle(dir, {
+    mode: "scrub", doc: orphanConceptDoc(),
+    scopingCtx: { orgAsk: "Track individual age for registration." },
+  });
+  assert.equal(result.kind, "bundle");
+  assert.ok(Array.isArray(result.ai.findings));
+
+  // CRIT-2: a judge that can actually see bundle content must flag the seeded
+  // orphan — a blind judge (fed only {kind,bundleDir}) would return findings:[]
+  // here and THIS assertion is the one that would have caught it.
+  const flaggedOrphan = result.ai.findings.find((f) =>
+    f.target && (f.target.uuid === C_ORPHAN || /JunkConceptNobodyUses/i.test(JSON.stringify(f.target))));
+  assert.ok(flaggedOrphan, `expected the orphan concept to be flagged by a content-reading judge; got: ${JSON.stringify(result.ai.findings)}`);
+
+  // MAJ-7: the real spend must be captured and threaded through.
+  assert.equal(typeof result.ai.costUsd, "number");
+  assert.ok(result.ai.costUsd > 0, "a real paid model call must report a non-zero cost");
+  assert.equal(result.report.costUsd, result.ai.costUsd);
+
+  assert.ok(result.executed, "scrub mode always runs the executor pass");
+  // Whatever the model flagged, the guardrails must have held: the USED concept
+  // must never be removed.
+  const concepts = JSON.parse(fs.readFileSync(path.join(dir, "concepts.json"), "utf8"));
+  assert.ok(concepts.some((c) => c.uuid === C_USED), "the referenced concept must survive the live scrub");
+  // eslint-disable-next-line no-console
+  console.log(`[round-trip] flagged=${JSON.stringify(flaggedOrphan.target)} costUsd=${result.ai.costUsd} executed.applied=${JSON.stringify(result.executed.applied.map((a) => a.op))}`);
+  cleanup(dir);
+});
