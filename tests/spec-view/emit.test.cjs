@@ -498,3 +498,196 @@ test("emitRichSpec: voided form + name-colliding active form — findForm nests 
   assert.match(yaml, /New/);
   assert.doesNotMatch(yaml, /Old/);
 });
+
+// ─── Task 16 — corpus-fidelity acceptance gate (the P1 acceptance test) ──
+// Runs the full rich emit over EVERY runnable committed org and asserts the
+// name-keyed / UUID-free / deterministic / voided-excluded contract against real
+// bundles. Deterministic, no LLM, CI-safe.
+
+const { listRunnableOrgs } = require("../corpus/lib/corpus-loader.cjs");
+const { bundleDeepNames } = require("../corpus/lib/deep-names.cjs");
+const { normalizeName } = require("../corpus/doorstep/lib/entity-names.cjs");
+
+// Mirrors src/crl/compliance-doc.js's resolveBrainPath — env or sibling clone
+// (C2: never a bare, undeclared AVNI_SKILLS_PATH reference).
+function resolveBrainPath() {
+  return process.env.AVNI_SKILLS_PATH || path.resolve(__dirname, "..", "..", "..", "avni-skills");
+}
+const YAML = require(path.join(resolveBrainPath(), "node_modules", "js-yaml"));
+
+const real = process.env.RUN_REAL === "1";
+const orgs = listRunnableOrgs(manifest(), { real });
+// >=5 (avni-impl-bundles oracle-only orgs) is the hard floor; >=10 additionally
+// requires the avni-ai sibling to be cloned — common here, not guaranteed on
+// every machine, so it's a conditional, not a hard CI requirement (note #9).
+const hasAvniAi = fs.existsSync(path.resolve(resolveBrainPath(), "..", "avni-ai"));
+
+// Memoize oracle dirs so zip-based orgs extract at most once across all tests.
+const _oracleDir = new Map();
+function oracleDir(row) {
+  if (!_oracleDir.has(row.org)) _oracleDir.set(row.org, loadOracle(row));
+  return _oracleDir.get(row.org);
+}
+
+// Keys whose SUBTREE the value/key scans do NOT descend into — brain-emitter
+// passthrough this module does not reshape: rule bodies + declarative-rule IR
+// (which legitimately reference concepts/answers by UUID, exactly the rule-body
+// exception note #13 documents), form-element config the brain emits verbatim
+// (keyValues, documentation refs, parentFormElementUuid, validFormat), and S3
+// asset keys (iconFileS3Key — an asset URL, not an entity FK). Verified across
+// all committed orgs: with these skipped, ZERO UUID values and ZERO banned FK
+// key-names survive anywhere this reshaper is responsible for.
+const SKIP_SUBTREE = new Set([
+  "subjectSummaryRule", "programEligibilityCheckRule", "memberAdditionEligibilityCheckRule",
+  "enrolmentEligibilityCheckRule", "manualEnrolmentEligibilityCheckRule", "enrolmentSummaryRule",
+  "encounterEligibilityCheckRule", "entityEligibilityCheckRule", "decisionRule", "validationRule",
+  "visitScheduleRule", "checklistsRule", "editFormRule", "rule", "declarativeRule", "skipLogic",
+  "entityEligibilityCheckDeclarativeRule", "enrolmentEligibilityCheckDeclarativeRule",
+  "manualEnrolmentEligibilityCheckDeclarativeRule", "messageRule", "scheduleRule",
+  "worklistUpdationRule", "keyValues", "documentation", "parentFormElementUuid",
+  "validFormat", "iconFileS3Key",
+]);
+
+test("corpus fidelity: baseline org count", { skip: orgs.length === 0 && "no runnable orgs" }, async () => {
+  assert.ok(orgs.length >= 5, `expected >=5 committed orgs (avni-impl-bundles), got ${orgs.length}`);
+  if (hasAvniAi && !real) assert.ok(orgs.length >= 10, `avni-ai sibling present but only ${orgs.length} orgs runnable`);
+});
+
+test(`corpus fidelity: every active subjectType/program/encounterType name appears by name in emitRichSpec (${orgs.length} orgs)`, { skip: orgs.length === 0 && "no runnable orgs" }, async () => {
+  const { emitRichSpec } = await loadEmit();
+  for (const row of orgs) {
+    const dir = oracleDir(row);
+    const spec = YAML.load(emitRichSpec({ bundleDir: dir, org: row.org }));
+    const deep = bundleDeepNames(dir);
+    // normalizeName on BOTH sides (collapses whitespace + strips "(voided~N)").
+    const specNames = new Set([
+      ...(spec.subjectTypes || []).map((s) => s.name),
+      ...(spec.programs || []).map((p) => p.name),
+      ...(spec.encounterTypes || []).map((e) => e.name),
+      ...(spec.concepts || []).map((c) => c.name),
+    ].map(normalizeName));
+    for (const nm of deep.subjectTypes) assert.ok(specNames.has(nm), `${row.org}: subjectType "${nm}" missing from spec`);
+    for (const nm of deep.programs) assert.ok(specNames.has(nm), `${row.org}: program "${nm}" missing from spec`);
+    for (const nm of deep.encounterTypes) assert.ok(specNames.has(nm), `${row.org}: encounterType "${nm}" missing from spec`);
+  }
+});
+
+test(`corpus fidelity: subjectTypes with an active IndividualProfile mapping get a non-empty registrationForm (${orgs.length} orgs)`, { skip: orgs.length === 0 && "no runnable orgs" }, async () => {
+  const { emitRichSpec } = await loadEmit();
+  for (const row of orgs) {
+    const dir = oracleDir(row);
+    const fmPath = path.join(dir, "formMappings.json");
+    if (!fs.existsSync(fmPath)) continue;
+    const fm = JSON.parse(fs.readFileSync(fmPath, "utf8") || "[]");
+    if (!fm.some((m) => !m.voided && m.formType === "IndividualProfile")) continue;
+    const spec = YAML.load(emitRichSpec({ bundleDir: dir, org: row.org }));
+    assert.ok((spec.subjectTypes || []).some((s) => s.registrationForm?.sections?.length),
+      `${row.org}: no subjectType got a non-empty registrationForm despite an IndividualProfile mapping`);
+  }
+});
+
+// M4 — the encounter/program form-nesting fix, distinct from registrationForm
+// (this exercises ProgramEncounter, which the ordering bug would have emptied).
+test(`corpus fidelity: encounterTypes with an active ProgramEncounter mapping get a non-empty form block (${orgs.length} orgs)`, { skip: orgs.length === 0 && "no runnable orgs" }, async () => {
+  const { emitRichSpec } = await loadEmit();
+  for (const row of orgs) {
+    const dir = oracleDir(row);
+    const fmPath = path.join(dir, "formMappings.json");
+    if (!fs.existsSync(fmPath)) continue;
+    const fm = JSON.parse(fs.readFileSync(fmPath, "utf8") || "[]");
+    if (!fm.some((m) => !m.voided && m.formType === "ProgramEncounter")) continue;
+    const spec = YAML.load(emitRichSpec({ bundleDir: dir, org: row.org }));
+    assert.ok((spec.encounterTypes || []).some((e) => e.form?.sections?.length),
+      `${row.org}: no encounterType got a non-empty form: despite an active ProgramEncounter mapping`);
+  }
+});
+
+test(`corpus fidelity: every non-empty ancillary family present in the bundle appears as a spec key (${orgs.length} orgs)`, { skip: orgs.length === 0 && "no runnable orgs" }, async () => {
+  const { emitRichSpec } = await loadEmit();
+  const FAMILY_FILES = [
+    ["groupRole.json", "groupRoles"], ["identifierSource.json", "identifierSources"],
+    ["relationshipType.json", "relationshipTypes"], ["reportCard.json", "reportCards"],
+    ["reportDashboard.json", "reportDashboards"], ["groupPrivilege.json", "groupPrivileges"],
+    ["groupDashboards.json", "groupDashboards"], ["individualRelation.json", "individualRelations"],
+    ["catchments.json", "catchments"], ["locations.json", "locations"],
+    ["documentations.json", "documentations"], ["menuItem.json", "menuItems"],
+    ["ruleDependency.json", "ruleDependency"],
+  ];
+  for (const row of orgs) {
+    const dir = oracleDir(row);
+    const spec = YAML.load(emitRichSpec({ bundleDir: dir, org: row.org }));
+    for (const [file, key] of FAMILY_FILES) {
+      const fp = path.join(dir, file);
+      if (!fs.existsSync(fp)) continue;
+      let raw; try { raw = JSON.parse(fs.readFileSync(fp, "utf8")); } catch { continue; }
+      const rows = Array.isArray(raw) ? raw : (raw && Array.isArray(raw[Object.keys(raw)[0]]) ? raw[Object.keys(raw)[0]] : []);
+      const hasActive = Array.isArray(rows) ? rows.some((r) => r && !r.voided) : !!(raw && raw.code);
+      if (hasActive) assert.ok(spec[key], `${row.org}: ${file} has active rows but spec.${key} is missing`);
+    }
+  }
+});
+
+test(`corpus fidelity: voided subjectTypes never appear by name (${orgs.length} orgs)`, { skip: orgs.length === 0 && "no runnable orgs" }, async () => {
+  const { emitRichSpec } = await loadEmit();
+  for (const row of orgs) {
+    const dir = oracleDir(row);
+    const raw = JSON.parse(fs.readFileSync(path.join(dir, "subjectTypes.json"), "utf8") || "[]");
+    const activeNorm = new Set(raw.filter((s) => !s.voided).map((s) => normalizeName(s.name)));
+    // Only names that are voided AND NOT independently active (a voided/active
+    // name collision is legitimate — the active one MUST appear).
+    const voidedOnly = raw.filter((s) => s.voided).map((s) => normalizeName(s.name)).filter((n) => n && !activeNorm.has(n));
+    if (!voidedOnly.length) continue;
+    const spec = YAML.load(emitRichSpec({ bundleDir: dir, org: row.org }));
+    const specNorm = new Set((spec.subjectTypes || []).map((s) => normalizeName(s.name)));
+    for (const vn of voidedOnly) assert.ok(!specNorm.has(vn), `${row.org}: voided subjectType "${vn}" leaked into spec`);
+  }
+});
+
+test(`corpus fidelity: no banned cross-ref FK key-names survive outside rule/form-config subtrees (${orgs.length} orgs)`, { skip: orgs.length === 0 && "no runnable orgs" }, async () => {
+  const { emitRichSpec } = await loadEmit();
+  const BANNED_FK_KEYS = new Set([
+    "standardReportCardType", "entityTypeUuid", "groupSubjectTypeUUID", "memberSubjectTypeUUID",
+    "subjectTypeUUID", "programUUID", "encounterTypeUUID", "groupUUID", "privilegeUUID",
+    "dashboardUUID", "addressLevelTypeUUID", "conceptUUID",
+  ]);
+  function walkKeys(node, keyName, loc, out) {
+    if (node == null || SKIP_SUBTREE.has(keyName)) return;
+    if (Array.isArray(node)) { node.forEach((v, i) => walkKeys(v, keyName, `${loc}[${i}]`, out)); return; }
+    if (typeof node === "object") {
+      for (const [k, v] of Object.entries(node)) {
+        if (BANNED_FK_KEYS.has(k)) out.push(`${loc}.${k}`);
+        walkKeys(v, k, `${loc}.${k}`, out);
+      }
+    }
+  }
+  for (const row of orgs) {
+    const spec = YAML.load(emitRichSpec({ bundleDir: oracleDir(row), org: row.org }));
+    const hits = [];
+    walkKeys(spec, null, row.org, hits);
+    assert.deepEqual(hits, [], `${row.org}: raw FK field name(s) leaked into the spec body: ${hits.join("; ")}`);
+  }
+});
+
+// M11 — value-level scan, KEY-AWARE (skips the SKIP_SUBTREE passthrough set). A
+// naive full-text regex would false-positive on legitimate rule-body/declarative
+// JS embedding UUID-shaped literals (confirmed on multiple committed orgs). This
+// walks the PARSED yaml and never descends into rule/form-config subtrees.
+test(`corpus fidelity: no unresolved cross-ref UUID VALUES survive outside rule/form-config subtrees (${orgs.length} orgs)`, { skip: orgs.length === 0 && "no runnable orgs" }, async () => {
+  const { emitRichSpec } = await loadEmit();
+  const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+  function walk(node, keyName, loc, out) {
+    if (node == null || SKIP_SUBTREE.has(keyName)) return;
+    if (typeof node === "string") {
+      if (UUID_RE.test(node)) out.push(`${loc} (key=${keyName})="${node.slice(0, 60)}"`);
+      return;
+    }
+    if (Array.isArray(node)) { node.forEach((v, i) => walk(v, keyName, `${loc}[${i}]`, out)); return; }
+    if (typeof node === "object") { for (const [k, v] of Object.entries(node)) walk(v, k, `${loc}.${k}`, out); }
+  }
+  for (const row of orgs) {
+    const spec = YAML.load(emitRichSpec({ bundleDir: oracleDir(row), org: row.org }));
+    const leaks = [];
+    walk(spec, null, row.org, leaks);
+    assert.deepEqual(leaks, [], `${row.org}: unresolved UUID value(s) outside rule/form-config subtrees: ${leaks.join("; ")}`);
+  }
+});
