@@ -1303,6 +1303,44 @@ function buildGenerateBaselineTool(bundleCwd) {
   );
 }
 
+// ─── CRL review / scrub / spec-review (Phase 4 — wire the compliance-guided
+// review layer into the edit loop) ──────────────────────────────────────────
+//
+// Agent-invokable entry points on top of the review layer (src/crl/review.js).
+// Distinct from crlGate, which src/sessions.js wires in as the AUTOMATIC
+// per-change gate after every mutating turn — these tools let the agent (or a
+// human driving it) ask for a review/scrub/spec-review explicitly, e.g. to
+// re-inspect a mature bundle before a targeted additive change.
+
+const CRL_SCOPING_TEXT_CAP = 4000; // chars — keep the review payload small; bundle_read_srs remains the full-fidelity path
+
+/**
+ * Build the "what did the org actually ask for" grounding context the
+ * ai-judged pass needs (design.md "A single review = three passes"). Reads the
+ * session's own attached SRS the same way bundle_read_srs does, capped to a
+ * small preview. Returns `{}` for a baseline-mode session, or an agent-mode
+ * session with no readable SRS text attached — the review layer still runs,
+ * just without scoping grounding. Exported for direct testing.
+ */
+export function buildCrlScopingCtx(bundleCwd) {
+  const meta = readSessionMeta(bundleCwd);
+  if (!meta || meta.mode !== "agent" || !meta.srs) return {};
+  const srsDir = path.join(sessionDirOf(bundleCwd), "input");
+  try {
+    if (meta.srs.files && meta.srs.files.text) {
+      const text = fs.readFileSync(path.join(srsDir, "srs.txt"), "utf8");
+      return { srs: text.slice(0, CRL_SCOPING_TEXT_CAP) };
+    }
+    if (meta.srs.files && meta.srs.files.json) {
+      const text = fs.readFileSync(path.join(srsDir, "srs.json"), "utf8");
+      return { srs: text.slice(0, CRL_SCOPING_TEXT_CAP) };
+    }
+  } catch {
+    // SRS unreadable — review proceeds without scoping context, not an error.
+  }
+  return {};
+}
+
 // ─── server factory ─────────────────────────────────────────────────
 
 /**
