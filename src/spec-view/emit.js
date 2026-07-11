@@ -222,6 +222,36 @@ function buildSettings(orgConfig, identityIndex) {
   return out;
 }
 
+// concepts_detail — name-keyed, UUID-free. Reads BOTH numeric-bound spellings:
+// server exports use lowAbsolute/highAbsolute; the brain's parser writes SDK-
+// authored bounds as lowAbsolute/hiAbsolute (asymmetric — M6). NA structural
+// concepts with no answers/keyValues carry no intent and are dropped.
+function buildConceptsDetail(rows) {
+  const out = [];
+  for (const c of (rows || [])) {
+    if (!c || c.voided || c.active === false) continue;
+    const answers = Array.isArray(c.answers)
+      ? c.answers.filter((a) => a && !a.voided).map((a) => (typeof a === "object" ? a.name : String(a)))
+      : null;
+    const hasKeyValues = Array.isArray(c.keyValues) ? c.keyValues.length > 0
+      : (c.keyValues && typeof c.keyValues === "object" && Object.keys(c.keyValues).length > 0);
+    if (c.dataType === "NA" && !(answers && answers.length) && !hasKeyValues) continue;
+    const rc = { name: c.name, dataType: c.dataType };
+    if (answers && answers.length) rc.answers = answers;
+    const lowAbsolute = c.lowAbsolute;
+    const highAbsolute = c.highAbsolute ?? c.hiAbsolute;
+    const lowNormal = c.lowNormal;
+    const highNormal = c.highNormal ?? c.hiNormal;
+    if (lowAbsolute != null) rc.lowAbsolute = lowAbsolute;
+    if (highAbsolute != null) rc.highAbsolute = highAbsolute;
+    if (lowNormal != null) rc.lowNormal = lowNormal;
+    if (highNormal != null) rc.highNormal = highNormal;
+    if (c.unit) rc.unit = c.unit;
+    out.push(rc);
+  }
+  return out;
+}
+
 export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
   if (!fileMap || typeof fileMap !== "object") {
     throw new Error("bundleToRichEntities: fileMap object required");
@@ -267,6 +297,6 @@ export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
     })),
     groups: groups.map((g) => ({ name: g.name, has_all_privileges: !!g.hasAllPrivileges })),
     forms,
-    concepts_detail: arrOf(fileMap, "concepts.json"),  // reshaped in Task 6
+    concepts_detail: buildConceptsDetail(arrOf(fileMap, "concepts.json")),
   };
 }

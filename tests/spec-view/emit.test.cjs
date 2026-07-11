@@ -181,3 +181,41 @@ test("bundleToRichEntities: settings resolve subjectType/groupSubjectType/scopeP
   assert.deepEqual(conceptFilter.scopeParameters.programs, ["Phulwari"]);
   assert.deepEqual(conceptFilter.scopeParameters.encounterTypes, ["Anthropometry Assessment"]);
 });
+
+// ─── Task 6 — concepts_detail reshape (M6) ──────────────────────────
+
+test("bundleToRichEntities: concepts_detail strips uuid/voided, keeps dataType+bounds+answers, drops NA structural concepts", async () => {
+  const { bundleToRichEntities } = await loadEmit();
+  const e = bundleToRichEntities({
+    "concepts.json": [
+      { uuid: "c1", name: "Weight", dataType: "Numeric", lowAbsolute: 0, highAbsolute: 300, unit: "kg", active: true },
+      { uuid: "c2", name: "Gender", dataType: "Coded", answers: [{ uuid: "a1", name: "Male" }, { uuid: "a2", name: "Other", voided: true }] },
+      { uuid: "c3", name: "QGroupWrapper", dataType: "NA", active: true },
+    ],
+  });
+  const weight = e.concepts_detail.find((c) => c.name === "Weight");
+  assert.equal(weight.uuid, undefined);
+  assert.equal(weight.lowAbsolute, 0);
+  assert.equal(weight.highAbsolute, 300);
+  const gender = e.concepts_detail.find((c) => c.name === "Gender");
+  assert.deepEqual(gender.answers, ["Male"]);
+  assert.equal(e.concepts_detail.some((c) => c.name === "QGroupWrapper"), false);
+});
+
+test("bundleToRichEntities: real phulwari numeric concept bounds use lowAbsolute/highAbsolute", { skip: skipNoCorpus }, async () => {
+  const { readRichBundleFileMap, bundleToRichEntities } = await loadEmit();
+  const e = bundleToRichEntities(readRichBundleFileMap(loadOracle(phulwariRow)));
+  const c = e.concepts_detail.find((x) => x.name === "Day of month for growth monitoring visit");
+  assert.equal(c.lowAbsolute, 15);
+  assert.equal(c.highAbsolute, 30);
+});
+
+test("bundleToRichEntities: concepts_detail also reads hiAbsolute/hiNormal (SDK-patched-bundle spelling)", async () => {
+  const { bundleToRichEntities } = await loadEmit();
+  const e = bundleToRichEntities({
+    "concepts.json": [{ uuid: "c1", name: "Pulse", dataType: "Numeric", lowAbsolute: 40, hiAbsolute: 180, lowNormal: 60, hiNormal: 100, active: true }],
+  });
+  const c = e.concepts_detail[0];
+  assert.equal(c.highAbsolute, 180);
+  assert.equal(c.highNormal, 100);
+});
