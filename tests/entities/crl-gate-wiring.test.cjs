@@ -274,4 +274,71 @@ test("commitWorkspaceChanges: a bundle-only turn carries NO specGate from the O-
   sessions.deleteSession(created.sessionId);
 });
 
+// ─── O-2: the derived spec.yaml (Live Spec View sync) ALSO drives the O-1 gate ───
+// NET-NEW (synthesis M2) — P3 owns rewriting the pre-existing off-case assertion
+// above this test in place (the SDK_SPEC_VIEW=off isolation variant); this test
+// does not replace or duplicate it. It adds the on-case coverage P3's rewrite
+// does not cover.
+//
+// Supersedes the pre-Live-Spec-View assumption that a bundle-only turn (the
+// agent never wrote spec.yaml itself) carries no specGate. With SDK_SPEC_VIEW
+// on (default), src/spec-view/sync.js derives + commits spec.yaml from the
+// bundle EVERY mutating turn, and commitWorkspaceChanges calls
+// runSpecGateSafely(dir, "spec.yaml") directly on that derived file (contract
+// §2.4) — reusing the SAME O-1 wrapper, not a new gate. So a bundle-only turn
+// now DOES carry a specGate, sourced from the derived artifact, not an
+// agent-authored one.
+//
+// Relies on SDK_SPEC_VIEW being unset here (ambient default = on). P3's
+// off-case test above restores the env var via `finally` (same MAJ-12 pattern
+// already proven safe for SDK_CRL_GATE at lines 140-159 of this file), so no
+// state leaks into this test regardless of file order.
+//
+// NOTE ON INERTNESS (synthesis M1): this asserts the gate is WIRED to the
+// derived spec, not that it FLAGS anything. The production spec-template.yaml is
+// sections:-shaped (no top-level `rules:` key), so deterministicRulesOf/aiRulesOf
+// read `doc.rules` (undefined) → zero rules fire on either tier, key or no key.
+// The derived spec is therefore persisted + committed + diffable + passed through
+// the gate wrapper at zero new spend — P4 ships persistence + audit trail, not
+// intent-completeness teeth. See Tasks below for reviewSpec's flagging CAPABILITY
+// (bespoke rules:-bearing doc) — explicitly NOT this production path.
+test("commitWorkspaceChanges: SDK_SPEC_VIEW on (default) — a bundle-only turn gets a specGate from the DERIVED spec.yaml, not an agent-authored one", async () => {
+  const sessions = await loadSessions();
+  const { buildMinimalSkeleton } = await loadServer();
+  const created = sessions.createSession({ mode: "agent", org: "CrlWiring", srs: "requirements" });
+  const bundleDir = sessions.bundleDir(created.sessionId);
+  writeSkeleton(bundleDir, buildMinimalSkeleton()); // note: no spec.yaml written by the agent
+
+  const res = await sessions.commitWorkspaceChanges(created.sessionId, "author minimal skeleton");
+
+  assert.ok(res.specSync, "commitWorkspaceChanges must always return a specSync field (contract §2.4)");
+  assert.equal(res.specSync.disabled, undefined, "SDK_SPEC_VIEW defaults on — specSync must not report disabled");
+  assert.equal(res.specSync.specChanged, true, "the first mutating turn always changes spec.yaml from nonexistent to emitted");
+  assert.equal(res.specSync.specRelPath, "spec.yaml");
+  assert.equal(res.specSync.identityRelPath, "identity-map.yaml");
+
+  assert.ok(res.specGate, "the derived spec.yaml must ALSO drive the O-1 gate — no agent-authored spec.yaml required");
+  assert.ok(res.specGate.pass === null || typeof res.specGate.pass === "boolean",
+    `specGate.pass must be boolean or null, got ${JSON.stringify(res.specGate.pass)}`);
+  assert.ok(res.specGate.review && res.specGate.review.kind === "spec",
+    "specGate must review the SPEC artifact against spec-template.yaml, not the bundle");
+
+  // The derived files actually landed at the bundle root...
+  assert.ok(fs.existsSync(path.join(bundleDir, "spec.yaml")), "spec.yaml must be persisted at the bundle root");
+  assert.ok(fs.existsSync(path.join(bundleDir, "identity-map.yaml")), "identity-map.yaml must be persisted at the bundle root");
+
+  // ...committed with its own distinguishable provenance, separate from the
+  // agent's own "turn N: ..." commit (contract §2.4 — never folded together).
+  const log = execFileSync("git", ["log", "--format=%s"], { cwd: bundleDir, encoding: "utf8" });
+  assert.match(log, /^turn \d+\.spec: derived spec view$/m,
+    "the derived spec must land as its own follow-up commit, distinguishable from the agent's turn commit");
+
+  // Durably persisted alongside the existing specCrlAtCurrent/crlAtCurrent.
+  const metaOnDisk = JSON.parse(fs.readFileSync(path.join(SESSIONS_ROOT, created.sessionId, "meta.json"), "utf8"));
+  assert.ok(metaOnDisk.specViewAtCurrent, "specViewAtCurrent must be persisted to meta.json");
+  assert.ok(metaOnDisk.specCrlAtCurrent, "specCrlAtCurrent must be persisted to meta.json");
+
+  sessions.deleteSession(created.sessionId);
+});
+
 test.after(() => { try { fs.rmSync(SESSIONS_ROOT, { recursive: true, force: true }); } catch {} });
