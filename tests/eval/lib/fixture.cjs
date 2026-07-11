@@ -413,12 +413,11 @@ function seedProseForm(bundleDir) {
   if (!target) throw new Error("seedProseForm: no form files found");
   const fp = path.join(formsDir, target);
   const form = JSON.parse(fs.readFileSync(fp, "utf8"));
+  // A single, clearly-instructional sentence (NOT a data-collection question) —
+  // short enough for a judge to quote verbatim, unmistakably prose-not-a-field.
   const proseText =
-    "IMPORTANT: Before starting this survey, explain to the respondent that " +
-    "all information collected is used solely for programme monitoring, " +
-    "participation is voluntary, and they may decline to answer any question " +
-    "without any effect on the services they receive. Read this notice aloud " +
-    "in the local language before proceeding; do not skip this step.";
+    "Please explain to the respondent that participation is voluntary and they may " +
+    "decline any question, then read this consent notice aloud before you begin.";
   const feUuid = crypto.randomUUID();
   const conceptUuid = crypto.randomUUID();
   const group = {
