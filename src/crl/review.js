@@ -161,3 +161,31 @@ export async function reviewSpec(specYamlOrPath, opts = {}) {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 }
+
+/**
+ * Wraps reviewBundle in scrub mode with bounded convergence: a scrub pass's own
+ * prunes can surface further issues (e.g. pruning a stray form leaves a
+ * now-dangling formMapping the next pass's deterministic check would catch —
+ * though MAJ-6 means a same-pass form prune no longer causes this for its OWN
+ * mapping), so re-run up to maxRetries times WHILE each pass still makes forward
+ * progress (applied/reverted something), then escalate for HITL if not yet ok.
+ * A pass that makes zero progress stops the loop immediately — it never burns
+ * retries on a defect no prune/fix can resolve.
+ */
+export async function crlGate(bundleDir, gateOpts = {}) {
+  const { delta = null, scopingCtx = {}, maxRetries = 3, hitl = true, confidenceThreshold = 0.85, doc } = gateOpts;
+  const reviewOpts = { mode: "scrub", delta, scopingCtx, confidenceThreshold, ...(doc ? { doc } : {}) };
+
+  let review = await reviewBundle(bundleDir, reviewOpts);
+  let retries = 0;
+  while (!review.ok && retries < maxRetries) {
+    const progressed = (review.executed?.applied.length || 0) > 0 || (review.executed?.reverted.length || 0) > 0;
+    if (!progressed) break;
+    retries++;
+    review = await reviewBundle(bundleDir, reviewOpts);
+  }
+
+  if (review.ok) return { pass: true, review, retries, escalated: false };
+  const escalated = hitl && !!review.escalate;
+  return { pass: false, review, retries, escalated };
+}

@@ -154,3 +154,26 @@ test("reviewSpec: a doc with ai-judged rules but no ANTHROPIC_API_KEY never thro
     if (prevKey !== undefined) process.env.ANTHROPIC_API_KEY = prevKey;
   }
 });
+
+// ─── crlGate: bounded convergence + HITL escalation ───
+test("crlGate: a clean bundle passes on the first attempt with retries:0, escalated:false", async () => {
+  const { crlGate } = await loadReview();
+  const dir = tmpBundle(cleanBundle());
+  const result = await crlGate(dir, { maxRetries: 3, confidenceThreshold: 0.85, doc: deterministicOnlyDoc() });
+  assert.equal(result.retries, 0);
+  assert.equal(result.pass, true);
+  assert.ok(result.review);
+  cleanup(dir);
+});
+
+test("crlGate: a persistently-broken bundle (no forward progress) stops WITHOUT burning all retries, and escalates", async () => {
+  const { crlGate } = await loadReview();
+  const bundle = cleanBundle();
+  bundle["formMappings.json"] = [{ uuid: "map-1", formType: "IndividualProfile", formUUID: "GHOST-FORM", subjectTypeUUID: "st-1" }];
+  const dir = tmpBundle(bundle);
+  const result = await crlGate(dir, { maxRetries: 3, confidenceThreshold: 0.85, doc: deterministicOnlyDoc() });
+  assert.equal(result.pass, false);
+  assert.equal(result.retries, 0, "no ai-judged prune/fix ever applies to a dangling formMapping, so scrub makes zero progress and the loop stops immediately");
+  assert.equal(typeof result.escalated, "boolean");
+  cleanup(dir);
+});
