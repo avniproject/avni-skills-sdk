@@ -72,3 +72,6 @@ tests/resources/doorstep/*.local.mjs
 
 # corpus:parity transient failure artifact (never commit — gained.json + baseline are the committed witnesses)
 tests/corpus/parity/lost.json
+
+# Acceptance-harness run artifact
+acceptance-report.json

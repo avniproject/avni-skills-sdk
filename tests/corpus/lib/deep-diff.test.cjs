@@ -9,6 +9,9 @@ const { loadOracle } = require("./corpus-loader.cjs");
 const { bundleDeepNames } = require("./deep-names.cjs");
 const { diffDeep } = require("./deep-diff.cjs");
 
+const phulwariRow = manifest().find((r) => r.org === "phulwari");
+const skipNoCorpus = !fs.existsSync(phulwariRow.oracle.dir) && "committed corpus siblings not checked out";
+
 function tmpBundle(files) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "deep-bundle-"));
   fs.mkdirSync(path.join(dir, "forms"), { recursive: true });
@@ -20,7 +23,7 @@ function tmpBundle(files) {
   return dir;
 }
 
-test("real bundle (phulwari): full-depth graph is rich and self-parity is clean", () => {
+test("real bundle (phulwari): full-depth graph is rich and self-parity is clean", { skip: skipNoCorpus }, () => {
   const dir = loadOracle(manifest().find((r) => r.org === "phulwari"));
   const g = bundleDeepNames(dir);
   // rich: the deep layers are actually populated

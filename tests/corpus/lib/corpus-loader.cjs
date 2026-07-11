@@ -24,13 +24,24 @@ function descendWrapper(dir) {
   return dir; // ambiguous — return as-is; the differ will report an empty bundle
 }
 
+// Extract a zip robustly. Some UAT exports carry filenames with non-ASCII chars
+// (e.g. an en-dash) that system `unzip` mangles under a non-UTF-8 locale; macOS
+// `ditto` handles them. Fall back to `unzip` elsewhere.
+function extractZip(zip, out) {
+  if (process.platform === "darwin") {
+    try { execSync(`ditto -x -k "${zip}" "${out}"`, { stdio: ["ignore", "pipe", "pipe"] }); return; }
+    catch { /* fall through to unzip */ }
+  }
+  execSync(`unzip -o -q "${zip}" -d "${out}"`, { stdio: ["ignore", "pipe", "pipe"] });
+}
+
 // Normalize {dir}|{zip} → a bundle directory.
 function loadOracle(row) {
   const oracle = (row && row.oracle) || {};
   if (oracle.dir) return oracle.dir;
   if (oracle.zip) {
     const out = fs.mkdtempSync(path.join(os.tmpdir(), "corpus-oracle-"));
-    execSync(`unzip -o -q "${oracle.zip}" -d "${out}"`, { stdio: ["ignore", "pipe", "pipe"] });
+    extractZip(oracle.zip, out);
     return descendWrapper(out);
   }
   throw new Error(`org ${row && row.org}: oracle has neither dir nor zip`);

@@ -25,6 +25,8 @@
     "corpus:validate": "node tests/corpus/run.cjs",
     "corpus:parity": "node tests/corpus/parity/run.cjs",
     "corpus:parity:snapshot": "node tests/corpus/parity/snapshot.cjs",
+    "acceptance": "node scripts/acceptance.mjs",
+    "acceptance:floor": "node --test tests/acceptance/*.test.cjs",
     "dashboard": "node scripts/observability-dashboard.mjs",
     "head-to-head": "node scripts/head-to-head.mjs",
     "repl:observed": "bash scripts/repl-with-dashboard.sh"

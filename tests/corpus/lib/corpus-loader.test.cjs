@@ -8,6 +8,10 @@ const { execSync } = require("node:child_process");
 const { manifest } = require("../manifest.cjs");
 const { hasInputs, loadOracle, listRunnableOrgs } = require("./corpus-loader.cjs");
 
+// Committed corpus lives in sibling repos; self-skip corpus-dependent cases when absent.
+const phulwariRow = manifest().find((r) => r.org === "phulwari");
+const skipNoCorpus = !fs.existsSync(phulwariRow.oracle.dir) && "committed corpus siblings not checked out";
+
 test("manifest distinguishes oracle-only (impl-bundles) from input+oracle (avni-ai)", () => {
   const byOrg = Object.fromEntries(manifest().map((r) => [r.org, r]));
   assert.ok(byOrg["phulwari"], "phulwari present");
@@ -16,7 +20,7 @@ test("manifest distinguishes oracle-only (impl-bundles) from input+oracle (avni-
   assert.equal(hasInputs(byOrg["Astitva"]), true, "avni-ai triads have scoping inputs");
 });
 
-test("loadOracle returns a real bundle dir for a committed oracle-only org (phulwari)", () => {
+test("loadOracle returns a real bundle dir for a committed oracle-only org (phulwari)", { skip: skipNoCorpus }, () => {
   const row = manifest().find((r) => r.org === "phulwari");
   const dir = loadOracle(row);
   assert.ok(
@@ -36,7 +40,7 @@ test("loadOracle unzips and auto-descends a single wrapper dir", () => {
   assert.ok(fs.existsSync(path.join(dir, "subjectTypes.json")), "descended into the bundle dir");
 });
 
-test("listRunnableOrgs excludes proprietary orgs unless real=true", () => {
+test("listRunnableOrgs excludes proprietary orgs unless real=true", { skip: skipNoCorpus }, () => {
   const rows = manifest();
   const committed = listRunnableOrgs(rows, { real: false });
   assert.ok(committed.length > 0, "some committed orgs present");
