@@ -1,0 +1,113 @@
+# compliance-doc.yaml — the CRL's rule catalogue: what a bundle must satisfy.
+# Two tiers:
+#   deterministic — zero LLM, backed by an EXISTING checker (rule-grounding /
+#     bundle-integrity / bundle-validator). Consumed by
+#     src/crl/deterministic-checker.js (Phase 1).
+#   ai-judged     — needs a live model. Consumed by src/crl/ai-judge.js
+#     (Phase 2, ANTHROPIC_API_KEY-gated; unset key ⇒ clean skip, never a
+#     silent gap — see the CRL reconciliation CRIT-1).
+#
+# Deterministic rules match findings either by an exact `codes` set (small,
+# closed code spaces — rule-grounding, FK/integrity) or, if `codes` is
+# omitted, by `source` alone (bundle-shape-valid's ~30 C/F/M/G/D codes aren't
+# worth enumerating — see src/crl/deterministic-checker.js).
+#
+# provenance describes WHY the rule exists — always org-free (a provenance
+# string naming a real NGO is itself a genericity-guard violation, see
+# tests/corpus/lib/genericity-guard.cjs ENGINE_GLOBS).
+
+version: 1
+
+rules:
+  # ─── deterministic — rule-body static grounding (rules-brain/validate.js) ───
+  - id: rule-body-parses
+    tier: deterministic
+    severity: error
+    source: rule-grounding
+    codes: [R1-SYNTAX, R2-WRAPPER, R3-BLOCKED-GLOBAL, R4-BAD-IMPORT, R5-BAD-RULESCONFIG-CLASS]
+    provenance: "rules-brain/validate.js R1/R2/R3/R4/R5 — a rule body that fails to parse, doesn't match the {params,imports} wrapper shape, references a forbidden global, imports an unwhitelisted API, or names an unknown rulesConfig class will throw at rules-server eval time."
+
+  - id: rule-uuid-liveness
+    tier: deterministic
+    severity: warning
+    source: rule-grounding
+    codes: [R3-UNKNOWN-IDENT, R6-UUID-UNCHECKED, R6-UUID-UNKNOWN]
+    provenance: "rules-brain/validate.js R3/R6 — an identifier that isn't a known local/global, or a UUID literal that doesn't resolve to a concept in concepts.json. Frequently a template-introduced binding or a non-concept UUID (encounterType/subjectType) — warning, not error, to avoid false positives."
+
+  # ─── deterministic — FK / dependency-graph integrity (runBundleIntegrityCheck) ───
+  # MAJ-11: split by severity — MISSING_REQUIRED_REF and DANGLING_REF are
+  # DISTINCT codes, coupled 1:1 to required/optional at emission (brain's
+  # spec/graph.js: `code = e.required ? 'MISSING_REQUIRED_REF' : 'DANGLING_REF'`).
+  # A dangling OPTIONAL ref must never fail the same gate as a dangling
+  # REQUIRED one — a legitimately committed bundle can carry the former.
+  - id: fk-coded-answer-resolves
+    tier: deterministic
+    severity: error
+    source: bundle-integrity
+    codes: [MISSING_REQUIRED_REF]
+    provenance: "bundle-mcp-server runBundleIntegrityCheck — a REQUIRED FK edge (fk-matrix.yaml presence:required/conditional) whose target uuid is absent. Blocks export today (bundle_export_to_path refuses to zip on any error finding)."
+
+  - id: fk-coded-answer-optional-present
+    tier: deterministic
+    severity: warning
+    source: bundle-integrity
+    codes: [DANGLING_REF]
+    provenance: "bundle-mcp-server runBundleIntegrityCheck — an OPTIONAL FK edge (fk-matrix.yaml presence:optional) whose target uuid is absent, e.g. encounterType.conceptUuid. Report-only: a committed bundle may carry these legitimately."
+
+  - id: formelement-concept-is-object
+    tier: deterministic
+    severity: error
+    source: bundle-integrity
+    codes: [FE_CONCEPT_NOT_OBJECT]
+    provenance: "bundle-mcp-server runBundleIntegrityCheck — formElement.concept must be a nested ConceptContract object, never a bare UUID string; the server crashes deserializing the bare-string shape (Jackson). Invisible to bundle-validator."
+
+  - id: address-level-type-name-valid
+    tier: deterministic
+    severity: error
+    source: bundle-integrity
+    codes: [ALT_INVALID_NAME]
+    provenance: "bundle-mcp-server runBundleIntegrityCheck — an addressLevelType name that is empty or contains < > = \" '. AVNI's LocationService rejects it on upload. Invisible to bundle-validator."
+
+  # ─── deterministic — shape/enum/closed-set (bundle.js validateBundle, C/F/M/G/D) ───
+  # No `codes:` — validateBundle returns bare-string errors/warnings (no
+  # structured per-item code field upstream in the brain's BundleValidator),
+  # so this rule matches by `source` alone; deterministic-checker.js still
+  # best-effort extracts a leading "<CODE>: " token per finding for grouping.
+  - id: bundle-shape-valid
+    tier: deterministic
+    severity: error
+    source: bundle-validator
+    provenance: "src/bundle.js validateBundle — the brain's 28-code BundleValidator (Concept/Form/Mapping/Group/Duplicate closed-set + shape checks, e.g. C4 invalid dataType, F5 dangling concept ref, D2 duplicate UUID)."
+
+  # ─── ai-judged — the four design-gap classes (Phase 2 consumes these) ───
+  - id: prose-should-be-form
+    tier: ai-judged
+    class: stray
+    severity: warning
+    action: flag-only
+    inputs: [artifact.forms]
+    provenance: "design gap#1: intent captured as prose (a Notes-type concept or an instructions blob) that should have been modelled as a structured form — invisible to every deterministic checker, since prose is syntactically valid."
+
+  - id: orphan-stray-concept
+    tier: ai-judged
+    class: stray
+    severity: warning
+    action: prune-candidate
+    inputs: [artifact.concepts, scopingCtx, deterministicFindings]
+    provenance: "design gap#1: a concept left behind by a prior edit or import, referenced by no form/rule/answer. The deterministic layer can prove NON-reference (bundle_find_references) but not INTENT — whether it's dead or deliberately pre-provisioned needs judgment against scopingCtx."
+
+  - id: rule-contradicts-intent
+    tier: ai-judged
+    class: contradicts-intent
+    severity: warning
+    action: flag-only
+    inputs: [artifact.files, scopingCtx]
+    provenance: "design gap#2: a rule body whose condition/branch logic contradicts the stated SRS/spec intent for that field — syntactically valid, passes rule-grounding, but does the wrong thing."
+
+  - id: naming-incoherent
+    tier: ai-judged
+    class: incoherent-name
+    severity: warning
+    action: flag-only
+    inputs: [artifact.concepts, artifact.forms]
+    provenance: "design gap#3: an entity name that is internally inconsistent with its sibling entities' naming convention (e.g. mixed casing/abbreviation style within one form's element group) — a coherence judgment, not a closed-set check."

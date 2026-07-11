@@ -1,0 +1,41 @@
+# spec-template.yaml — completeness checklist for a canonical Avni bundle spec
+# (the same YAML applySpec/specToEntities consume — see spec-format.yaml for
+# the entity/field contract this checks against). Consumed by CRL's
+# reviewSpec (Phase 2) to judge whether an authored spec fully captures its
+# stated intent BEFORE it is applied to a bundle — the "intent" half of the
+# compliance-guided review, mirroring compliance-doc.yaml's "artifact" half.
+#
+# NOT WIRED to a caller yet — no step in /spec or the authoring pipeline
+# invokes reviewSpec this delivery (open question O-1 in the CRL
+# reconciliation: product/pipeline-owner call on whether and where to gate
+# spec authoring on it). Authored now so Phase 2 has a real, versioned doc to
+# load instead of an inline test fixture.
+
+version: 1
+
+sections:
+  - id: entities-declared
+    tier: deterministic
+    check: "every entity kind referenced by the spec's stated intent (subjectType/program/encounterType/form/concept) has a corresponding block"
+    provenance: "spec-format.yaml entities — the same closed entity-kind list applySpec/specToEntities consume"
+
+  - id: rule-fields-intentional
+    tier: deterministic
+    check: "every *DeclarativeRule / rule field present on an entity traces to a sentence in the spec's stated intent — no orphan rule field copy-pasted from a neighbour with no stated purpose"
+    provenance: "rules-corpus-index.md authoring discipline #1 — every concept/rule a spec declares must trace to an actual requirement, not be invented"
+
+  - id: spec-completeness
+    tier: ai-judged
+    class: incomplete-intent
+    severity: warning
+    action: flag-only
+    inputs: [spec, scopingCtx]
+    provenance: "design gap#4: a spec that describes only a subset of the stated requirement (e.g. one form of a stated multi-form workflow) and silently under-delivers"
+
+  - id: spec-rule-intent-mismatch
+    tier: ai-judged
+    class: contradicts-intent
+    severity: warning
+    action: flag-only
+    inputs: [spec, scopingCtx]
+    provenance: "design gap#2, spec-layer mirror of compliance-doc.yaml's rule-contradicts-intent: a spec's declarative rule condition contradicts the field's own stated purpose, before it's ever compiled to JS"
