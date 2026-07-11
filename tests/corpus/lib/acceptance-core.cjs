@@ -10,6 +10,7 @@ const { bundleDeepNames } = require("./deep-names.cjs");
 const { diffDeep } = require("./deep-diff.cjs");
 const { runGenericityGuard } = require("./genericity-guard.cjs");
 const { ruleGrounding } = require("./rule-grounding.cjs");
+const { complianceCorpusValidity } = require("./compliance-validity.cjs");
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..", ".."); // tests/corpus/lib → repo root
 
@@ -18,6 +19,7 @@ const CRITERIA = [
   { key: "I4-parity",         theme: "I4 deep parity",                tier: "floor",       live: true },
   { key: "C5-generic",        theme: "C5 genericity (no hardcoding)", tier: "floor",       live: true },
   { key: "C3-rule-grounding", theme: "C3 rule grounding",             tier: "floor",       live: true },
+  { key: "CRL1-doc-validity", theme: "CRL1 compliance-doc validity",  tier: "floor",       live: true },
   { key: "C4-generate",       theme: "C4 generate→validate→enhance",  tier: "floor",       live: false, story: "1/8+gen" },
   { key: "C2-long-horizon",   theme: "C2 long-horizon edits",         tier: "floor",       live: false, story: "5", agent: true },
   { key: "C6-conversational", theme: "C6 conversational requests",    tier: "floor",       live: false, story: "5/6", agent: true },
@@ -51,6 +53,26 @@ async function runAcceptance({ real = false, hasKey = false, generate = false } 
         };
       } catch (e) {
         dims["C3-rule-grounding"] = { status: "amber", detail: `grounding failed: ${e.message}` };
+      }
+      // CRL1 — compliance-doc.yaml's deterministic rule set. A small,
+      // structural, non-negotiable subset (rule-body-parses,
+      // fk-coded-answer-resolves, formelement-concept-is-object,
+      // address-level-type-name-valid) gates green/red; the rest
+      // (bundle-shape-valid's C/F/M/G/D output, the two *-liveness /
+      // *-optional-present warning rules) is report-only — same "pre-existing
+      // deployed rules" rationale as C3-rule-grounding above.
+      // `row.complianceExceptions` (manifest-declared, org-specific,
+      // exact-count) absorbs already-known findings without loosening the
+      // underlying rule.
+      try {
+        const cv = await complianceCorpusValidity(dir, { exceptions: row.complianceExceptions || [] });
+        dims["CRL1-doc-validity"] = {
+          status: cv.status,
+          detail: `floorReds=${cv.floorReds.join(",") || "none"}`
+            + (cv.reportOnlyReds.length ? ` · reportOnly=${cv.reportOnlyReds.join(",")}` : ""),
+        };
+      } catch (e) {
+        dims["CRL1-doc-validity"] = { status: "amber", detail: `compliance-doc check failed: ${e.message}` };
       }
       // C4 generate→diff (opt-in; slow — runs the avni-skills generator). Gap is
       // expected for un-enhanced inputs → amber, never fails the floor.

@@ -1,6 +1,7 @@
 "use strict";
 // Acceptance-harness corpus manifest. Each org declares its capability:
-//   { org, tier:"committed"|"proprietary", inputs?:{srs,modelling?}, oracle:{dir}|{zip}, tolerate?:[] }
+//   { org, tier:"committed"|"proprietary", inputs?:{srs,modelling?}, oracle:{dir}|{zip}, tolerate?:[],
+//     complianceExceptions?:[{ruleId,code,count}] }
 // Orgs with no `inputs` are oracle-only (the generation dimension is skipped).
 // Only `committed` orgs load without RUN_REAL=1; proprietary orgs stay gitignored (rule §2).
 // The engine (loader/differ/orchestrator) carries ZERO org names — they live here.
@@ -44,7 +45,20 @@ const ORGS = [
     oracle: { zip: dss("Door Step School UAT.zip") } },
   { org: "Udgam Handicrafts", tier: "proprietary",
     inputs: { srs: res("udgam", "Udgam Handicrafts Scoping Document_.xlsx"), modelling: res("udgam", "Udgam Handicrafts LLP Avni Modelling.xlsx") },
-    oracle: { zip: res("udgam", "Udgam Handicrafts.zip") } },
+    oracle: { zip: res("udgam", "Udgam Handicrafts.zip") },
+    // Documented, exact-count CRL1 floor exception (O-5 / MAJ-11) — verified
+    // via `RUN_REAL=1 node --test tests/acceptance/compliance-doc.test.cjs`:
+    // 2 formElement skip-logic rules + 1 subjectSummaryRule fail
+    // rule-body-parses in the committed proprietary oracle. NEVER a blanket
+    // allowlist — complianceCorpusValidity() only absorbs exactly this many
+    // findings per code; any new/additional defect still reds the floor.
+    // The committed-tier oracles (incl. Astitva/Durga) need NO exception:
+    // measured live, they carry zero floor-gating findings (runBundleIntegrity
+    // ok=true, empty), so O-5's committed-org exact-count list is empty here.
+    complianceExceptions: [
+      { ruleId: "rule-body-parses", code: "R1-SYNTAX", count: 2 },
+      { ruleId: "rule-body-parses", code: "R2-WRAPPER", count: 1 },
+    ] },
   { org: "Bal Kalyan Sangh", tier: "proprietary",
     inputs: { srs: res("bks", "Bal Kalyan Sangh Scoping Document_.xlsx"), modelling: res("bks", "Bal Kalyan Sangh Modelling Document.xlsx") },
     oracle: { zip: res("bks", "Bal Kalyan Sangh.zip") } },
