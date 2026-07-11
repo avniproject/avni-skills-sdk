@@ -9,6 +9,7 @@ const { loadOracle, listRunnableOrgs, hasInputs } = require("./corpus-loader.cjs
 const { bundleDeepNames } = require("./deep-names.cjs");
 const { diffDeep } = require("./deep-diff.cjs");
 const { runGenericityGuard } = require("./genericity-guard.cjs");
+const { ruleGrounding } = require("./rule-grounding.cjs");
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..", ".."); // tests/corpus/lib → repo root
 
@@ -16,15 +17,15 @@ const REPO_ROOT = path.resolve(__dirname, "..", "..", ".."); // tests/corpus/lib
 const CRITERIA = [
   { key: "I4-parity",         theme: "I4 deep parity",                tier: "floor",       live: true },
   { key: "C5-generic",        theme: "C5 genericity (no hardcoding)", tier: "floor",       live: true },
+  { key: "C3-rule-grounding", theme: "C3 rule grounding",             tier: "floor",       live: true },
   { key: "C4-generate",       theme: "C4 generate→validate→enhance",  tier: "floor",       live: false, story: "1/8+gen" },
-  { key: "C3-rule-grounding", theme: "C3 rule grounding",             tier: "floor",       live: false, story: "3" },
   { key: "C2-long-horizon",   theme: "C2 long-horizon edits",         tier: "floor",       live: false, story: "5", agent: true },
   { key: "C6-conversational", theme: "C6 conversational requests",    tier: "floor",       live: false, story: "5/6", agent: true },
   { key: "C3-behavioral",     theme: "C3 behavioral rule parity",     tier: "aspirational", live: false, story: "11" },
   { key: "C1-merged-kb",      theme: "C1 merged.md retrieval",        tier: "aspirational", live: false, story: "7", agent: true },
 ];
 
-function runAcceptance({ real = false, hasKey = false } = {}) {
+async function runAcceptance({ real = false, hasKey = false } = {}) {
   const rows = listRunnableOrgs(manifest(), { real });
   const orgs = [];
   for (const row of rows) {
@@ -39,6 +40,18 @@ function runAcceptance({ real = false, hasKey = false } = {}) {
         detail: `st=${g.subjectTypes.size} forms=${g.forms.size} concepts=${g.concepts.size} fe=${g.formElements.size} rules=${g.ruleFields.size}`
           + (hasInputs(row) ? " · generation-parity pending (C4)" : " · oracle-only"),
       };
+      // C3 rule grounding — deterministic R1–R6 over the bundle's rules. Amber
+      // (report-only, never fails the floor) since these are pre-existing deployed
+      // rules; a generated bad rule becomes red once C4 generation lands.
+      try {
+        const rg = await ruleGrounding(dir);
+        dims["C3-rule-grounding"] = {
+          status: rg.errorCount === 0 ? "green" : "amber",
+          detail: `err=${rg.errorCount} warn=${rg.warningCount}` + (rg.errorCount ? ` ${JSON.stringify(rg.byCode)}` : ""),
+        };
+      } catch (e) {
+        dims["C3-rule-grounding"] = { status: "amber", detail: `grounding failed: ${e.message}` };
+      }
     } catch (e) {
       dims["I4-parity"] = { status: "red", detail: `load failed: ${e.message}` };
     }

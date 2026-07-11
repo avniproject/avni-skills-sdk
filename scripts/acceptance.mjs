@@ -14,16 +14,18 @@ const { runAcceptance, CRITERIA } = require("../tests/corpus/lib/acceptance-core
 
 const real = process.env.RUN_REAL === "1" || process.argv.includes("--real");
 const hasKey = !!process.env.ANTHROPIC_API_KEY;
-const res = runAcceptance({ real, hasKey });
+const res = await runAcceptance({ real, hasKey });
 
 const ICON = { green: "🟢", red: "🔴", amber: "🟡", skip: "⚪" };
 console.log(`\n=== Bundle-Authoring Acceptance Scorecard ===`);
 console.log(`corpus: ${res.orgs.length} runnable org(s) [${real ? "real+committed" : "committed"}]  ·  agent key: ${hasKey ? "present" : "absent"}\n`);
 
-console.log("Per-org deterministic floor — I4 deep parity:");
+console.log("Per-org deterministic floor — I4 deep parity + C3 rule grounding:");
 for (const o of res.orgs) {
-  const d = o.dims["I4-parity"];
-  console.log(`  ${ICON[d.status] || d.status} ${o.org.padEnd(16)} ${o.oracleOnly ? "[oracle]" : "[gen]   "} ${d.detail}`);
+  const p = o.dims["I4-parity"];
+  const rg = o.dims["C3-rule-grounding"];
+  console.log(`  ${ICON[p.status] || p.status} ${o.org.padEnd(16)} ${o.oracleOnly ? "[oracle]" : "[gen]   "} parity: ${p.detail}`);
+  if (rg) console.log(`     ${ICON[rg.status] || rg.status} rules:  ${rg.detail}`);
 }
 const c5 = res.global["C5-generic"];
 console.log(`\nGlobal — ${ICON[c5.status]} C5 genericity: ${c5.detail}\n`);
