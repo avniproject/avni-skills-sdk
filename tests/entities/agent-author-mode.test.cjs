@@ -573,11 +573,13 @@ test("createBundleMcpServer registers bundle_read_srs + bundle_generate_baseline
     const names = Object.keys(server?.instance?._registeredTools || {});
     for (const n of ["bundle_read_srs", "bundle_generate_baseline", "spec_apply", "spec_emit",
       "bundle_validator_run", "bundle_find_concept", "bundle_summary",
-      "bundle_export_to_path", "bundle_integrity_check", "bundle_find_references"]) {
+      "bundle_export_to_path", "bundle_integrity_check", "bundle_find_references",
+      "bundle_review", "bundle_scrub", "spec_review"]) {
       assert.ok(names.includes(n), `${n} not registered; saw: ${names.join(", ")}`);
     }
-    // All ten in-process MCP tools are registered.
-    assert.equal(names.length, 10, `expected 10 tools; saw ${names.length}: ${names.join(", ")}`);
+    // All thirteen in-process MCP tools are registered (Phase 4 appended
+    // bundle_review + bundle_scrub + spec_review — the CRL edit-loop wiring).
+    assert.equal(names.length, 13, `expected 13 tools; saw ${names.length}: ${names.join(", ")}`);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -25,6 +25,17 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { validateBundle, generateBundle, zipBundle as zipBundleDir } from "../bundle.js";
 import { applySpec, emitSpec } from "../pipeline.js";
 import { BUNDLE_TOOL_NAMES as FROZEN_BUNDLE_TOOL_NAMES } from "./bundle-mcp-tool-names.js";
+// Phase 4 — the CRL review layer. This creates a real bidirectional module
+// cycle (bundle-mcp-server.js ↔ crl/review.js ↔ crl/executor.js: review.js/
+// executor.js import buildMinimalSkeleton/findReferencesOnDir/
+// runBundleIntegrityCheck FROM this file). ESM resolves the cycle cleanly
+// because every cross-module reference is used ONLY inside a function body
+// (reviewOnDir/scrubOnDir/specReviewOnDir below call reviewBundle/reviewSpec at
+// call time; the CRL side likewise only calls this file's helpers at call
+// time) — never at module top-level evaluation. Do NOT convert to a dynamic
+// import(): the static import binding is fine and matches how the CRL side
+// already imports back from here. (minor 9/23/42.)
+import { reviewBundle, reviewSpec } from "../crl/review.js";
 
 // ─── brain dependency-graph loader (yaml-driven, single source of truth) ──
 //
@@ -1341,6 +1352,95 @@ export function buildCrlScopingCtx(bundleCwd) {
   return {};
 }
 
+/**
+ * Run the CRL's whole-config inspector against the bundle at `bundleCwd`.
+ * READ-ONLY — flags findings, changes nothing. Returns an MCP CallToolResult
+ * whose text is the ReviewResult (master §2.6). Never throws. Exported for
+ * direct unit testing (mirrors specApplyOnDir / exportBundleToPath).
+ */
+export async function reviewOnDir(bundleCwd) {
+  try {
+    const result = await reviewBundle(bundleCwd, {
+      mode: "inspect",
+      scopingCtx: buildCrlScopingCtx(bundleCwd),
+    });
+    return textResult(result);
+  } catch (e) {
+    return errorResult(`bundle_review failed: ${e.message}`);
+  }
+}
+
+/**
+ * Run the CRL in scrub mode against the bundle at `bundleCwd` — reviews, then
+ * APPLIES high-confidence prunes/fixes via the guardrailed executor (never
+ * touches a referenced/required entity; re-validates after each change;
+ * reverts any change that regresses). Returns an MCP CallToolResult whose text
+ * is the ReviewResult (master §2.6, includes `executed`). Never throws.
+ * Exported for direct unit testing.
+ */
+export async function scrubOnDir(bundleCwd, opts = {}) {
+  try {
+    const reviewOpts = { mode: "scrub", apply: true, scopingCtx: buildCrlScopingCtx(bundleCwd) };
+    if (typeof opts.confidenceThreshold === "number") reviewOpts.confidenceThreshold = opts.confidenceThreshold;
+    const result = await reviewBundle(bundleCwd, reviewOpts);
+    return textResult(result);
+  } catch (e) {
+    return errorResult(`bundle_scrub failed: ${e.message}`);
+  }
+}
+
+/**
+ * Run the CRL's spec-completeness inspector (O-1). Emits the CURRENT bundle
+ * back to the canonical YAML spec (emitSpec — the same intent view spec_emit
+ * exposes), then reviews that spec artifact against spec-template.yaml, judging
+ * INTENT coverage (never server-compliance — that is bundle_review's job).
+ * READ-ONLY — reviewSpec materialises into a temp dir it cleans up, and never
+ * touches `bundleCwd`. Returns an MCP CallToolResult whose text is the
+ * spec-kind ReviewResult. Never throws. Exported for direct unit testing.
+ */
+export async function specReviewOnDir(bundleCwd) {
+  try {
+    const files = readBundleFileMap(bundleCwd);
+    let org = "";
+    try {
+      const metaFp = path.join(bundleCwd, "..", "meta.json");
+      if (fs.existsSync(metaFp)) org = JSON.parse(fs.readFileSync(metaFp, "utf8")).org || "";
+    } catch {}
+    const specYaml = emitSpec({ existingBundleFiles: files, org });
+    const result = await reviewSpec(specYaml, { scopingCtx: buildCrlScopingCtx(bundleCwd) });
+    return textResult(result);
+  } catch (e) {
+    return errorResult(`spec_review failed: ${e.message}`);
+  }
+}
+
+function buildReviewTool(bundleCwd) {
+  return tool(
+    "bundle_review",
+    "Run the WHOLE-CONFIG compliance review (the CRL) against the current bundle: a deterministic pass (validator/integrity/rules — exact, free, no LLM) PLUS an AI-judged pass against ai-judged compliance rules (prose-vs-form, semantic stray/orphan, rule-matches-intent, naming coherence), grounded in this session's SRS when one is attached. READ-ONLY — flags findings, changes nothing. Returns { ok, deterministic, ai, report, escalate? }. RE-ROUTE findings by class: a 'completeness' finding is SPEC-level — fix it via spec_apply (or inspect it with spec_review); 'stray' / 'fk-integrity' / 'shape' / 'enum' / 'naming' / 'rule-body' findings are BUNDLE-level — fix via Edit/Write, or call bundle_scrub to prune high-confidence strays. If the result carries an `escalate`, STOP and put it to the user before acting — the review layer could not resolve it with confidence on its own.",
+    {},
+    async () => reviewOnDir(bundleCwd),
+  );
+}
+
+function buildScrubTool(bundleCwd) {
+  return tool(
+    "bundle_scrub",
+    "Run the CRL in SCRUB mode: reviews the bundle like bundle_review, then APPLIES high-confidence prunes/fixes via the guardrailed executor — never touches a referenced/required entity (checked via bundle_find_references before any prune), re-validates after each change, and REVERTS any change that regresses the validator. Use this once you (or the user) have decided flagged stray/non-compliant entries should actually be removed — do not call this reflexively on every bundle_review finding. Optional { confidenceThreshold } (default 0.85) raises/lowers the apply bar; raise it to be more conservative. Returns { ok, executed: { applied, reverted, skipped }, report }.",
+    { confidenceThreshold: z.number().min(0).max(1).optional().describe("Minimum AI-judge confidence required to apply a prune/fix (default 0.85). Raise to be more conservative; lower to apply more.") },
+    async ({ confidenceThreshold }) => scrubOnDir(bundleCwd, { confidenceThreshold }),
+  );
+}
+
+function buildSpecReviewTool(bundleCwd) {
+  return tool(
+    "spec_review",
+    "Run the CRL's SPEC-completeness inspector (the intent half): emits the current bundle back to the canonical spec and reviews it against spec-template.yaml, judging whether the spec COVERS what the org asked for (intent coverage) — NOT server-compliance, which is bundle_review's job (keep the two distinct). READ-ONLY — changes nothing. Returns a spec-kind { ok, deterministic, ai, report, escalate? }. Use this to catch a spec that is missing an entity/form/concept the SRS calls for before you author it into the bundle.",
+    {},
+    async () => specReviewOnDir(bundleCwd),
+  );
+}
+
 // ─── server factory ─────────────────────────────────────────────────
 
 /**
@@ -1376,6 +1476,9 @@ export function createBundleMcpServer(bundleCwd) {
       buildReadSrsTool(bundleCwd),
       buildGenerateBaselineTool(bundleCwd),
       buildFindReferencesTool(bundleCwd),
+      buildReviewTool(bundleCwd),
+      buildScrubTool(bundleCwd),
+      buildSpecReviewTool(bundleCwd),
     ],
     alwaysLoad: true,
   });
