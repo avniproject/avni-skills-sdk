@@ -88,3 +88,45 @@ test("buildIdentityIndex byKind exposes the 11 pinned singular keys (P2 KIND_TO_
     "group", "identifierSource", "program", "reportCard", "reportDashboard", "subjectType",
   ]);
 });
+
+// ─── Task 3 — bundleToRichEntities core + formMappings scope (M3, M4) ─
+
+test("bundleToRichEntities: real phulwari 'Child Enrolment' resolves subjectType/program via formMappings (not on the raw form)", { skip: skipNoCorpus }, async () => {
+  const { readRichBundleFileMap, buildIdentityIndex, bundleToRichEntities } = await loadEmit();
+  const fileMap = readRichBundleFileMap(loadOracle(phulwariRow));
+  const identityIndex = buildIdentityIndex(fileMap);
+  const entities = bundleToRichEntities(fileMap, { identityIndex });
+  const enrolForm = entities.forms.find((f) => f.name === "Child Enrolment");
+  assert.ok(enrolForm, "Child Enrolment form missing");
+  assert.equal(enrolForm.formType, "ProgramEnrolment");
+  assert.equal(enrolForm.program, "Phulwari");
+  // M3: the ProgramEnrolment row's subjectTypeUUID 9f2af1f9 = "Child" — a
+  // DIFFERENT subject type from the "Phulwari" GROUP subject type (ea7e5c94).
+  assert.equal(enrolForm.subjectType, "Child");
+
+  const prog = entities.programs.find((p) => p.name === "Phulwari");
+  assert.equal(prog.target_subject_type, "Child");
+  const enc = entities.encounter_types.find((e) => e.name === "Anthropometry Assessment");
+  assert.equal(enc.program_name, "Phulwari");
+  assert.equal(enc.subject_type, "Child");
+});
+
+test("bundleToRichEntities: SDK-patched form (already carries subjectType/program) is left untouched", async () => {
+  const { bundleToRichEntities } = await loadEmit();
+  const entities = bundleToRichEntities({
+    "subjectTypes.json": [{ uuid: "s1", name: "X" }],
+    "forms/F_a.json": { uuid: "f1", name: "Reg", formType: "IndividualProfile", subjectType: "X", formElementGroups: [] },
+  });
+  assert.equal(entities.forms[0].subjectType, "X");
+});
+
+test("bundleToRichEntities: caller's fileMap forms are not mutated (deep-cloned before enrich)", async () => {
+  const { bundleToRichEntities } = await loadEmit();
+  const fileMap = {
+    "subjectTypes.json": [{ uuid: "s1", name: "Child" }],
+    "formMappings.json": [{ formUUID: "f1", formType: "ProgramEnrolment", subjectTypeUUID: "s1" }],
+    "forms/F.json": { uuid: "f1", name: "Enrol", formElementGroups: [] },
+  };
+  bundleToRichEntities(fileMap);
+  assert.equal(fileMap["forms/F.json"].subjectType, undefined, "original fileMap form must stay un-enriched");
+});

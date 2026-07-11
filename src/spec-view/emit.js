@@ -123,3 +123,92 @@ export function buildIdentityIndex(fileMap) {
   }
   return { byKind, resolve };
 }
+
+// ─── 3. Rich entities reconstruction ─────────────────────────────────
+
+const arrOf = (fileMap, k) => (Array.isArray(fileMap[k]) ? fileMap[k] : []);
+const notVoided = (e) => !(e && e.voided);
+
+// Real bundle forms carry NO subjectType/program/encounterType — only
+// {name, uuid, formType}. Scope lives in formMappings.json. This enriches each
+// form in place (on a clone) so the emitter's findForm can nest it under the
+// right subjectType/program/encounterType block. Idempotent: only fills a field
+// when absent, so SDK-patched forms (which already carry scope) are untouched.
+function enrichFormsFromMappings(forms, formMappings, identityIndex) {
+  const byName = new Map(), byUuid = new Map();
+  for (const fm of (formMappings || [])) {
+    if (fm.voided) continue;
+    if (fm.formName && !byName.has(fm.formName)) byName.set(fm.formName, fm);
+    if (fm.formUUID && !byUuid.has(fm.formUUID)) byUuid.set(fm.formUUID, fm);
+  }
+  for (const f of forms) {
+    const fm = byUuid.get(f.uuid) || byName.get(f.name);
+    if (!fm) continue;
+    if (!f.formType && fm.formType) f.formType = fm.formType;
+    if (!f.subjectType && fm.subjectTypeUUID) f.subjectType = identityIndex.resolve(fm.subjectTypeUUID) || "";
+    if (!f.program && fm.programUUID) f.program = identityIndex.resolve(fm.programUUID) || "";
+    if (!f.encounterType && fm.encounterTypeUUID) f.encounterType = identityIndex.resolve(fm.encounterTypeUUID) || "";
+  }
+}
+
+// Direct formMappings → scope maps (mirrors avni-ai spec_handlers.py's
+// enc_uuid_to_prog / enc_uuid_to_st / prog_uuid_to_st). Derived independently of
+// the forms array, so program/encounterType scope never depends on form
+// enrichment having run first (M4 — removes the ordering hazard by construction).
+function deriveScopeMaps(formMappings, identityIndex) {
+  const progUuidToSt = new Map(), encUuidToProg = new Map(), encUuidToSt = new Map();
+  for (const fm of (formMappings || [])) {
+    if (fm.voided) continue;
+    const { encounterTypeUUID: e, programUUID: p, subjectTypeUUID: s, formType } = fm;
+    if (e && p) encUuidToProg.set(e, identityIndex.resolve(p) || "");
+    if (e && s) encUuidToSt.set(e, identityIndex.resolve(s) || "");
+    if (p && s && formType === "ProgramEnrolment") progUuidToSt.set(p, identityIndex.resolve(s) || "");
+  }
+  return { progUuidToSt, encUuidToProg, encUuidToSt };
+}
+
+export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
+  if (!fileMap || typeof fileMap !== "object") {
+    throw new Error("bundleToRichEntities: fileMap object required");
+  }
+  const idx = identityIndex || buildIdentityIndex(fileMap);
+
+  const subjectTypes   = arrOf(fileMap, "subjectTypes.json").filter(notVoided);
+  const programsRaw    = arrOf(fileMap, "programs.json").filter(notVoided);
+  const encounterTypes = arrOf(fileMap, "encounterTypes.json").filter(notVoided);
+  const groups         = arrOf(fileMap, "groups.json").filter(notVoided);
+  const formMappings   = arrOf(fileMap, "formMappings.json");
+  const { progUuidToSt, encUuidToProg, encUuidToSt } = deriveScopeMaps(formMappings, idx);
+
+  // Forms — collected from the file map, deep-CLONED (so the caller's fileMap is
+  // never mutated and enrich/sanitize is fully idempotent for the
+  // order-independence re-emit), voided-filtered, then enriched in place.
+  const forms = Object.entries(fileMap)
+    .filter(([p]) => p.startsWith("forms/") && p.endsWith(".json"))
+    .map(([, f]) => f)
+    .filter((f) => f && typeof f === "object" && !Array.isArray(f) && !f.voided)
+    .map((f) => structuredClone(f));
+  enrichFormsFromMappings(forms, formMappings, idx);
+
+  return {
+    org_name: "",
+    settings: {},
+    subject_types: subjectTypes.map((s) => ({ ...s })),
+    programs: programsRaw.map((p) => ({
+      ...p,
+      name: p.name,
+      target_subject_type: p.target_subject_type || progUuidToSt.get(p.uuid) || "",
+    })),
+    encounter_types: encounterTypes.map((e) => ({
+      ...e,
+      name: e.name,
+      program_name: e.program_name || encUuidToProg.get(e.uuid) || "",
+      subject_type: e.subject_type || encUuidToSt.get(e.uuid) || "",
+      is_program_encounter: e.is_program_encounter != null ? !!e.is_program_encounter : encUuidToProg.has(e.uuid),
+      is_scheduled: e.is_scheduled == null ? true : !!e.is_scheduled,
+    })),
+    groups: groups.map((g) => ({ name: g.name, has_all_privileges: !!g.hasAllPrivileges })),
+    forms,
+    concepts_detail: arrOf(fileMap, "concepts.json"),  // reshaped in Task 6
+  };
+}
