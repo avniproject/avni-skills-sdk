@@ -422,3 +422,40 @@ test("checklists + videos: reshape when present (synthetic)", async () => {
   assert.deepEqual(e.checklists[0], { name: "Vaccination", items: [{ name: "BCG", states: ["Due"] }] });
   assert.deepEqual(e.videos[0], { title: "Newborn care", filePath: "" });
 });
+
+// ─── Task 14 — deterministic ordering + emitRichSpec (M12) ──────────
+
+test("emitRichSpec: subjectTypes sorted by name regardless of file order", async () => {
+  const { emitRichSpec } = await loadEmit();
+  const yaml = emitRichSpec({ existingBundleFiles: {
+    "subjectTypes.json": [{ uuid: "s2", name: "Zebra" }, { uuid: "s1", name: "Alpha" }],
+  }, org: "T" });
+  const alphaIdx = yaml.indexOf("Alpha");
+  const zebraIdx = yaml.indexOf("Zebra");
+  assert.ok(alphaIdx > 0 && zebraIdx > alphaIdx, "Alpha must sort before Zebra");
+});
+
+test("emitRichSpec: order-independent — reversed fileMap key order still emits byte-identical YAML (real phulwari)", { skip: skipNoCorpus }, async () => {
+  const { readRichBundleFileMap, emitRichSpec } = await loadEmit();
+  const fileMap1 = readRichBundleFileMap(loadOracle(phulwariRow));
+  const y1 = emitRichSpec({ existingBundleFiles: fileMap1, org: "Phulwari" });
+  const fileMap2 = {};
+  for (const k of Object.keys(fileMap1).reverse()) fileMap2[k] = fileMap1[k];
+  const y2 = emitRichSpec({ existingBundleFiles: fileMap2, org: "Phulwari" });
+  assert.equal(y1, y2, "fileMap key order must not affect emitted YAML");
+});
+
+test("emitRichSpec: voided form + name-colliding active form — findForm nests the active one", async () => {
+  const { emitRichSpec } = await loadEmit();
+  const fileMap = {
+    "subjectTypes.json": [{ uuid: "s1", name: "Beneficiary" }],
+    "formMappings.json": [
+      { formUUID: "f-active", subjectTypeUUID: "s1", formType: "IndividualProfile", formName: "Registration", voided: false },
+    ],
+    "forms/Registration_voided.json": { uuid: "f-voided", name: "Registration", formType: "IndividualProfile", voided: true, formElementGroups: [{ name: "Old", formElements: [] }] },
+    "forms/Registration_active.json": { uuid: "f-active", name: "Registration", formType: "IndividualProfile", formElementGroups: [{ name: "New", formElements: [{ name: "Full Name", displayOrder: 1, mandatory: true }] }] },
+  };
+  const yaml = emitRichSpec({ existingBundleFiles: fileMap, org: "T" });
+  assert.match(yaml, /New/);
+  assert.doesNotMatch(yaml, /Old/);
+});

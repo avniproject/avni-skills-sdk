@@ -24,6 +24,26 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+
+// The YAML serializer is the brain's `entitiesToSpec` (unchanged) — keeping the
+// format identical preserves the parser↔emitter round-trip that reviewSpec
+// relies on. Resolve the brain the same way src/pipeline.js does (env or
+// sibling clone), lazily so importing this module never throws when the brain
+// isn't present (only emitRichSpec needs it).
+function resolveBrainPath() {
+  if (process.env.AVNI_SKILLS_PATH) return process.env.AVNI_SKILLS_PATH;
+  return path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "..", "..", "avni-skills");
+}
+let _entitiesToSpec;
+function entitiesToSpec(entities, org) {
+  if (!_entitiesToSpec) {
+    ({ entitiesToSpec: _entitiesToSpec } = require(path.join(resolveBrainPath(), "srs-bundle-generator/spec/emitter.js")));
+  }
+  return _entitiesToSpec(entities, org);
+}
 
 // ─── 1. Full-bundle file map ─────────────────────────────────────────
 //
@@ -463,6 +483,48 @@ function buildVideos(rows) {
   return undefinedIfEmpty(active);
 }
 
+// ─── Deterministic per-family ordering (diff-noise contract, M12) ────
+//
+// entitiesToSpec's findForm returns the FIRST array match with no voided filter
+// and no sort of its own — so stable, correct output is entirely this module's
+// responsibility. Voided forms with active-name collisions are real in the
+// corpus, so voided-filtering + tuple-sorting forms before findForm sees them is
+// load-bearing, not cosmetic. address_levels is deliberately excluded (owned by
+// entitiesToSpec's DESC-by-level sort).
+function cmp(a, b) { return a < b ? -1 : a > b ? 1 : 0; }
+function sortBy(arr, keyFn) {
+  if (Array.isArray(arr)) arr.sort((x, y) => cmp(keyFn(x), keyFn(y)));
+}
+const s = (v) => (v == null ? "" : String(v));
+
+function sortFamiliesForStableOutput(entities) {
+  const byName = (e) => s(e.name);
+  sortBy(entities.subject_types, byName);
+  sortBy(entities.programs, byName);
+  sortBy(entities.encounter_types, byName);
+  sortBy(entities.groups, byName);
+  sortBy(entities.concepts_detail, byName);
+  sortBy(entities.identifier_sources, byName);
+  sortBy(entities.report_cards, byName);
+  sortBy(entities.report_dashboards, byName);
+  sortBy(entities.message_rules, byName);
+  sortBy(entities.individual_relations, byName);
+  sortBy(entities.catchments, byName);
+  sortBy(entities.documentations, byName);
+  sortBy(entities.checklists, byName);
+  sortBy(entities.videos, (v) => s(v.title));
+  sortBy(entities.menu_items, (m) => s(m.displayKey));
+  sortBy(entities.group_roles, (r) => s(r.role));
+  sortBy(entities.relationship_types, (r) => `${s(r.aIsToB)} ${s(r.bIsToA)}`);
+  sortBy(entities.group_privileges, (g) => s(g.group));
+  sortBy(entities.group_dashboards, (g) => `${s(g.groupName)} ${s(g.dashboardName)}`);
+  // forms — voided already filtered; tuple sort so findForm's first-match is
+  // stable across machines even when scope ties (M12).
+  sortBy(entities.forms, (f) =>
+    [s(f.formType), s(f.subjectType), s(f.program), s(f.encounterType), s(f.name), s(f.uuid)].join(" "));
+  return entities;
+}
+
 export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
   if (!fileMap || typeof fileMap !== "object") {
     throw new Error("bundleToRichEntities: fileMap object required");
@@ -488,7 +550,7 @@ export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
 
   const orgConfig = fileMap["organisationConfig.json"];
 
-  return {
+  const entities = {
     org_name: "",
     settings: buildSettings(orgConfig, idx),
     address_levels: buildAddressLevels(arrOf(fileMap, "addressLevelTypes.json"), idx),
@@ -526,4 +588,21 @@ export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
     checklists: buildChecklists(arrOf(fileMap, "checklist.json")),
     videos: buildVideos(arrOf(fileMap, "video.json")),
   };
+  return sortFamiliesForStableOutput(entities);
+}
+
+// ─── 4. Public entry ─────────────────────────────────────────────────
+
+export function emitRichSpec({ bundleDir, existingBundleFiles, org = "" } = {}) {
+  let fileMap;
+  if (existingBundleFiles && typeof existingBundleFiles === "object") {
+    fileMap = existingBundleFiles;
+  } else if (bundleDir) {
+    fileMap = readRichBundleFileMap(bundleDir);
+  } else {
+    throw new Error("emitRichSpec: either bundleDir or existingBundleFiles required");
+  }
+  const identityIndex = buildIdentityIndex(fileMap);
+  const entities = bundleToRichEntities(fileMap, { identityIndex });
+  return entitiesToSpec(entities, org || entities.org_name || "");
 }
