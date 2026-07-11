@@ -399,6 +399,34 @@ function buildGroupDashboards(rows) {
   return undefinedIfEmpty(active);
 }
 
+// catchments.json is wrapped {catchments:[...]} in real exports (or a bare
+// array). Emit {name, locationCount?} — the location membership itself is
+// instance data, out of scope for the intent view.
+function buildCatchments(raw) {
+  const rows = Array.isArray(raw) ? raw
+    : (raw && typeof raw === "object" && Array.isArray(raw.catchments) ? raw.catchments : []);
+  const active = rows.filter(notVoided).map((c) => {
+    const out = { name: c.name || "" };
+    if (Array.isArray(c.locations)) out.locationCount = c.locations.length;
+    return out;
+  });
+  return undefinedIfEmpty(active);
+}
+
+// locations.json can be 9,000+ instance rows — never list them; aggregate to a
+// count + a per-type breakdown. byType keys are sorted alphabetically for
+// byte-stability (locations aren't name-array-shaped so the per-array name-sort
+// doesn't apply — this is a deliberate determinism choice).
+function buildLocationsSummary(rows) {
+  const active = (rows || []).filter(notVoided);
+  if (!active.length) return undefined;
+  const counts = {};
+  for (const l of active) { const t = l.type || "Unknown"; counts[t] = (counts[t] || 0) + 1; }
+  const byType = {};
+  for (const t of Object.keys(counts).sort()) byType[t] = counts[t];
+  return { totalCount: active.length, byType };
+}
+
 export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
   if (!fileMap || typeof fileMap !== "object") {
     throw new Error("bundleToRichEntities: fileMap object required");
@@ -455,5 +483,7 @@ export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
     menu_items: buildMenuItems(arrOf(fileMap, "menuItem.json")),
     group_privileges: buildGroupPrivileges(arrOf(fileMap, "groupPrivilege.json"), idx),
     group_dashboards: buildGroupDashboards(arrOf(fileMap, "groupDashboards.json")),
+    catchments: buildCatchments(fileMap["catchments.json"]),
+    locations: buildLocationsSummary(arrOf(fileMap, "locations.json")),
   };
 }

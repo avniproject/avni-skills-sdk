@@ -369,3 +369,27 @@ test("groupDashboards: real community rows keep only non-voided; voided Everyone
   assert.ok(e.group_dashboards.every((g) => g.groupName && g.dashboardName));
   assert.ok(!e.group_dashboards.some((g) => g.groupName === "Everyone" && g.dashboardName === "Default Dashboard"), "voided Everyone/Default row must be excluded");
 });
+
+// ─── Task 12 — catchments + locations (aggregate) ───────────────────
+
+test("catchments: real community wrapped {catchments:[...]} unwraps, locationCount from locations.length, voided excluded", { skip: skipNoCommunity }, async () => {
+  const { readRichBundleFileMap, bundleToRichEntities } = await loadEmit();
+  const e = bundleToRichEntities(readRichBundleFileMap(loadOracle(communityRow)));
+  assert.ok(e.catchments.length > 0);
+  assert.ok(e.catchments.every((c) => c.name));
+  const mehadwani = e.catchments.find((c) => c.name === "mehadwani_chc");
+  assert.equal(mehadwani.locationCount, 1);
+});
+
+test("locations: aggregates to totalCount + byType, excludes voided", async () => {
+  const { bundleToRichEntities } = await loadEmit();
+  const e = bundleToRichEntities({
+    "locations.json": [
+      { uuid: "l1", name: "A", type: "District" },
+      { uuid: "l2", name: "B", type: "District" },
+      { uuid: "l3", name: "C", type: "Village", voided: true },
+    ],
+  });
+  assert.equal(e.locations.totalCount, 2);
+  assert.deepEqual(e.locations.byType, { District: 2 });
+});
