@@ -28,6 +28,7 @@ process.env.SDK_SESSIONS_DIR = SESSIONS_ROOT;
 
 async function loadSessions() { return import("../../src/sessions.js?t=" + Date.now()); }
 async function loadServer() { return import("../../src/agents/bundle-mcp-server.js?t=" + Date.now()); }
+async function loadCrlDoc() { return import("../../src/crl/compliance-doc.js?t=" + Date.now()); }
 
 function writeSkeleton(bundleDir, files) {
   for (const [rel, val] of Object.entries(files)) {
@@ -339,6 +340,46 @@ test("commitWorkspaceChanges: SDK_SPEC_VIEW on (default) — a bundle-only turn 
   assert.ok(metaOnDisk.specCrlAtCurrent, "specCrlAtCurrent must be persisted to meta.json");
 
   sessions.deleteSession(created.sessionId);
+});
+
+// ─── HONEST INERT-GATE NOTE (synthesis M1, P4 T2) ────────────────────────────
+// The pre-existing off-case assertion above is owned by P3 (the SDK_SPEC_VIEW=off
+// isolation variant); there is NO duplicate off-variant in this file for P4 to
+// delete. What P4 T2 adds instead is this: an EXECUTABLE proof of WHY the wired
+// production spec gate is inert today — so the "no teeth this delivery" claim is
+// a checked invariant, not a comment that can silently rot.
+//
+// The production spec-template.yaml is `sections:`-shaped: a top-level `sections:`
+// array and NO top-level `rules:` key. reviewSpec resolves its doc via
+// `opts.doc || loadSpecTemplate()`; both deterministicRulesOf(doc) and
+// aiRulesOf(doc) filter `(doc.rules || [])`, so with no `rules:` key BOTH return
+// [] unconditionally. Through the production path (runSpecGateSafely → reviewSpec,
+// no doc override): the deterministic checker runs over zero rules (vacuously ok)
+// and runAiPass short-circuits on `judged.length === 0` BEFORE it ever reads
+// ANTHROPIC_API_KEY (review.js:48). So the wired gate flags nothing on EITHER
+// tier, key or no key. P4 ships the derived spec persisted + committed + diffable
+// + passed through the gate wrapper at zero new spend — NOT intent-completeness
+// teeth. Real teeth (a `rules:`-bearing template exercised through the unmodified
+// production path) is a deferred, human-gated Task 5 (Residual Q1) — not built
+// here, not stubbed here.
+//
+// LOSSY ROUND-TRIP NOTE (synthesis M1): even were the template rules-bearing,
+// reviewSpec re-materializes the spec via applySpec → the brain's specToEntities,
+// which round-trips only the 6 hard-coded top-level entities + 9 PASSTHROUGH
+// families (menuItems, messageRules, groupPrivileges, groupDashboards,
+// individualRelations, catchments, locations, concepts, ruleDependency). P1's
+// rich families outside that set — reportCards, reportDashboards,
+// identifierSources, documentations, checklists, videos — are persisted +
+// diffable in the committed spec.yaml but silently dropped the moment reviewSpec
+// re-materializes into its throwaway tmpDir, so they can never be AI-reviewed by
+// reviewSpec — a structural ceiling independent of any future template.
+test("spec-template.yaml is `sections:`-shaped (no top-level `rules:` key) → the WIRED production spec gate is INERT: deterministicRulesOf/aiRulesOf both resolve to [], so it flags nothing on either tier, key or no key (synthesis M1 — P4 is persistence+audit, not teeth)", async () => {
+  const { loadSpecTemplate, deterministicRulesOf, aiRulesOf } = await loadCrlDoc();
+  const doc = loadSpecTemplate(); // the REAL production template — no opts.doc override, exactly what runSpecGateSafely → reviewSpec loads
+  assert.ok(Array.isArray(doc.sections), "the production template is sections-shaped (a `sections:` array)");
+  assert.equal(doc.rules, undefined, "the production template has NO top-level `rules:` key — this is the SOLE reason the gate is inert");
+  assert.deepEqual(deterministicRulesOf(doc), [], "no `rules:` key ⇒ zero deterministic rules fire, unconditionally");
+  assert.deepEqual(aiRulesOf(doc), [], "no `rules:` key ⇒ zero ai-judged rules fire (runAiPass short-circuits on judged.length===0 BEFORE the ANTHROPIC_API_KEY check)");
 });
 
 test.after(() => { try { fs.rmSync(SESSIONS_ROOT, { recursive: true, force: true }); } catch {} });
