@@ -365,6 +365,40 @@ function buildMenuItems(rows) {
   return undefinedIfEmpty(active);
 }
 
+// groupPrivilege rows carry groupUUID only (never groupName) plus optional
+// scoping FKs (subjectTypeUUID/programUUID/encounterTypeUUID/programEncounterType
+// UUID). Group by resolved group name; resolve every scoping UUID; drop allow:false
+// and voided rows.
+function buildGroupPrivileges(rows, identityIndex) {
+  const byGroup = new Map();
+  for (const r of (rows || [])) {
+    if (r.voided || r.allow === false) continue;
+    const group = identityIndex.resolve(r.groupUUID) || "";
+    const priv = {};
+    if (r.privilegeType) priv.type = r.privilegeType;
+    for (const [uKey, nKey] of [
+      ["subjectTypeUUID", "subjectType"], ["programUUID", "program"],
+      ["encounterTypeUUID", "encounterType"], ["programEncounterTypeUUID", "programEncounterType"],
+    ]) {
+      if (r[uKey]) { const n = identityIndex.resolve(r[uKey]); if (n) priv[nKey] = n; }
+    }
+    if (!byGroup.has(group)) byGroup.set(group, []);
+    byGroup.get(group).push(priv);
+  }
+  if (!byGroup.size) return undefined;
+  return [...byGroup.entries()].map(([group, privileges]) => ({ group, privileges }));
+}
+
+function buildGroupDashboards(rows) {
+  const active = (rows || []).filter(notVoided).map((d) => {
+    const out = { groupName: d.groupName || "", dashboardName: d.dashboardName || "" };
+    if (d.primaryDashboard != null) out.primaryDashboard = d.primaryDashboard;
+    if (d.secondaryDashboard != null) out.secondaryDashboard = d.secondaryDashboard;
+    return out;
+  });
+  return undefinedIfEmpty(active);
+}
+
 export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
   if (!fileMap || typeof fileMap !== "object") {
     throw new Error("bundleToRichEntities: fileMap object required");
@@ -419,5 +453,7 @@ export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
     report_dashboards: buildReportDashboards(arrOf(fileMap, "reportDashboard.json")),
     message_rules: buildMessageRules(arrOf(fileMap, "messageRule.json"), idx),
     menu_items: buildMenuItems(arrOf(fileMap, "menuItem.json")),
+    group_privileges: buildGroupPrivileges(arrOf(fileMap, "groupPrivilege.json"), idx),
+    group_dashboards: buildGroupDashboards(arrOf(fileMap, "groupDashboards.json")),
   };
 }

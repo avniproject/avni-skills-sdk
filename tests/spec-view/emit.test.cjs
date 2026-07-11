@@ -342,3 +342,30 @@ test("messageRules: entityTypeUuid resolves to entityTypeName; entityType enum s
   assert.equal(e.message_rules[0].entityTypeName, "ANC Visit");
   assert.equal(e.message_rules[0].entityTypeUuid, undefined);
 });
+
+// ─── Task 11 — groupPrivileges + groupDashboards ────────────────────
+
+test("groupPrivileges: real phulwari groupUUID resolves to group name (no groupName on the row)", { skip: skipNoCorpus }, async () => {
+  const { readRichBundleFileMap, buildIdentityIndex, bundleToRichEntities } = await loadEmit();
+  const fileMap = readRichBundleFileMap(loadOracle(phulwariRow));
+  const e = bundleToRichEntities(fileMap, { identityIndex: buildIdentityIndex(fileMap) });
+  const everyone = e.group_privileges.find((g) => g.group === "Everyone");
+  assert.ok(everyone, `groups: ${e.group_privileges.map((g) => g.group).join(",")}`);
+});
+
+test("groupPrivileges: explicit allow:false rows excluded", async () => {
+  const { bundleToRichEntities, buildIdentityIndex } = await loadEmit();
+  const fileMap = {
+    "groups.json": [{ uuid: "g1", name: "Everyone" }],
+    "groupPrivilege.json": [{ uuid: "p1", groupUUID: "g1", privilegeType: "Messaging", allow: false }],
+  };
+  const e = bundleToRichEntities(fileMap, { identityIndex: buildIdentityIndex(fileMap) });
+  assert.equal(e.group_privileges, undefined);
+});
+
+test("groupDashboards: real community rows keep only non-voided; voided Everyone/Default row excluded", { skip: skipNoCommunity }, async () => {
+  const { readRichBundleFileMap, bundleToRichEntities } = await loadEmit();
+  const e = bundleToRichEntities(readRichBundleFileMap(loadOracle(communityRow)));
+  assert.ok(e.group_dashboards.every((g) => g.groupName && g.dashboardName));
+  assert.ok(!e.group_dashboards.some((g) => g.groupName === "Everyone" && g.dashboardName === "Default Dashboard"), "voided Everyone/Default row must be excluded");
+});
