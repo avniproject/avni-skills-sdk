@@ -1,4 +1,4 @@
-// 24-author-skip-logic-rule.cjs  (category: rule-authoring)
+// 24-author-skip-logic-rule.cjs  (category: correctness)
 //
 // What it proves (C3, the vision's critical path): the agent can AUTHOR a
 // grounded form-element skip-logic / view-filter rule from a plain-language
@@ -18,9 +18,9 @@ const { ruleGrounding } = require("../../corpus/lib/rule-grounding.cjs");
 
 module.exports = {
   name: "24-author-skip-logic-rule",
-  category: "rule-authoring",
+  category: "correctness",
   description:
-    "[rule-authoring] Author a grounded form-element skip-logic rule (show Religion only when Age ≥ 18); rule must be R1–R6 valid.",
+    "[correctness] Author a grounded form-element skip-logic rule (show Religion only when Age ≥ 18); rule must be R1–R6 valid.",
 
   setupFixture: ({ fixture }) => fixture.buildBaseSrsBuffers({ org: "TestOrgRuleAuthor" }),
 
