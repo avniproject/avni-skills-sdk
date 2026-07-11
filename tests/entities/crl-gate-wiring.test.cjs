@@ -29,6 +29,8 @@ process.env.SDK_SESSIONS_DIR = SESSIONS_ROOT;
 async function loadSessions() { return import("../../src/sessions.js?t=" + Date.now()); }
 async function loadServer() { return import("../../src/agents/bundle-mcp-server.js?t=" + Date.now()); }
 async function loadCrlDoc() { return import("../../src/crl/compliance-doc.js?t=" + Date.now()); }
+async function loadPipeline() { return import("../../src/pipeline.js?t=" + Date.now()); }
+async function loadReview() { return import("../../src/crl/review.js?t=" + Date.now()); }
 
 function writeSkeleton(bundleDir, files) {
   for (const [rel, val] of Object.entries(files)) {
@@ -380,6 +382,60 @@ test("spec-template.yaml is `sections:`-shaped (no top-level `rules:` key) → t
   assert.equal(doc.rules, undefined, "the production template has NO top-level `rules:` key — this is the SOLE reason the gate is inert");
   assert.deepEqual(deterministicRulesOf(doc), [], "no `rules:` key ⇒ zero deterministic rules fire, unconditionally");
   assert.deepEqual(aiRulesOf(doc), [], "no `rules:` key ⇒ zero ai-judged rules fire (runAiPass short-circuits on judged.length===0 BEFORE the ANTHROPIC_API_KEY check)");
+});
+
+// ─── reviewSpec CAPABILITY tests (synthesis M1, P4 T3/T4) ────────────────────
+// The two tests below drive reviewSpec with a BESPOKE `rules:`-bearing doc via
+// opts.doc. They prove reviewSpec's own AI-pass wiring + CRIT-1 keyless guard
+// behave correctly WHEN GIVEN a doc that actually has ai-judged rules. They are
+// EXPLICITLY NOT the production path: the real spec-template.yaml is rules-less
+// (proven inert by the test above) and never reaches this code path at all, and
+// `scopingCtx: {orgAsk}` is not the shape buildCrlScopingCtx ever produces in
+// production (`{srs}` or `{}`). Reuses the shape of tests/eval/cases/29-spec-
+// completeness.cjs, applied to a spec EMITTED from a real bundle (pipeline.emitSpec
+// — the same emitter src/spec-view/sync.js writes spec.yaml from), not hand-typed
+// YAML — so the "derived, not hand-authored" spec still carries the signal.
+const SPEC_COMPLETENESS_DOC = {
+  version: 1,
+  rules: [
+    {
+      id: "spec-completeness",
+      tier: "ai-judged",
+      class: "incomplete-intent",
+      severity: "warning",
+      action: "flag-only",
+      inputs: ["spec", "scopingCtx"],
+      description:
+        "The spec must fully capture the stated intent. Flag any entity, form, encounter, or workflow step the stated intent explicitly asked for that the spec omits (e.g. a required monthly visit / encounter form that is missing).",
+    },
+  ],
+};
+
+const FULL_INTENT =
+  "The Individual registration flow must capture BOTH: (1) registration — record " +
+  "the person's Name at registration; AND (2) a monthly Health Check VISIT " +
+  "encounter form recording the person's Weight at every visit. The spec must " +
+  "model both the registration form and the monthly Health Check visit " +
+  "encounter form.";
+
+test("reviewSpec: a DERIVED incomplete spec (pipeline.emitSpec over buildMinimalSkeleton — registration only, no encounter) clean-skips the ai-judged completeness rule keyless (CRIT-1) — the AI part is budget-gated, never silently required [CAPABILITY test, bespoke doc, NOT the production spec-template.yaml path]", async () => {
+  const pipeline = await loadPipeline();
+  const { buildMinimalSkeleton } = await loadServer();
+  const { reviewSpec } = await loadReview();
+
+  const derivedSpecYaml = pipeline.emitSpec({ existingBundleFiles: buildMinimalSkeleton(), org: "SpecCompleteOrg" });
+  assert.equal(typeof derivedSpecYaml, "string");
+  assert.doesNotMatch(derivedSpecYaml, /encounterTypes:/,
+    "buildMinimalSkeleton has no encounter type — the derived spec must genuinely omit it, or this test proves nothing");
+
+  const review = await reviewSpec(derivedSpecYaml, {
+    doc: SPEC_COMPLETENESS_DOC,
+    scopingCtx: { orgAsk: FULL_INTENT },
+  });
+
+  assert.equal(review.kind, "spec");
+  assert.deepEqual(review.ai, { findings: [], confidence: 1, costUsd: 0 },
+    "keyless (ANTHROPIC_API_KEY unset for this whole file) — the ai-judged pass must clean-skip, never throw or silently spend");
 });
 
 test.after(() => { try { fs.rmSync(SESSIONS_ROOT, { recursive: true, force: true }); } catch {} });
