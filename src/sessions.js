@@ -441,12 +441,28 @@ export function currentValidatorStateText(id) {
   const integrityErrors = integrity.findings.filter((f) => f.severity === "error");
   const integrityWarnings = integrity.findings.filter((f) => f.severity === "warning");
 
+  // Phase 4 — durable cross-session CRL state. Read straight from meta, NOT
+  // recomputed here: crlGate already ran once, inside commitWorkspaceChanges,
+  // for the turn that produced the current HEAD. This is what lets a bundle
+  // resumed cold (fresh SDK session, or resumed months later) see the last
+  // review-layer outcome — including a still-unresolved HITL escalation, or that
+  // the gate was deliberately disabled — instead of re-litigating it or silently
+  // losing it.
+  let crl = null;
+  try { crl = readMeta(id).crlAtCurrent || null; } catch { crl = null; }
+
   const validatorClean = r.valid && r.warnings.length === 0;
   const integrityClean = integrityErrors.length === 0 && integrityWarnings.length === 0;
+  // A bundle can be validator-clean AND integrity-clean yet still carry an
+  // unresolved CRL finding (a stray prose-form, an orphan concept, a pending
+  // HITL escalation) — or the gate may simply not have been evaluated
+  // (SDK_CRL_GATE=off, or a CRL-layer failure). Either way the "fully clean"
+  // shortcut below must not hide that.
+  const crlClean = !crl || crl.pass === true;
 
   let text;
-  if (validatorClean && integrityClean) {
-    text = "CURRENT VALIDATOR + INTEGRITY STATE (server-truth): ✓ bundle is clean — no validator errors, no integrity errors, no warnings.";
+  if (validatorClean && integrityClean && crlClean) {
+    text = "CURRENT VALIDATOR + INTEGRITY STATE (server-truth): ✓ bundle is clean — no validator errors, no integrity errors, no warnings, CRL review passed.";
   } else {
     const lines = ["CURRENT VALIDATOR + INTEGRITY STATE (server-truth — do not re-discover, do not guess error codes, do not fabricate codes):"];
     // ── validator section ──
@@ -481,8 +497,27 @@ export function currentValidatorStateText(id) {
     } else if (integrity.ok !== null) {
       lines.push("  INTEGRITY: ✓ clean.");
     }
+    // ── CRL section (Phase 4 — durable per-change gate result) ──
+    if (crl) {
+      lines.push("  CRL (compliance-guided review — last per-change gate result):");
+      if (crl.pass === null) {
+        if (crl.disabled) {
+          lines.push("    disabled (SDK_CRL_GATE=off) — not evaluated this turn.");
+        } else {
+          lines.push(`    unknown — CRL did not run last turn (${crl.error || "unavailable"}). Not evaluated; do not treat as clean.`);
+        }
+      } else if (crl.escalated) {
+        const reason = (crl.review && crl.review.escalate && crl.review.escalate.reason) || "unspecified";
+        lines.push(`    ESCALATED (HITL pause) after ${crl.retries} retr${crl.retries === 1 ? "y" : "ies"}: ${reason}`);
+        lines.push("    Surface this to the user and get their call before proceeding — do not guess a resolution.");
+      } else if (crl.pass === false) {
+        lines.push("    findings present — call mcp__avni-bundle__bundle_review for detail before continuing.");
+      } else {
+        lines.push("    ✓ clean — deterministic + AI-judged review passed.");
+      }
+    }
     lines.push("");
-    lines.push("If the user says \"what is the error?\" or \"fix the error\", refer to the items above verbatim. Validator codes are real (C-class = concepts, F-class = forms/formMappings, R-class = rules, G-class = enums); integrity codes (FE_CONCEPT_NOT_OBJECT, ALT_INVALID_NAME, MISSING_REQUIRED_REF, DANGLING_REF) are the server-only traps. Use them exactly as shown. Do not invent a code that is not in this list. The bundle is NOT ready to export until BOTH sections are error-free.");
+    lines.push("If the user says \"what is the error?\" or \"fix the error\", refer to the items above verbatim. Validator codes are real (C-class = concepts, F-class = forms/formMappings, R-class = rules, G-class = enums); integrity codes (FE_CONCEPT_NOT_OBJECT, ALT_INVALID_NAME, MISSING_REQUIRED_REF, DANGLING_REF) are the server-only traps. Use them exactly as shown. Do not invent a code that is not in this list. The bundle is NOT ready to export until the VALIDATOR and INTEGRITY sections are error-free AND any CRL escalation above has been resolved with the user.");
     text = lines.join("\n");
   }
   VALIDATOR_CACHE.set(id, { sha: headSha, text, ts: Date.now() });
