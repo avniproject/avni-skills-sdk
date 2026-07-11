@@ -65,7 +65,7 @@ async function runAcceptance({ real = false, hasKey = false, generate = false } 
             : {
                 status: gd.pass ? "green" : "amber",
                 detail: `parity ${gd.pass ? "PASS" : "gap"} — `
-                  + Object.entries(gd.gap).map(([k, v]) => `${k} ${v.present}/${v.present + v.missing}`).join("  "),
+                  + Object.entries(gd.gap).map(([k, v]) => `${k} ${v.present}/${v.present + v.missing}${v.extra ? `(+${v.extra}x)` : ""}`).join("  "),
               };
         } catch (e) {
           dims["C4-generate"] = { status: "amber", detail: `generation error: ${String(e.message).split("\n")[0]}` };
