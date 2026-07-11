@@ -101,4 +101,95 @@ test("emitIdentityMap: throws a clear error when neither bundleDir nor existingB
   assert.throws(() => emitIdentityMap({}), /bundleDir or existingBundleFiles/);
 });
 
+// ─── Corpus completeness: every non-voided named entity in a REAL reference
+// bundle has a uuid<->name binding in the emitted identity-map. Ground truth
+// is read directly from the bundle files (independent of buildIdentityIndex's
+// own logic) so a bug that drops or mis-binds an entity is caught, not
+// self-certified. Scope = the reconciliation synthesis's contract §2 pin
+// (finding C1): the 10 non-forms families below + forms/*.json = the exact
+// 11 kinds P1 Task 2 builds. This test does NOT track whatever P1 happens to
+// ship — it independently re-derives truth from the bundle files themselves,
+// so it still catches a regression even if P1's KIND_TO_SECTION and this
+// GROUND_TRUTH_FILES list both quietly rot. ─────────────────────────────────
+
+const { manifest } = require("../corpus/manifest.cjs");
+const { listRunnableOrgs, loadOracle } = require("../corpus/lib/corpus-loader.cjs");
+const { isVoided } = require("../corpus/doorstep/lib/entity-names.cjs");
+
+const phulwariRow = manifest().find((r) => r.org === "phulwari");
+const skipNoCorpus =
+  !(phulwariRow && phulwariRow.oracle && fs.existsSync(phulwariRow.oracle.dir)) &&
+  "committed corpus siblings not checked out";
+
+// Families verified (by direct inspection of the reference bundles) to carry
+// a real top-level uuid + human name, and pinned by the reconciliation
+// synthesis's contract §2 (finding C1) as the exact 10 non-forms kinds
+// buildIdentityIndex covers (plus `form`, scanned separately below via
+// forms/*.json, for 11 total). Deliberately excludes join/relation rows with
+// NO name of their own (groupPrivilege.json, groupDashboards.json). Every
+// OTHER named family spec.yaml round-trips (groupRole, relationshipType,
+// checklist, video, customQuery, messageRule, individualRelation, catchment,
+// location, menuItem, ruleDependency) is OUT OF SCOPE for this phase's
+// completeness guarantee — buildIdentityIndex isn't built to cover them
+// (contract §2), so asserting their coverage here would just be this test
+// quietly re-widening scope P1 was never asked to fill.
+const GROUND_TRUTH_FILES = [
+  "subjectTypes.json", "programs.json", "encounterTypes.json", "concepts.json",
+  "groups.json", "addressLevelTypes.json", "identifierSource.json",
+  "reportCard.json", "reportDashboard.json", "documentations.json",
+];
+
+function readJsonArray(fp) {
+  if (!fs.existsSync(fp)) return [];
+  try {
+    const d = JSON.parse(fs.readFileSync(fp, "utf8"));
+    if (Array.isArray(d)) return d;
+    if (d && typeof d === "object") return Object.values(d).find(Array.isArray) || [];
+  } catch { /* malformed file: treat as empty, not a false-fail */ }
+  return [];
+}
+
+function groundTruthEntities(dir) {
+  const out = [];
+  for (const file of GROUND_TRUTH_FILES) {
+    for (const e of readJsonArray(path.join(dir, file))) {
+      if (!e || isVoided(e) || !e.uuid || !e.name) continue;
+      out.push({ uuid: e.uuid, name: e.name });
+    }
+  }
+  const formsDir = path.join(dir, "forms");
+  if (fs.existsSync(formsDir)) {
+    for (const f of fs.readdirSync(formsDir).filter((n) => n.endsWith(".json"))) {
+      const form = JSON.parse(fs.readFileSync(path.join(formsDir, f), "utf8"));
+      if (form && !isVoided(form) && form.uuid && form.name) out.push({ uuid: form.uuid, name: form.name });
+    }
+  }
+  return out;
+}
+
+test("identity-map completeness: every non-voided named entity across the committed corpus has a uuid<->name binding", { skip: skipNoCorpus }, async () => {
+  const { emitIdentityMap } = await loadIdentityMap();
+  const rows = listRunnableOrgs(manifest(), { real: false });
+  assert.ok(rows.length >= 5, `expected >=5 committed orgs, got ${rows.length}`);
+
+  for (const row of rows) {
+    const dir = loadOracle(row);
+    const truth = groundTruthEntities(dir);
+    assert.ok(truth.length > 0, `${row.org}: ground-truth reader found zero entities — fixture drift?`);
+
+    const { map } = emitIdentityMap({ bundleDir: dir });
+    const flat = new Map();
+    for (const [key, entries] of Object.entries(map)) {
+      if (key === "version") continue;
+      for (const { name, uuid } of entries) flat.set(uuid, name);
+    }
+
+    const missing = truth.filter((t) => !flat.has(t.uuid));
+    assert.deepEqual(missing, [], `${row.org}: ${missing.length} non-voided entities have no identity-map binding: ${JSON.stringify(missing.slice(0, 5))}`);
+
+    const wrongName = truth.filter((t) => flat.has(t.uuid) && flat.get(t.uuid) !== t.name);
+    assert.deepEqual(wrongName, [], `${row.org}: uuid bound to the wrong name: ${JSON.stringify(wrongName.slice(0, 5))}`);
+  }
+});
+
 module.exports = { loadIdentityMap };
