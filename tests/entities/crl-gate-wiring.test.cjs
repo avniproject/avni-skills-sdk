@@ -303,10 +303,14 @@ test("commitWorkspaceChanges: a bundle-only turn carries NO specGate from the O-
 // now DOES carry a specGate, sourced from the derived artifact, not an
 // agent-authored one.
 //
-// Relies on SDK_SPEC_VIEW being unset here (ambient default = on). P3's
-// off-case test above restores the env var via `finally` (same MAJ-12 pattern
-// already proven safe for SDK_CRL_GATE at lines 140-159 of this file), so no
-// state leaks into this test regardless of file order.
+// Sets SDK_SPEC_VIEW="on" EXPLICITLY for its own commit call (restored in
+// `finally`), mirroring the C3 pattern P3's tests/spec-view/sync.test.cjs
+// already uses. This is deliberate, not belt-and-suspenders: the package.json
+// `test`/`test:entities` scripts force SDK_SPEC_VIEW=off (synthesis C3, to keep
+// every OTHER entity test free of an unbudgeted per-turn AI call + collateral
+// `turn N.spec` commit), so relying on the ambient default here would make this
+// test pass under a bare `node --test` but FAIL under `npm test`. Explicit
+// per-test on-setting makes the sync fire regardless of the harness default.
 //
 // NOTE ON INERTNESS (synthesis M1): this asserts the gate is WIRED to the
 // derived spec, not that it FLAGS anything. The production spec-template.yaml is
@@ -316,14 +320,21 @@ test("commitWorkspaceChanges: a bundle-only turn carries NO specGate from the O-
 // the gate wrapper at zero new spend — P4 ships persistence + audit trail, not
 // intent-completeness teeth. See Tasks below for reviewSpec's flagging CAPABILITY
 // (bespoke rules:-bearing doc) — explicitly NOT this production path.
-test("commitWorkspaceChanges: SDK_SPEC_VIEW on (default) — a bundle-only turn gets a specGate from the DERIVED spec.yaml, not an agent-authored one", async () => {
+test("commitWorkspaceChanges: SDK_SPEC_VIEW on (set explicitly — the harness forces it off) — a bundle-only turn gets a specGate from the DERIVED spec.yaml, not an agent-authored one", async () => {
   const sessions = await loadSessions();
   const { buildMinimalSkeleton } = await loadServer();
   const created = sessions.createSession({ mode: "agent", org: "CrlWiring", srs: "requirements" });
   const bundleDir = sessions.bundleDir(created.sessionId);
   writeSkeleton(bundleDir, buildMinimalSkeleton()); // note: no spec.yaml written by the agent
 
-  const res = await sessions.commitWorkspaceChanges(created.sessionId, "author minimal skeleton");
+  const prevSpecView = process.env.SDK_SPEC_VIEW;
+  process.env.SDK_SPEC_VIEW = "on";
+  let res;
+  try {
+    res = await sessions.commitWorkspaceChanges(created.sessionId, "author minimal skeleton");
+  } finally {
+    if (prevSpecView === undefined) delete process.env.SDK_SPEC_VIEW; else process.env.SDK_SPEC_VIEW = prevSpecView;
+  }
 
   assert.ok(res.specSync, "commitWorkspaceChanges must always return a specSync field (contract §2.4)");
   assert.equal(res.specSync.disabled, undefined, "SDK_SPEC_VIEW defaults on — specSync must not report disabled");
