@@ -70,3 +70,56 @@ export function readRichBundleFileMap(bundleDir) {
   }
   return files;
 }
+
+// ─── 2. Identity index — two-way uuid↔name per entity kind ───────────
+//
+// Used INTERNALLY to resolve cross-ref UUIDs → names during reshaping AND
+// (P2) serialized as identity-map.yaml. 11 kinds; the exact singular key
+// spelling is a contract (P2's KIND_TO_SECTION binds to these). Voided
+// entities are excluded — a voided entity's UUID resolves to null.
+
+const KIND_SOURCES = [
+  ["subjectType",      "subjectTypes.json"],
+  ["program",          "programs.json"],
+  ["encounterType",    "encounterTypes.json"],
+  ["group",            "groups.json"],
+  ["addressLevelType", "addressLevelTypes.json"],
+  ["concept",          "concepts.json"],
+  ["reportCard",       "reportCard.json"],
+  ["reportDashboard",  "reportDashboard.json"],
+  ["identifierSource", "identifierSource.json"],
+  ["documentation",    "documentations.json"], // plural filename, singular kind
+];
+
+function buildBucket(rows) {
+  const uuidToName = new Map(), nameToUuid = new Map();
+  for (const e of (rows || [])) {
+    if (!e || e.voided || !e.uuid) continue;
+    uuidToName.set(e.uuid, e.name || "");
+    if (e.name && !nameToUuid.has(e.name)) nameToUuid.set(e.name, e.uuid);
+  }
+  return { uuidToName, nameToUuid };
+}
+
+export function buildIdentityIndex(fileMap) {
+  const map = fileMap || {};
+  const byKind = {};
+  for (const [kind, file] of KIND_SOURCES) {
+    byKind[kind] = buildBucket(Array.isArray(map[file]) ? map[file] : []);
+  }
+  // form: keyed from forms/*.json entries (object values, not an array file)
+  const formRows = Object.entries(map)
+    .filter(([p]) => p.startsWith("forms/") && p.endsWith(".json"))
+    .map(([, v]) => v);
+  byKind.form = buildBucket(formRows);
+
+  function resolve(uuid) {
+    if (!uuid) return null;
+    for (const kind of Object.keys(byKind)) {
+      const name = byKind[kind].uuidToName.get(uuid);
+      if (name !== undefined) return name;
+    }
+    return null;
+  }
+  return { byKind, resolve };
+}
