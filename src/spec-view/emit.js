@@ -339,6 +339,32 @@ function buildReportDashboards(rows) {
   return undefinedIfEmpty(active);
 }
 
+// messageRule: entityType is the type-enum STRING (passes through); entityTypeUuid
+// is the FK to the concrete entity — resolved to entityTypeName, then dropped.
+function buildMessageRules(rows, identityIndex) {
+  const active = (rows || []).filter(notVoided).map((r) => {
+    const out = { name: r.name || "" };
+    if (r.entityType) out.entityType = r.entityType;
+    if (r.entityTypeUuid) { const n = identityIndex.resolve(r.entityTypeUuid); if (n) out.entityTypeName = n; }
+    if (r.receiverType) out.receiverType = r.receiverType;
+    if (r.messageRule) out.messageRule = r.messageRule;
+    if (r.scheduleRule) out.scheduleRule = r.scheduleRule;
+    return out;
+  });
+  return undefinedIfEmpty(active);
+}
+function buildMenuItems(rows) {
+  const active = (rows || []).filter(notVoided).map((m) => {
+    const out = { displayKey: m.displayKey || "" };
+    if (m.type) out.type = m.type;
+    if (m.icon) out.icon = m.icon;
+    if (m.group) out.group = m.group;
+    if (m.linkFunction) out.linkFunction = m.linkFunction;
+    return out;
+  });
+  return undefinedIfEmpty(active);
+}
+
 export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
   if (!fileMap || typeof fileMap !== "object") {
     throw new Error("bundleToRichEntities: fileMap object required");
@@ -391,5 +417,7 @@ export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
     individual_relations: buildIndividualRelations(arrOf(fileMap, "individualRelation.json")),
     report_cards: buildReportCards(arrOf(fileMap, "reportCard.json"), idx),
     report_dashboards: buildReportDashboards(arrOf(fileMap, "reportDashboard.json")),
+    message_rules: buildMessageRules(arrOf(fileMap, "messageRule.json"), idx),
+    menu_items: buildMenuItems(arrOf(fileMap, "menuItem.json")),
   };
 }

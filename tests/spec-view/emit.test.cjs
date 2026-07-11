@@ -309,3 +309,36 @@ test("reportDashboards: real phulwari dashboard keeps only name (+description), 
   assert.equal(dash.sections, undefined);
   assert.equal(dash.filters, undefined);
 });
+
+// ─── Task 10 — messageRules + menuItems ─────────────────────────────
+
+test("messageRules omitted for real phulwari (empty in every committed-tier org)", { skip: skipNoCorpus }, async () => {
+  const { readRichBundleFileMap, bundleToRichEntities } = await loadEmit();
+  const e = bundleToRichEntities(readRichBundleFileMap(loadOracle(phulwariRow)));
+  assert.equal(e.message_rules, undefined);
+});
+
+test("menuItems: real community row keeps displayKey/type/group/linkFunction, drops uuid, omits icon when absent", { skip: skipNoCommunity }, async () => {
+  const { readRichBundleFileMap, bundleToRichEntities } = await loadEmit();
+  const e = bundleToRichEntities(readRichBundleFileMap(loadOracle(communityRow)));
+  const item = e.menu_items.find((m) => m.displayKey === "JSS internal site");
+  assert.ok(item, `menu_items: ${(e.menu_items || []).map((m) => m.displayKey).join(", ")}`);
+  assert.equal(item.type, "Link");
+  assert.equal(item.group, "Functionality");
+  assert.match(item.linkFunction, /sites\.google\.com/);
+  assert.equal(item.uuid, undefined);
+  assert.equal(item.icon, undefined);
+});
+
+test("messageRules: entityTypeUuid resolves to entityTypeName; entityType enum string passes through (synthetic)", async () => {
+  const { bundleToRichEntities, buildIdentityIndex } = await loadEmit();
+  const fileMap = {
+    "encounterTypes.json": [{ uuid: "e1", name: "ANC Visit" }],
+    "messageRule.json": [{ uuid: "m1", name: "Reminder Rule", entityType: "ProgramEncounter",
+      entityTypeUuid: "e1", messageRule: "'use strict';...", receiverType: "Subject" }],
+  };
+  const e = bundleToRichEntities(fileMap, { identityIndex: buildIdentityIndex(fileMap) });
+  assert.equal(e.message_rules[0].entityType, "ProgramEncounter");
+  assert.equal(e.message_rules[0].entityTypeName, "ANC Visit");
+  assert.equal(e.message_rules[0].entityTypeUuid, undefined);
+});
