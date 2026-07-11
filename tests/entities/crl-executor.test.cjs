@@ -159,3 +159,21 @@ test("executor: dryRun reports the applied prune but leaves the file on disk unt
   assert.ok(readJson(dir, "concepts.json").some((c) => c.uuid === C_ORPHAN), "dryRun must not mutate the bundle");
   cleanup(dir);
 });
+
+// ─── merged ComplianceReport (2.5): per-rule-id merge of deterministic status
+// + AI-judged actions, plus a top-level ok flag. Keyed on the ACTUAL P1 checker
+// shape (byRule/green/red), reconciled from the master's perRule[] wording. ───
+test("executor: returns a merged report — deterministic per-rule status + the AI-judged action, plus a top-level ok flag", async () => {
+  const { executor } = await loadExecutor();
+  const dir = tmpBundle(baseBundle());
+  const f = pruneFinding({ file: "concepts.json", entityKind: "concept", uuid: C_ORPHAN, name: "JunkConceptNobodyUses" });
+  const { report } = await executor(dir, [f], { doc: integrityDoc() });
+  assert.equal(typeof report.ok, "boolean");
+  assert.ok(Array.isArray(report.rules));
+  const detRules = report.rules.filter((r) => r.tag === "deterministic");
+  assert.ok(detRules.length > 0, "the report must include the deterministic doc's per-rule status, not just executor actions");
+  const aiRules = report.rules.filter((r) => r.tag === "ai-judged");
+  assert.equal(aiRules.length, 1, "the applied finding must also appear in the merged report");
+  assert.equal(aiRules[0].status, "resolved");
+  cleanup(dir);
+});
