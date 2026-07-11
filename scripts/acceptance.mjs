@@ -15,7 +15,10 @@ const { runAcceptance, CRITERIA } = require("../tests/corpus/lib/acceptance-core
 const real = process.env.RUN_REAL === "1" || process.argv.includes("--real");
 const hasKey = !!process.env.ANTHROPIC_API_KEY;
 const generate = !process.argv.includes("--fast"); // C4 generation on by default; --fast skips it
-const res = await runAcceptance({ real, hasKey, generate });
+// CRL harness-eval criteria (CRL2a-5 + CRL6) are populated as honest "skip" dims
+// pointing at the budget-gated eval cases that actually score them (they can't be
+// a CI floor). Always on — the dims are cheap pointers, no LLM.
+const res = await runAcceptance({ real, hasKey, generate, crl: true });
 
 const ICON = { green: "🟢", red: "🔴", amber: "🟡", skip: "⚪" };
 console.log(`\n=== Bundle-Authoring Acceptance Scorecard ===`);
@@ -32,6 +35,19 @@ for (const o of res.orgs) {
 }
 const c5 = res.global["C5-generic"];
 console.log(`\nGlobal — ${ICON[c5.status]} C5 genericity: ${c5.detail}\n`);
+
+// CRL harness-eval criteria (CRL2a-5 + CRL6) — org-independent skip dims, all
+// aspirational (scored by the budget-gated eval cases 25-29, not this harness).
+const CRL_DIMS = ["CRL2a-scrub-precision", "CRL2b-scrub-recall", "CRL3-inspector", "CRL4-additive-safety", "CRL5-cost", "CRL6-spec-completeness"];
+const crlSample = res.orgs.find((o) => CRL_DIMS.every((k) => o.dims[k]));
+if (res.crl && crlSample) {
+  console.log("CRL harness-eval criteria (aspirational — scored by tests/eval/cases/25-29, budget-gated):");
+  for (const k of CRL_DIMS) {
+    const d = crlSample.dims[k];
+    console.log(`  ${ICON[d.status] || d.status} ${k.padEnd(24)} ${d.detail}`);
+  }
+  console.log("");
+}
 
 console.log("Criteria coverage (six themes + floor):");
 for (const c of CRITERIA) {

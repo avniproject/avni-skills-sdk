@@ -25,9 +25,22 @@ const CRITERIA = [
   { key: "C6-conversational", theme: "C6 conversational requests",    tier: "floor",       live: false, story: "5/6", agent: true },
   { key: "C3-behavioral",     theme: "C3 behavioral rule parity",     tier: "aspirational", live: false, story: "11" },
   { key: "C1-merged-kb",      theme: "C1 merged.md retrieval",        tier: "aspirational", live: false, story: "7", agent: true },
+  // CRL2a-5 + CRL6 (this phase's harness-eval criteria). ALL aspirational —
+  // they're AI-judged/eval-scored (budget-gated, non-deterministic), so none of
+  // them can be a CI gate. CRL2a's precision guarantee is real and enforced, but
+  // the enforcement point is the P2 executor guardrail tests (never-prune-
+  // referenced + revert-on-regression), not this dim (MAJ-8/IC-8/O-4). CRL6 is
+  // the spec half (O-1): spec intent-completeness scored via reviewSpec vs
+  // spec-template.yaml.
+  { key: "CRL2a-scrub-precision", theme: "CRL scrub precision (never prune a real entry) — CI floor is the P2 executor guardrail tests, not this eval", tier: "aspirational", live: false, story: "3", agent: true },
+  { key: "CRL2b-scrub-recall",    theme: "CRL scrub recall (strays caught)",                        tier: "aspirational", live: false, story: "3", agent: true },
+  { key: "CRL3-inspector",        theme: "CRL inspector catches seeded non-compliance",              tier: "aspirational", live: false, story: "3", agent: true },
+  { key: "CRL4-additive-safety",  theme: "CRL additive-change safety (delta+blast-radius only)",     tier: "aspirational", live: false, story: "3", agent: true },
+  { key: "CRL5-cost",             theme: "CRL cost per review",                                      tier: "aspirational", live: false, story: "3", agent: true },
+  { key: "CRL6-spec-completeness", theme: "CRL spec intent-completeness (reviewSpec vs spec-template)", tier: "aspirational", live: false, story: "3", agent: true },
 ];
 
-async function runAcceptance({ real = false, hasKey = false, generate = false } = {}) {
+async function runAcceptance({ real = false, hasKey = false, generate = false, crl = false } = {}) {
   const rows = listRunnableOrgs(manifest(), { real });
   const orgs = [];
   for (const row of rows) {
@@ -96,6 +109,21 @@ async function runAcceptance({ real = false, hasKey = false, generate = false } 
     } catch (e) {
       dims["I4-parity"] = { status: "red", detail: `load failed: ${e.message}` };
     }
+    // CRL2a-5 + CRL6 are AI-judged/eval-scored (tests/eval/cases/25-29), never
+    // computed inline here — an AI-judged review is not a cheap per-org corpus
+    // computation, and none of scrubScore/inspectorCatch's inputs (a scrubbed
+    // dir, aiFindings) exist without first running the AI judge. Under crl:true
+    // we still populate a "skip" dim (not silence) so the scorecard shows the
+    // criterion with a pointer to where it's actually scored.
+    if (crl) {
+      const pointer = "scored by tests/eval/cases/25-29 (LLM eval, budget-gated) — not the corpus harness";
+      dims["CRL2a-scrub-precision"] = { status: "skip", detail: `${pointer}; CI-enforced precision floor is the P2 executor guardrail tests (never-prune-referenced + revert-on-regression), not this dim` };
+      dims["CRL2b-scrub-recall"] = { status: "skip", detail: pointer };
+      dims["CRL3-inspector"] = { status: "skip", detail: pointer };
+      dims["CRL4-additive-safety"] = { status: "skip", detail: pointer };
+      dims["CRL5-cost"] = { status: "skip", detail: `${pointer}; cost datapoint recorded by case 25's review-cost assertion` };
+      dims["CRL6-spec-completeness"] = { status: "skip", detail: `${pointer}; spec intent-completeness scored by case 29 via reviewSpec vs spec-template.yaml` };
+    }
     orgs.push({ org: row.org, tier: row.tier, oracleOnly: !hasInputs(row), dims });
   }
 
@@ -116,7 +144,7 @@ async function runAcceptance({ real = false, hasKey = false, generate = false } 
     if (floorKey(k) && d.status === "red") floorReds.push(`global/${k}`);
   }
 
-  return { orgs, global, criteria: CRITERIA, floorPass: floorReds.length === 0, floorReds, real, hasKey, generate };
+  return { orgs, global, criteria: CRITERIA, floorPass: floorReds.length === 0, floorReds, real, hasKey, generate, crl };
 }
 
 module.exports = { runAcceptance, CRITERIA };
