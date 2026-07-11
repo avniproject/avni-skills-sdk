@@ -38,6 +38,10 @@ import { runBundleIntegrityCheck, buildCrlScopingCtx, findReferencesOnDir } from
 // (function-body-only) cycle. See src/crl/review.js for the CRIT-1 key-guard
 // that makes a keyless gate a no-op rather than a throw.
 import { crlGate, reviewSpec } from "./crl/review.js";
+// O-2 — Live Spec View (spec-sync step). Pure filesystem + emit; this module
+// owns none of git/gate — commitWorkspaceChanges below calls it and owns the
+// commit + gate call itself, mirroring the CRL gate's own separation.
+import { syncSpecView } from "./spec-view/sync.js";
 
 const SESSIONS_DIR = process.env.SDK_SESSIONS_DIR || path.join(os.homedir(), ".avni-skills-sdk", "sessions");
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -890,7 +894,12 @@ export async function commitWorkspaceChanges(id, summary) {
   // reads the just-committed spec). Only when the gate is enabled and a spec
   // artifact actually changed — a bundle-only turn carries no specGate.
   const specArtifact = specArtifactOf(changedFiles);
-  const specGateResult = (crlGateEnabled && specArtifact)
+  // `let`, not `const` — the O-2 Live Spec View block below reassigns this when
+  // the DERIVED spec.yaml (not a frozen-changedFiles hand-authored spec) is what
+  // actually populated the spec view this turn. With SDK_SPEC_VIEW on the agent
+  // never hand-authors spec.yaml, so specArtifact is null here and O-2 is the
+  // sole populator; the two paths are mutually exclusive in practice.
+  let specGateResult = (crlGateEnabled && specArtifact)
     ? await runSpecGateSafely(dir, specArtifact)
     : undefined;
 
@@ -900,6 +909,39 @@ export async function commitWorkspaceChanges(id, summary) {
   if (postGateChanges.length > 0) {
     git(dir, "add", "-A");
     git(dir, "commit", "-m", `turn ${newTurn}.crl: automated compliance scrub`);
+  }
+
+  // ─── LIVE SPEC VIEW (O-2) — derived, read-only, persisted per mutating turn.
+  // Runs AFTER the CRL scrub follow-up commit above, so the emitted spec.yaml
+  // reflects the POST-scrub bundle. syncSpecView is pure filesystem + emit (no
+  // git) — this call site owns the commit + gate, mirroring the CRL gate's own
+  // separation of concerns. Gated by SDK_SPEC_VIEW (default on; the eval harness
+  // + package.json test scripts set it "off", synthesis C3, mirroring
+  // SDK_CRL_GATE/MAJ-12) so eval runs and the entity suite stay deterministic
+  // and free of an unbudgeted per-turn AI call + collateral `turn N.spec`
+  // commit. A true no-op re-emit (unchanged derived spec) skips both the commit
+  // and the gate call — see syncSpecView's own no-op test. `turn N.spec:` is a
+  // follow-up commit like `turn N.crl:` — listTurns/diffTurn/revertToTurn match
+  // `^turn (\d+):` so the `.spec` suffix is NOT counted as a turn (it self-heals
+  // on the next mutating turn after a revert).
+  const specViewEnabled = process.env.SDK_SPEC_VIEW !== "off";
+  let specViewResult = { specChanged: false, identityChanged: false, disabled: !specViewEnabled };
+  if (specViewEnabled) {
+    specViewResult = syncSpecView(dir, { org: meta.org });
+    // Existence-filtered add so a `git add` of a not-yet-written path can never
+    // throw on this (highest-blast-radius) commit path. In practice both files
+    // are always present together once written (turn 1 writes both fresh), so
+    // this matches the contract §2.4 `git add spec.yaml identity-map.yaml` in
+    // every real case while staying defensive.
+    const specFiles = ["spec.yaml", "identity-map.yaml"].filter((f) => fs.existsSync(path.join(dir, f)));
+    if ((specViewResult.specChanged || specViewResult.identityChanged) && specFiles.length > 0) {
+      git(dir, "add", ...specFiles);
+      git(dir, "commit", "-m", `turn ${newTurn}.spec: derived spec view`);
+    }
+    if (specViewResult.specChanged) {
+      // REUSE the existing O-1 wrapper on the DERIVED spec — no new gate code.
+      specGateResult = await runSpecGateSafely(dir, "spec.yaml");
+    }
   }
 
   const sha = git(dir, "rev-parse", "HEAD").trim();
@@ -920,12 +962,14 @@ export async function commitWorkspaceChanges(id, summary) {
   // currentValidatorStateText (Task 5).
   meta.crlAtCurrent = crlGateResult;
   if (specGateResult !== undefined) meta.specCrlAtCurrent = specGateResult;
+  meta.specViewAtCurrent = specViewResult;
   writeMeta(id, meta);
   const agentActionSummary = summariseAgentAction(finalChangedFiles);
   return {
     turn: newTurn, sha: sha.slice(0, 12), summary, agentActionSummary,
     validation, rulesValidation, crlGate: crlGateResult,
     ...(specGateResult !== undefined ? { specGate: specGateResult } : {}),
+    specSync: specViewResult,
     changedFiles: finalChangedFiles, noChanges: false,
   };
 }

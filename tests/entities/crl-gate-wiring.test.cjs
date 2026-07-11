@@ -248,14 +248,28 @@ test("commitWorkspaceChanges: a spec-mutating turn also gates the spec artifact 
   sessions.deleteSession(created.sessionId);
 });
 
-test("commitWorkspaceChanges: a bundle-only turn carries NO specGate (reviewSpec only fires on a spec artifact)", async () => {
+test("commitWorkspaceChanges: a bundle-only turn carries NO specGate from the O-1 frozen-changedFiles path (SDK_SPEC_VIEW=off isolates O-1 from the always-on O-2 live-spec-view sync — see tests/spec-view/sync.test.cjs for the O-2 default-on case)", async () => {
   const sessions = await loadSessions();
   const { buildMinimalSkeleton } = await loadServer();
   const created = sessions.createSession({ mode: "agent", org: "CrlWiring", srs: "requirements" });
   writeSkeleton(sessions.bundleDir(created.sessionId), buildMinimalSkeleton());
 
-  const res = await sessions.commitWorkspaceChanges(created.sessionId, "author minimal skeleton");
-  assert.equal(res.specGate, undefined, "a turn that touches no spec artifact must not run reviewSpec");
+  // P3 (synthesis M2) — since the O-2 live-spec-view sync now derives+commits a
+  // spec.yaml on EVERY mutating turn (default-on), a bundle-only turn would
+  // otherwise carry a specGate from the DERIVED spec. This test isolates the
+  // O-1 path (a hand-authored spec artifact in the frozen changedFiles) by
+  // turning O-2 off, so it keeps asserting exactly what it originally intended:
+  // no hand-authored spec artifact ⇒ no O-1 specGate. P4 adds the net-new
+  // on-case (a bundle-only turn DOES get a specGate from the derived spec).
+  const prev = process.env.SDK_SPEC_VIEW;
+  process.env.SDK_SPEC_VIEW = "off";
+  let res;
+  try {
+    res = await sessions.commitWorkspaceChanges(created.sessionId, "author minimal skeleton");
+  } finally {
+    if (prev === undefined) delete process.env.SDK_SPEC_VIEW; else process.env.SDK_SPEC_VIEW = prev;
+  }
+  assert.equal(res.specGate, undefined, "a turn that touches no spec artifact, with SDK_SPEC_VIEW off, must not run reviewSpec");
 
   sessions.deleteSession(created.sessionId);
 });
