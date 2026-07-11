@@ -40,3 +40,58 @@ export function loadYaml() {
 const REFERENCE_DIR = path.resolve(__dirname, "..", "..", "skills", "avni-bundle-spec", "reference");
 export const DEFAULT_COMPLIANCE_DOC_PATH = path.join(REFERENCE_DIR, "compliance-doc.yaml");
 export const DEFAULT_SPEC_TEMPLATE_PATH = path.join(REFERENCE_DIR, "spec-template.yaml");
+
+const VALID_TIERS = new Set(["deterministic", "ai-judged"]);
+const VALID_SEVERITIES = new Set(["error", "warning"]);
+
+function assertRuleShape(rule, docPath) {
+  if (!rule || typeof rule !== "object") throw new Error(`${docPath}: every rules[] entry must be a mapping, got ${JSON.stringify(rule)}`);
+  if (!rule.id) throw new Error(`${docPath}: a rule is missing "id"`);
+  if (!VALID_TIERS.has(rule.tier)) throw new Error(`${docPath}: rule "${rule.id}" has tier "${rule.tier}" (expected deterministic|ai-judged)`);
+  if (!VALID_SEVERITIES.has(rule.severity)) throw new Error(`${docPath}: rule "${rule.id}" has severity "${rule.severity}" (expected error|warning)`);
+  if (rule.tier === "deterministic" && !rule.source) throw new Error(`${docPath}: deterministic rule "${rule.id}" is missing "source"`);
+  if (rule.tier === "ai-judged" && !rule.class) throw new Error(`${docPath}: ai-judged rule "${rule.id}" is missing "class"`);
+}
+
+/**
+ * Load + structurally validate compliance-doc.yaml. Throws on malformed YAML
+ * or a rule missing a required field — a fail-loud doc, never a half-parsed
+ * one silently under-covering the bundle.
+ */
+export function loadComplianceDoc(docPath = DEFAULT_COMPLIANCE_DOC_PATH) {
+  const yaml = loadYaml();
+  const raw = fs.readFileSync(docPath, "utf8");
+  const doc = yaml.load(raw);
+  if (!doc || !Array.isArray(doc.rules)) {
+    throw new Error(`${docPath}: expected a YAML mapping with a top-level "rules" array`);
+  }
+  const seen = new Set();
+  for (const rule of doc.rules) {
+    assertRuleShape(rule, docPath);
+    if (seen.has(rule.id)) throw new Error(`${docPath}: duplicate rule id "${rule.id}"`);
+    seen.add(rule.id);
+  }
+  return doc;
+}
+
+/**
+ * Load spec-template.yaml (Phase 2's reviewSpec consumes this; not wired to
+ * a caller yet — see open question O-1 in the CRL reconciliation).
+ */
+export function loadSpecTemplate(templatePath = DEFAULT_SPEC_TEMPLATE_PATH) {
+  const yaml = loadYaml();
+  const raw = fs.readFileSync(templatePath, "utf8");
+  const doc = yaml.load(raw);
+  if (!doc || !Array.isArray(doc.sections)) {
+    throw new Error(`${templatePath}: expected a YAML mapping with a top-level "sections" array`);
+  }
+  return doc;
+}
+
+export function deterministicRulesOf(doc) {
+  return (doc.rules || []).filter((r) => r.tier === "deterministic");
+}
+
+export function aiRulesOf(doc) {
+  return (doc.rules || []).filter((r) => r.tier === "ai-judged");
+}

@@ -89,3 +89,37 @@ test("spec-template.yaml parses with a non-empty sections array", async () => {
   assert.equal(doc.version, 1);
   assert.ok(Array.isArray(doc.sections) && doc.sections.length > 0, "sections present");
 });
+
+// ─── Task 1.2 — loader + accessors + shape validation ───
+const os = require("node:os");
+function tmpYaml(body) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cdoc-"));
+  const fp = path.join(dir, "d.yaml");
+  fs.writeFileSync(fp, body);
+  return fp;
+}
+
+test("loadComplianceDoc + accessors return the default doc: 7 deterministic, 4 ai-judged", async () => {
+  const { loadComplianceDoc, deterministicRulesOf, aiRulesOf } = await load();
+  const doc = loadComplianceDoc();
+  assert.equal(doc.rules.length, 11);
+  assert.equal(deterministicRulesOf(doc).length, 7);
+  assert.equal(aiRulesOf(doc).length, 4);
+});
+
+test("loadSpecTemplate returns the default spec-template", async () => {
+  const { loadSpecTemplate } = await load();
+  const tpl = loadSpecTemplate();
+  assert.ok(Array.isArray(tpl.sections) && tpl.sections.length > 0);
+});
+
+test("loadComplianceDoc fails loud on a rule missing id / bad tier / bad severity / missing source / missing class / duplicate id", async () => {
+  const { loadComplianceDoc } = await load();
+  assert.throws(() => loadComplianceDoc(tmpYaml("version: 1\nfoo: bar\n")), /top-level "rules" array/);
+  assert.throws(() => loadComplianceDoc(tmpYaml('version: 1\nrules:\n  - {tier: deterministic, severity: error, source: x}\n')), /missing "id"/);
+  assert.throws(() => loadComplianceDoc(tmpYaml('version: 1\nrules:\n  - {id: a, tier: bogus, severity: error, source: x}\n')), /tier "bogus"/);
+  assert.throws(() => loadComplianceDoc(tmpYaml('version: 1\nrules:\n  - {id: a, tier: deterministic, severity: fatal, source: x}\n')), /severity "fatal"/);
+  assert.throws(() => loadComplianceDoc(tmpYaml('version: 1\nrules:\n  - {id: a, tier: deterministic, severity: error}\n')), /missing "source"/);
+  assert.throws(() => loadComplianceDoc(tmpYaml('version: 1\nrules:\n  - {id: a, tier: ai-judged, severity: warning}\n')), /missing "class"/);
+  assert.throws(() => loadComplianceDoc(tmpYaml('version: 1\nrules:\n  - {id: a, tier: deterministic, severity: error, source: x}\n  - {id: a, tier: deterministic, severity: error, source: y}\n')), /duplicate rule id/);
+});
