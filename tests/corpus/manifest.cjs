@@ -11,6 +11,7 @@ const IMPL = process.env.SDK_CORPUS_IMPL_PATH || path.resolve(__dirname, "../../
 const scoping = (f) => path.join(AI, "tests", "resources", "scoping", f);
 const ref = (o) => path.join(IMPL, "reference", o);
 const dss = (f) => path.join(__dirname, "..", "resources", "doorstep", f);
+const res = (org, f) => path.join(__dirname, "..", "resources", org, f);
 
 const ORGS = [
   // --- oracle-only, committed (avni-impl-bundles reference bundles, anonymized) ---
@@ -41,6 +42,17 @@ const ORGS = [
   { org: "Doorstep", tier: "proprietary",
     inputs: { srs: dss("Doorstep school Scoping Document  [To-Use].xlsx"), modelling: dss("Doorstep school Modelling.xlsx") },
     oracle: { zip: dss("Door Step School UAT.zip") } },
+  { org: "Udgam Handicrafts", tier: "proprietary",
+    inputs: { srs: res("udgam", "Udgam Handicrafts Scoping Document_.xlsx"), modelling: res("udgam", "Udgam Handicrafts LLP Avni Modelling.xlsx") },
+    oracle: { zip: res("udgam", "Udgam Handicrafts.zip") } },
+  { org: "Bal Kalyan Sangh", tier: "proprietary",
+    inputs: { srs: res("bks", "Bal Kalyan Sangh Scoping Document_.xlsx"), modelling: res("bks", "Bal Kalyan Sangh Modelling Document.xlsx") },
+    oracle: { zip: res("bks", "Bal Kalyan Sangh.zip") } },
+  // Gubbachi: only modelling workbooks were provided (no forms/scoping doc), so
+  // there is nothing to generate forms from → oracle-only (generation skips).
+  { org: "Gubbachi", tier: "proprietary",
+    inputs: { modelling: res("gubbachi", "Gubbachi New Scope Modeling.xlsx") },
+    oracle: { zip: res("gubbachi", "Gubbachi.zip") } },
 ];
 
 function manifest() {

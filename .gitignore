@@ -45,6 +45,12 @@ tests/resources/doorstep/uat/
 tests/resources/doorstep/parity-gap.json
 tests/resources/doorstep/*.local.mjs
 
+# All proprietary org corpora (udgam, bks, gubbachi, …) — local-only (rule §2).
+# READMEs stay committed; data (xlsx/zip/json + extracted dirs) never does.
+tests/resources/*/*.xlsx
+tests/resources/*/*.zip
+tests/resources/*/*.json
+
 # Superpowers SDD scratch (progress ledger, task briefs) — never committed
 .superpowers/
 
