@@ -71,7 +71,7 @@ test("eval cases: all 29 are implemented (no pending stubs remain)", () => {
 test("eval libs: fixture + assertions expose the story #11 additions", () => {
   const fixture = require(path.join(EVAL_DIR, "lib", "fixture.cjs"));
   for (const fn of ["buildCleanSrsBuffers", "buildLocationTrapSrs", "buildLargeSrs",
-                    "seedF5", "seedM3", "seedG2", "seedNAJunk", "poisonBundleForCode"]) {
+                    "seedF5", "seedM3", "seedG2", "seedNAJunk", "seedProseForm", "poisonBundleForCode"]) {
     assert.equal(typeof fixture[fn], "function", `fixture.${fn} missing`);
   }
   const A = require(path.join(EVAL_DIR, "lib", "assertions.cjs"));

@@ -206,6 +206,7 @@ function poisonBundleForCode(bundleDir, code) {
   if (code === "M3") return seedM3(bundleDir);
   if (code === "G2") return seedG2(bundleDir);
   if (code === "NAJunk") return seedNAJunk(bundleDir);
+  if (code === "ProseForm") return seedProseForm(bundleDir);
   if (code === "FE_CONCEPT_NOT_OBJECT") return seedFEConceptNotObject(bundleDir);
   if (code === "ALT_INVALID_NAME") return seedALTInvalidName(bundleDir);
   throw new Error(`unknown poison code: ${code}`);
@@ -396,6 +397,50 @@ function seedNAJunk(bundleDir) {
   };
 }
 
+// ProseForm: a form element whose "field" is actually a long instructions/
+// notes blob (a paragraph of static guidance) rather than a real data-
+// collection question — the flagship "prose-as-form" defect class (design
+// gap#1: orgs storing documentation inside the form mechanism instead of real
+// fields). We append a new formElementGroup + Notes-type formElement to the
+// first form found, embedding a long, non-field-shaped instructional
+// paragraph as the element's (and its concept's) name. The rest of the form
+// is left untouched, so a correct scrub/inspect must act ONLY on this
+// element, never the real fields around it.
+function seedProseForm(bundleDir) {
+  const formsDir = path.join(bundleDir, "forms");
+  if (!fs.existsSync(formsDir)) throw new Error("seedProseForm: no forms/ dir");
+  const target = fs.readdirSync(formsDir).find((n) => n.endsWith(".json"));
+  if (!target) throw new Error("seedProseForm: no form files found");
+  const fp = path.join(formsDir, target);
+  const form = JSON.parse(fs.readFileSync(fp, "utf8"));
+  const proseText =
+    "IMPORTANT: Before starting this survey, explain to the respondent that " +
+    "all information collected is used solely for programme monitoring, " +
+    "participation is voluntary, and they may decline to answer any question " +
+    "without any effect on the services they receive. Read this notice aloud " +
+    "in the local language before proceeding; do not skip this step.";
+  const feUuid = crypto.randomUUID();
+  const conceptUuid = crypto.randomUUID();
+  const group = {
+    uuid: crypto.randomUUID(),
+    name: "Consent Notice",
+    displayOrder: (form.formElementGroups || []).length + 1,
+    formElements: [
+      {
+        uuid: feUuid,
+        name: proseText,
+        displayOrder: 1,
+        mandatory: false,
+        type: "Notes",
+        concept: { uuid: conceptUuid, name: proseText, dataType: "Notes", active: true, media: [], answers: [] },
+      },
+    ],
+  };
+  form.formElementGroups = [...(form.formElementGroups || []), group];
+  fs.writeFileSync(fp, JSON.stringify(form, null, 2));
+  return { poisonedCode: "ProseForm", formFile: `forms/${target}`, feName: proseText, feUuid, conceptUuid };
+}
+
 // FE_CONCEPT_NOT_OBJECT (Durga class): a formElement's `concept` is FLATTENED
 // from the required nested ConceptContract object down to a bare UUID string.
 // The local validator PASSES (the UUID still resolves) but AVNI's server-side
@@ -548,6 +593,7 @@ module.exports = {
   seedM3,
   seedG2,
   seedNAJunk,
+  seedProseForm,
   seedFEConceptNotObject,
   seedALTInvalidName,
   AVNI_SKILLS_PATH,
