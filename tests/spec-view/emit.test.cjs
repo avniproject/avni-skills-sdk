@@ -130,3 +130,27 @@ test("bundleToRichEntities: caller's fileMap forms are not mutated (deep-cloned 
   bundleToRichEntities(fileMap);
   assert.equal(fileMap["forms/F.json"].subjectType, undefined, "original fileMap form must stay un-enriched");
 });
+
+// ─── Task 4 — address_levels ────────────────────────────────────────
+
+test("bundleToRichEntities: address levels resolve parent by name, voided excluded", async () => {
+  const { bundleToRichEntities } = await loadEmit();
+  const e = bundleToRichEntities({
+    "addressLevelTypes.json": [
+      { uuid: "a1", name: "State", level: 3 },
+      { uuid: "a2", name: "Village", level: 1, parent: { uuid: "a1" } },
+      { uuid: "a3", name: "Ghost", level: 2, voided: true },
+    ],
+  });
+  assert.deepEqual(e.address_levels.map((r) => r.name).sort(), ["State", "Village"]);
+  const village = e.address_levels.find((r) => r.name === "Village");
+  assert.equal(village.parent, "State");
+});
+
+test("bundleToRichEntities: real phulwari addressLevelTypes.json → one address level (Village, no parent)", { skip: skipNoCorpus }, async () => {
+  const { readRichBundleFileMap, buildIdentityIndex, bundleToRichEntities } = await loadEmit();
+  const fileMap = readRichBundleFileMap(loadOracle(phulwariRow));
+  const e = bundleToRichEntities(fileMap, { identityIndex: buildIdentityIndex(fileMap) });
+  assert.deepEqual(e.address_levels.map((r) => r.name), ["Village"]);
+  assert.equal(e.address_levels[0].parent, undefined);
+});

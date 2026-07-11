@@ -167,6 +167,20 @@ function deriveScopeMaps(formMappings, identityIndex) {
   return { progUuidToSt, encUuidToProg, encUuidToSt };
 }
 
+// address levels — resolve parent (object {uuid} | name string) to a name; the
+// emitter sorts DESC by level, so this leaves file order otherwise untouched.
+function buildAddressLevels(rows, identityIndex) {
+  return (rows || []).filter(notVoided).map((a) => {
+    const out = { name: a.name, level: a.level == null ? 1 : a.level };
+    const parentRef = a.parent && typeof a.parent === "object" ? a.parent.uuid : a.parent;
+    if (parentRef) {
+      const parentName = identityIndex.resolve(parentRef) || (typeof a.parent === "string" ? a.parent : "");
+      if (parentName) out.parent = parentName;
+    }
+    return out;
+  });
+}
+
 export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
   if (!fileMap || typeof fileMap !== "object") {
     throw new Error("bundleToRichEntities: fileMap object required");
@@ -193,6 +207,7 @@ export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
   return {
     org_name: "",
     settings: {},
+    address_levels: buildAddressLevels(arrOf(fileMap, "addressLevelTypes.json"), idx),
     subject_types: subjectTypes.map((s) => ({ ...s })),
     programs: programsRaw.map((p) => ({
       ...p,
