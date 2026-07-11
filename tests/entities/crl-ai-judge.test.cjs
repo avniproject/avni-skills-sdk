@@ -110,3 +110,43 @@ test("aiJudge: live Haiku call reads real bundle content, flags the seeded orpha
   assert.ok(out.costUsd > 0, "a real paid Haiku call must report a non-zero cost");
   cleanup(dir);
 });
+
+// ─── no-key: O-2 merge semantics (Sonnet wins for re-judged rules) ───
+test("mergeSonnetOverHaiku: re-judged rule ids are dropped from the Haiku set and replaced by the Sonnet findings (Sonnet wins)", async () => {
+  const { mergeSonnetOverHaiku } = await loadAij();
+  const haiku = [
+    { ruleId: "orphan-stray-concept", confidence: 0.6, judgedBy: "haiku", target: { uuid: "x" } },
+    { ruleId: "naming-incoherent", confidence: 0.95, judgedBy: "haiku", target: { uuid: "y" } },
+  ];
+  const sonnet = [
+    { ruleId: "orphan-stray-concept", confidence: 0.92, judgedBy: "sonnet", target: { uuid: "x" } },
+  ];
+  const merged = mergeSonnetOverHaiku(haiku, sonnet, ["orphan-stray-concept"]);
+  // the high-confidence naming finding (not re-judged) is kept as-is
+  assert.ok(merged.some((f) => f.ruleId === "naming-incoherent" && f.judgedBy === "haiku"));
+  // the re-judged orphan finding is the SONNET one, not the Haiku one
+  const orphan = merged.filter((f) => f.ruleId === "orphan-stray-concept");
+  assert.equal(orphan.length, 1);
+  assert.equal(orphan[0].judgedBy, "sonnet");
+  assert.equal(orphan[0].confidence, 0.92);
+});
+
+// ─── LIVE (opt-in): a sub-threshold Haiku finding IS re-judged on Sonnet (O-2/MAJ-9) ───
+test("aiJudge: a Haiku finding below the confidence threshold is re-judged on Sonnet (Sonnet's verdict wins)", async (t) => {
+  if (!process.env.ANTHROPIC_API_KEY) { t.skip("ANTHROPIC_API_KEY not set — live test, opt-in"); return; }
+  const { aiJudge, SONNET_MODEL } = await loadAij();
+  const dir = tmpBundle(seededBundleFiles());
+  // Delta → Haiku primary; threshold pinned to 0.999 so ANY Haiku finding
+  // (confidence < 0.999) forces the Sonnet re-judge path.
+  const out = await aiJudge(
+    { kind: "bundle", bundleDir: dir },
+    [orphanRule()],
+    { changedFiles: ["concepts.json"] },
+    { orgAsk: "Track individual age at registration.", confidenceThreshold: 0.999 },
+  );
+  const flagged = out.findings.find((f) => f.ruleId === "orphan-stray-concept");
+  assert.ok(flagged, `the orphan must still be flagged after re-judge; got: ${JSON.stringify(out.findings)}`);
+  assert.equal(flagged.judgedBy, SONNET_MODEL, "a sub-threshold Haiku finding must be re-judged on Sonnet");
+  assert.ok(out.costUsd > 0);
+  cleanup(dir);
+});
