@@ -17,6 +17,7 @@
 import { loadComplianceDoc, aiRulesOf } from "./compliance-doc.js";
 import { deterministicChecker } from "./deterministic-checker.js";
 import { aiJudge, buildBundleProjection } from "./ai-judge.js";
+import { executor } from "./executor.js";
 
 // Actions the executor can actually resolve; a high-confidence unresolved one
 // is a real breach that fails the gate. Advisory "flag-only" findings do not.
@@ -44,12 +45,24 @@ async function runAiPass(doc, delta, scopingCtx, deterministicFindings, artifact
   return aiJudge(artifactBuilder(), judged, delta, { ...scopingCtx, deterministicFindings, confidenceThreshold });
 }
 
+// A high-confidence unresolved breach after review — deterministic errors +
+// actionable ai findings the executor could not resolve — becomes the HITL
+// escalation payload.
+function computeEscalate(deterministic, ai, confidenceThreshold) {
+  const breaches = [
+    ...deterministic.findings.filter((f) => f.severity === "error"),
+    ...ai.findings.filter((f) => f.confidence >= confidenceThreshold && ACTIONABLE.has(f.action)),
+  ];
+  return breaches.length > 0 ? { reason: "unresolved compliance breach after review", findings: breaches } : null;
+}
+
 export async function reviewBundle(bundleDir, opts = {}) {
   const {
     mode = "inspect",
     delta = null,
     scopingCtx = {},
     doc = loadComplianceDoc(),
+    apply = false,
     confidenceThreshold = 0.85,
   } = opts;
 
@@ -66,6 +79,21 @@ export async function reviewBundle(bundleDir, opts = {}) {
     ai,
     report: buildReviewReport(deterministic, ai),
   };
+
+  // Pass 3 — executor (scrub / explicit apply). ok is re-derived from the
+  // post-scrub state: deterministic clean, nothing reverted, no actionable ai
+  // finding left unresolved (referenced/below-threshold skip).
+  if (apply || mode === "scrub") {
+    const executed = await executor(bundleDir, ai.findings, { confidenceThreshold, doc });
+    result.executed = executed;
+    const unresolvedActionable = executed.skipped.some((s) => s.reason === "referenced" || s.reason === "below-threshold");
+    result.ok = deterministic.ok && executed.reverted.length === 0 && !unresolvedActionable;
+  }
+
+  if (!result.ok) {
+    const escalate = computeEscalate(deterministic, ai, confidenceThreshold);
+    if (escalate) result.escalate = escalate;
+  }
 
   return result;
 }

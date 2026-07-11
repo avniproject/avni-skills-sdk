@@ -106,3 +106,15 @@ test("reviewBundle: a doc with ai-judged rules but no ANTHROPIC_API_KEY never th
   }
   cleanup(dir);
 });
+
+// ─── scrub mode invokes the executor (pass 3) ───
+test("reviewBundle: scrub mode invokes the executor even with zero ai-judged findings (executed present, all empty)", async () => {
+  const { reviewBundle } = await loadReview();
+  const dir = tmpBundle(cleanBundle());
+  const result = await reviewBundle(dir, { mode: "scrub", doc: deterministicOnlyDoc() });
+  assert.ok(result.executed, "scrub mode must populate `executed`");
+  assert.deepEqual(result.executed.applied, []);
+  assert.deepEqual(result.executed.reverted, []);
+  assert.deepEqual(result.executed.skipped, []);
+  cleanup(dir);
+});
