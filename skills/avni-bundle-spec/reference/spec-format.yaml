@@ -121,7 +121,7 @@ entities:
     shape: array
     requiredKeys: [name, uuid]
     invariants:
-      ALT_INVALID_NAME: "name is non-empty and contains none of < > = \" '. Avni LocationService rejects ^.*[<>=\"'].*$ (Astitva). Invisible to the validator."
+      ALT_INVALID_NAME: "name is non-empty and contains none of < > = \" '. Avni LocationService rejects ^.*[<>=\"'].*$ (seen in a real deployed org's addressLevelTypes). Invisible to the validator."
     fkFields:
       parentUuid: { target: addressLevelType, presence: optional }
 
