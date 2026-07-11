@@ -11,7 +11,7 @@
  * Fully-qualified MCP tool names exposed by the `avni-bundle` server.
  * Frozen so a stray mutation throws instead of corrupting downstream logs.
  * APPEND-ONLY: new tools get a new key + name; never rename/remove an existing one.
- * @type {Readonly<{ VALIDATOR_RUN: string, FIND_CONCEPT: string, SUMMARY: string, EXPORT_TO_PATH: string, INTEGRITY_CHECK: string, SPEC_APPLY: string, SPEC_EMIT: string, READ_SRS: string, GENERATE_BASELINE: string, FIND_REFERENCES: string }>}
+ * @type {Readonly<{ VALIDATOR_RUN: string, FIND_CONCEPT: string, SUMMARY: string, EXPORT_TO_PATH: string, INTEGRITY_CHECK: string, SPEC_APPLY: string, SPEC_EMIT: string, READ_SRS: string, GENERATE_BASELINE: string, FIND_REFERENCES: string, REVIEW: string, SCRUB: string, SPEC_REVIEW: string }>}
  */
 export const BUNDLE_TOOL_NAME = Object.freeze({
   VALIDATOR_RUN: "mcp__avni-bundle__bundle_validator_run",
@@ -37,6 +37,16 @@ export const BUNDLE_TOOL_NAME = Object.freeze({
   // show the agent repeatedly needs full reference coverage before rename/dedup.
   // New name only — never repurpose the above.
   FIND_REFERENCES: "mcp__avni-bundle__bundle_find_references",
+  // APPENDED in Phase 4 (compliance-guided review layer — wire into the edit
+  // loop). New names only — never repurpose the above. bundle_review is the
+  // READ-ONLY whole-config inspector; bundle_scrub is the deliberate-apply
+  // (guardrailed executor) entry point; spec_review (O-1) is the read-only
+  // spec-completeness inspector against spec-template.yaml. The AUTOMATIC
+  // per-change gate (crlGate) is wired directly into src/sessions.js
+  // commitWorkspaceChanges — it is NOT a tool the agent calls.
+  REVIEW: "mcp__avni-bundle__bundle_review",
+  SCRUB: "mcp__avni-bundle__bundle_scrub",
+  SPEC_REVIEW: "mcp__avni-bundle__spec_review",
 });
 
 /**
@@ -54,4 +64,7 @@ export const BUNDLE_TOOL_NAMES = Object.freeze([
   BUNDLE_TOOL_NAME.READ_SRS,
   BUNDLE_TOOL_NAME.GENERATE_BASELINE,
   BUNDLE_TOOL_NAME.FIND_REFERENCES,
+  BUNDLE_TOOL_NAME.REVIEW,
+  BUNDLE_TOOL_NAME.SCRUB,
+  BUNDLE_TOOL_NAME.SPEC_REVIEW,
 ]);

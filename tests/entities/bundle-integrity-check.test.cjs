@@ -527,6 +527,9 @@ test("frozen tool-name file still carries the original names unchanged + appends
     "mcp__avni-bundle__bundle_read_srs",
     "mcp__avni-bundle__bundle_generate_baseline",
     "mcp__avni-bundle__bundle_find_references",
+    "mcp__avni-bundle__bundle_review",
+    "mcp__avni-bundle__bundle_scrub",
+    "mcp__avni-bundle__spec_review",
   ]);
   // Still frozen.
   assert.ok(Object.isFrozen(BUNDLE_TOOL_NAME));

@@ -247,7 +247,9 @@ test("eval cases: all 29 declare a valid category the regenerator can group by",
 test("promotion: bundle_find_references frozen name appended (append-only, frozen)", async () => {
   const { BUNDLE_TOOL_NAME, BUNDLE_TOOL_NAMES } = await loadNames();
   assert.equal(BUNDLE_TOOL_NAME.FIND_REFERENCES, "mcp__avni-bundle__bundle_find_references");
-  assert.equal(BUNDLE_TOOL_NAMES.length, 10);
+  // Phase 4 appended bundle_review / bundle_scrub / spec_review (CRL edit-loop
+  // wiring) after find_references — 10 → 13. find_references stays at index 9.
+  assert.equal(BUNDLE_TOOL_NAMES.length, 13);
   assert.equal(BUNDLE_TOOL_NAMES[9], "mcp__avni-bundle__bundle_find_references");
   // The original five remain first + unchanged.
   assert.equal(BUNDLE_TOOL_NAMES[0], "mcp__avni-bundle__bundle_validator_run");
