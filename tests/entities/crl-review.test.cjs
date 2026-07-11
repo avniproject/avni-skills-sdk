@@ -118,3 +118,39 @@ test("reviewBundle: scrub mode invokes the executor even with zero ai-judged fin
   assert.deepEqual(result.executed.skipped, []);
   cleanup(dir);
 });
+
+// ─── reviewSpec: same pipeline over a materialized spec artifact ───
+const SPEC_YAML = `
+subjectTypes:
+  - {name: Mother, type: Person}
+programs:
+  - name: ANC
+    targetSubjectType: Mother
+    enrolmentForm:
+      sections:
+        - {name: Enroll, fields: [{name: LMP, dataType: Date}]}
+`;
+
+test("reviewSpec: a minimal valid spec reviews clean against a deterministic-only spec doc", async () => {
+  const { reviewSpec } = await loadReview();
+  const result = await reviewSpec(SPEC_YAML, { doc: deterministicOnlyDoc() });
+  assert.equal(result.kind, "spec");
+  assert.equal(typeof result.deterministic.ok, "boolean");
+  assert.deepEqual(result.ai, { findings: [], confidence: 1, costUsd: 0 });
+});
+
+test("reviewSpec: a doc with ai-judged rules but no ANTHROPIC_API_KEY never throws — clean skip (CRIT-1)", async () => {
+  const { reviewSpec } = await loadReview();
+  const prevKey = process.env.ANTHROPIC_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  try {
+    const docWithAiRule = { version: 1, rules: [
+      { id: "spec-rule-intent-mismatch", tier: "ai-judged", class: "contradicts-intent", severity: "warning",
+        action: "flag-only", inputs: ["spec", "scopingCtx"], description: "test" },
+    ] };
+    const result = await reviewSpec(SPEC_YAML, { doc: docWithAiRule });
+    assert.deepEqual(result.ai, { findings: [], confidence: 1, costUsd: 0 });
+  } finally {
+    if (prevKey !== undefined) process.env.ANTHROPIC_API_KEY = prevKey;
+  }
+});

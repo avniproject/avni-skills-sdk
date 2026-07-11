@@ -14,10 +14,16 @@
 // with a real bounded content projection (buildBundleProjection) so the model
 // sees real concept/form content, not {kind,bundleDir}.
 
-import { loadComplianceDoc, aiRulesOf } from "./compliance-doc.js";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import crypto from "node:crypto";
+import { loadComplianceDoc, loadSpecTemplate, aiRulesOf } from "./compliance-doc.js";
 import { deterministicChecker } from "./deterministic-checker.js";
 import { aiJudge, buildBundleProjection } from "./ai-judge.js";
 import { executor } from "./executor.js";
+import { applySpec } from "../pipeline.js";
+import { buildMinimalSkeleton } from "../agents/bundle-mcp-server.js";
 
 // Actions the executor can actually resolve; a high-confidence unresolved one
 // is a real breach that fails the gate. Advisory "flag-only" findings do not.
@@ -96,4 +102,62 @@ export async function reviewBundle(bundleDir, opts = {}) {
   }
 
   return result;
+}
+
+function writeFileMapToDir(dir, files) {
+  for (const [rel, val] of Object.entries(files)) {
+    const fp = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(fp), { recursive: true });
+    fs.writeFileSync(fp, JSON.stringify(val, null, 2));
+  }
+}
+
+/**
+ * Review a canonical Avni spec (the "intent" half). Materializes the spec onto
+ * buildMinimalSkeleton() via applySpec into a temp dir (the deterministic
+ * engines are directory-based), runs the same deterministic+ai(+executor)
+ * pipeline, then removes the temp dir. Unlike reviewBundle, the artifact here
+ * already carries real content (`spec` = the literal spec text), so no
+ * buildBundleProjection is needed — only the CRIT-1 key-guard applies.
+ *
+ * `specToEntities` is intentionally NOT imported (it is brain-internal and not
+ * exported by pipeline.js, IC-3) — reviewSpec uses only applySpec +
+ * buildMinimalSkeleton.
+ */
+export async function reviewSpec(specYamlOrPath, opts = {}) {
+  const specYaml = (typeof specYamlOrPath === "string" && !specYamlOrPath.includes("\n") && fs.existsSync(specYamlOrPath))
+    ? fs.readFileSync(specYamlOrPath, "utf8")
+    : specYamlOrPath;
+
+  const doc = opts.doc || loadSpecTemplate();
+  const confidenceThreshold = opts.confidenceThreshold ?? 0.85;
+  const { patchedFiles } = applySpec({ existingBundleFiles: buildMinimalSkeleton(), specYaml, runIntegrityCheck: false });
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `crl-spec-${crypto.randomBytes(4).toString("hex")}-`));
+  try {
+    writeFileMapToDir(tmpDir, patchedFiles);
+    const deterministic = await deterministicChecker(tmpDir, doc);
+    const ai = await runAiPass(doc, opts.delta ?? null, opts.scopingCtx ?? {}, deterministic.findings, () => ({
+      kind: "spec", spec: specYaml,
+    }), confidenceThreshold);
+
+    const result = {
+      ok: deterministic.ok && !unresolvedHighConfidenceBreach(ai, confidenceThreshold),
+      mode: opts.mode || "inspect",
+      kind: "spec",
+      deterministic,
+      ai,
+      report: buildReviewReport(deterministic, ai),
+    };
+    if (opts.apply) {
+      result.executed = await executor(tmpDir, ai.findings, { confidenceThreshold, doc });
+    }
+    if (!result.ok) {
+      const escalate = computeEscalate(deterministic, ai, confidenceThreshold);
+      if (escalate) result.escalate = escalate;
+    }
+    return result;
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 }
