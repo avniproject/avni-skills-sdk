@@ -148,6 +148,8 @@ export function buildIdentityIndex(fileMap) {
 
 const arrOf = (fileMap, k) => (Array.isArray(fileMap[k]) ? fileMap[k] : []);
 const notVoided = (e) => !(e && e.voided);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const looksLikeUuid = (v) => typeof v === "string" && UUID_RE.test(v);
 
 // Real bundle forms carry NO subjectType/program/encounterType — only
 // {name, uuid, formType}. Scope lives in formMappings.json. This enriches each
@@ -209,8 +211,50 @@ function buildAddressLevels(rows, identityIndex) {
 const SETTINGS_PASSTHROUGH = [
   "enableComments", "enableMessaging", "saveDrafts", "skipRuleExecution",
   "enableRuleDesigner", "metabaseSetupEnabled", "showHierarchicalLocation",
-  "customRegistrationLocations", "searchResultFields", "worklistUpdationRule",
+  "worklistUpdationRule",
 ];
+
+// customRegistrationLocations[] = { subjectTypeUUID, locationTypeUUIDs:[...] }
+// — both identity FKs (subjectType, addressLevelType). Resolve to names so
+// settings stay UUID-free (M11).
+function resolveCustomRegistrationLocations(list, identityIndex) {
+  return list.map((c) => {
+    const out = { ...c };
+    // Always collapse the FK to a string (a dangling/voided ref → "") so no raw
+    // UUID can survive even when the target isn't in the bundle.
+    if (out.subjectTypeUUID !== undefined) { out.subjectType = identityIndex.resolve(out.subjectTypeUUID) || ""; delete out.subjectTypeUUID; }
+    if (Array.isArray(out.locationTypeUUIDs)) {
+      out.locationTypes = out.locationTypeUUIDs.map((u) => identityIndex.resolve(u)).filter(Boolean);
+      delete out.locationTypeUUIDs;
+    }
+    return out;
+  });
+}
+
+// searchResultFields[] = { subjectTypeName?, subjectTypeUUID, searchResultConcepts:[{name,uuid,displayOrder}] }
+// — the export ALSO caches subjectTypeName/name, but those can be stale (an
+// entity renamed after the config was saved keeps its old cached name here). The
+// identity index (current subjectTypes/concepts) is authoritative for a
+// current-state view, so resolve the UUID FIRST, fall back to the cached name
+// only when the UUID no longer resolves. Every FK UUID is dropped (M11).
+function resolveSearchResultFields(list, identityIndex) {
+  return list.map((f) => {
+    const out = { ...f };
+    const resolvedST = out.subjectTypeUUID ? identityIndex.resolve(out.subjectTypeUUID) : null;
+    out.subjectType = out.subjectType || resolvedST || out.subjectTypeName || "";
+    delete out.subjectTypeName; delete out.subjectTypeUUID;
+    if (Array.isArray(out.searchResultConcepts)) {
+      out.searchResultConcepts = out.searchResultConcepts.map((c) => {
+        const cc = { ...c };
+        const resolved = cc.uuid ? identityIndex.resolve(cc.uuid) : null;
+        cc.name = resolved || cc.name || "";
+        delete cc.uuid;
+        return cc;
+      });
+    }
+    return out;
+  });
+}
 
 function resolveFilterEntry(f, identityIndex) {
   const out = { ...f };
@@ -238,6 +282,12 @@ function buildSettings(orgConfig, identityIndex) {
     if (Array.isArray(src[key]) && src[key].length) {
       out[key] = src[key].map((f) => resolveFilterEntry(f, identityIndex));
     }
+  }
+  if (Array.isArray(src.customRegistrationLocations) && src.customRegistrationLocations.length) {
+    out.customRegistrationLocations = resolveCustomRegistrationLocations(src.customRegistrationLocations, identityIndex);
+  }
+  if (Array.isArray(src.searchResultFields) && src.searchResultFields.length) {
+    out.searchResultFields = resolveSearchResultFields(src.searchResultFields, identityIndex);
   }
   return out;
 }
@@ -554,7 +604,17 @@ export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
     org_name: "",
     settings: buildSettings(orgConfig, idx),
     address_levels: buildAddressLevels(arrOf(fileMap, "addressLevelTypes.json"), idx),
-    subject_types: subjectTypes.map((s) => ({ ...s })),
+    subject_types: subjectTypes.map((st) => {
+      const out = { ...st };
+      // syncRegistrationConcept1/2 are concept FKs the brain emitter passes
+      // through verbatim — resolve UUID-shaped values to concept names so the
+      // (read-only) view carries zero raw UUIDs (M11). A UUID guard means an
+      // already-name-valued field (SDK-patched bundle) passes through untouched.
+      for (const k of ["syncRegistrationConcept1", "syncRegistrationConcept2"]) {
+        if (looksLikeUuid(out[k])) out[k] = idx.resolve(out[k]) || "";
+      }
+      return out;
+    }),
     programs: programsRaw.map((p) => ({
       ...p,
       name: p.name,

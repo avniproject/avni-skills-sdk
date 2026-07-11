@@ -182,6 +182,45 @@ test("bundleToRichEntities: settings resolve subjectType/groupSubjectType/scopeP
   assert.deepEqual(conceptFilter.scopeParameters.encounterTypes, ["Anthropometry Assessment"]);
 });
 
+// M11 (grounded via the T16 corpus scan): community's organisationConfig also
+// carries customRegistrationLocations (subjectTypeUUID + locationTypeUUIDs FKs)
+// and searchResultFields (subjectTypeUUID + searchResultConcepts[].uuid) — both
+// SETTINGS_PASSTHROUGH families the original Task 5 left as raw-UUID passthrough.
+// "Zero raw UUIDs in the body" requires resolving these too, exactly like the
+// searchFilters treatment.
+test("bundleToRichEntities: settings customRegistrationLocations + searchResultFields resolve every FK to a name (real community)", { skip: skipNoCommunity }, async () => {
+  const { readRichBundleFileMap, buildIdentityIndex, bundleToRichEntities } = await loadEmit();
+  const fileMap = readRichBundleFileMap(loadOracle(communityRow));
+  const e = bundleToRichEntities(fileMap, { identityIndex: buildIdentityIndex(fileMap) });
+
+  const crl = e.settings.customRegistrationLocations || [];
+  assert.ok(crl.length > 0, "community has customRegistrationLocations");
+  for (const c of crl) {
+    assert.equal(c.subjectTypeUUID, undefined, "raw subjectTypeUUID must not survive");
+    assert.equal(c.locationTypeUUIDs, undefined, "raw locationTypeUUIDs must not survive");
+    assert.equal(typeof c.subjectType, "string");
+    assert.ok(Array.isArray(c.locationTypes));
+  }
+  const labFacility = crl.find((c) => c.subjectType === "Lab Facility");
+  assert.ok(labFacility, `subjectTypes: ${crl.map((c) => c.subjectType).join(", ")}`);
+  assert.deepEqual(labFacility.locationTypes, ["Village"]);
+
+  const srf = e.settings.searchResultFields || [];
+  assert.ok(srf.length > 0, "community has searchResultFields");
+  for (const f of srf) {
+    assert.equal(f.subjectTypeUUID, undefined, "raw subjectTypeUUID must not survive");
+    assert.equal(f.subjectTypeName, undefined, "subjectTypeName collapses to subjectType");
+    assert.equal(typeof f.subjectType, "string");
+    for (const c of (f.searchResultConcepts || [])) {
+      assert.equal(c.uuid, undefined, "raw searchResultConcepts[].uuid must not survive");
+      assert.equal(typeof c.name, "string");
+    }
+  }
+  const vhsnd = srf.find((f) => f.subjectType === "VHSND");
+  assert.ok(vhsnd, `srf subjectTypes: ${srf.map((f) => f.subjectType).join(", ")}`);
+  assert.ok(vhsnd.searchResultConcepts.some((c) => c.name === "VHSND Planned day"));
+});
+
 // ─── Task 6 — concepts_detail reshape (M6) ──────────────────────────
 
 test("bundleToRichEntities: concepts_detail strips uuid/voided, keeps dataType+bounds+answers, drops NA structural concepts", async () => {
