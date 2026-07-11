@@ -271,3 +271,41 @@ test("individualRelations: real social_security rows keep only non-voided gender
   const father = e.individual_relations.find((r) => r.name === "Father");
   assert.deepEqual(father.genders, ["Male"]);
 });
+
+// ─── Task 9 — reportCards + reportDashboards ────────────────────────
+
+test("reportCards: real phulwari card uses color, keeps nested/count, drops unresolvable standardReportCardType", { skip: skipNoCorpus }, async () => {
+  const { readRichBundleFileMap, buildIdentityIndex, bundleToRichEntities } = await loadEmit();
+  const fileMap = readRichBundleFileMap(loadOracle(phulwariRow));
+  const e = bundleToRichEntities(fileMap, { identityIndex: buildIdentityIndex(fileMap) });
+  const card = e.report_cards.find((c) => c.name === "Scheduled visits");
+  assert.equal(card.color, "#388e3c");
+  assert.equal(card.nested, false);
+  assert.equal(card.count, 1);
+  assert.equal(card.standardReportCardType, undefined);
+  assert.equal(card.colour, undefined);
+});
+
+test("reportCards: standardReportCardInput* UUID arrays resolve to names when present", async () => {
+  const { bundleToRichEntities, buildIdentityIndex } = await loadEmit();
+  const fileMap = {
+    "subjectTypes.json": [{ uuid: "s1", name: "Child" }],
+    "programs.json": [{ uuid: "p1", name: "ANC" }],
+    "encounterTypes.json": [{ uuid: "et1", name: "Visit" }],
+    "reportCard.json": [{ uuid: "r1", name: "By subject", color: "#111",
+      standardReportCardInputSubjectTypes: ["s1"], standardReportCardInputPrograms: ["p1"], standardReportCardInputEncounterTypes: ["et1"] }],
+  };
+  const e = bundleToRichEntities(fileMap, { identityIndex: buildIdentityIndex(fileMap) });
+  assert.deepEqual(e.report_cards[0].standardReportCardInputSubjectTypes, ["Child"]);
+  assert.deepEqual(e.report_cards[0].standardReportCardInputPrograms, ["ANC"]);
+  assert.deepEqual(e.report_cards[0].standardReportCardInputEncounterTypes, ["Visit"]);
+});
+
+test("reportDashboards: real phulwari dashboard keeps only name (+description), drops sections/filters", { skip: skipNoCorpus }, async () => {
+  const { readRichBundleFileMap, bundleToRichEntities } = await loadEmit();
+  const e = bundleToRichEntities(readRichBundleFileMap(loadOracle(phulwariRow)));
+  const dash = e.report_dashboards.find((d) => d.name === "Default Dashboard");
+  assert.ok(dash);
+  assert.equal(dash.sections, undefined);
+  assert.equal(dash.filters, undefined);
+});

@@ -304,6 +304,41 @@ function buildIndividualRelations(rows) {
   return undefinedIfEmpty(active);
 }
 
+// reportCard: strip uuid/id; resolve every standardReportCardInput* UUID array
+// (subjectTypes/programs/encounterTypes) to names; drop standardReportCardType
+// (a UUID with no bundle-local name source). `color` is the real corpus spelling
+// (not `colour`). nested/count are kept — the intent view wants them.
+function resolveUuidArray(arr, identityIndex) {
+  return (Array.isArray(arr) ? arr : []).map((u) => identityIndex.resolve(u)).filter(Boolean);
+}
+function buildReportCards(rows, identityIndex) {
+  const active = (rows || []).filter(notVoided).map((c) => {
+    const out = { name: c.name || "" };
+    if (c.color != null) out.color = c.color;
+    if (c.nested != null) out.nested = c.nested;
+    if (c.count != null) out.count = c.count;
+    if (c.description) out.description = c.description;
+    for (const [src, key] of [
+      ["standardReportCardInputSubjectTypes", "standardReportCardInputSubjectTypes"],
+      ["standardReportCardInputPrograms", "standardReportCardInputPrograms"],
+      ["standardReportCardInputEncounterTypes", "standardReportCardInputEncounterTypes"],
+    ]) {
+      const names = resolveUuidArray(c[src], identityIndex);
+      if (names.length) out[key] = names;
+    }
+    return out;
+  });
+  return undefinedIfEmpty(active);
+}
+function buildReportDashboards(rows) {
+  const active = (rows || []).filter(notVoided).map((d) => {
+    const out = { name: d.name || "" };
+    if (d.description) out.description = d.description;
+    return out;
+  });
+  return undefinedIfEmpty(active);
+}
+
 export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
   if (!fileMap || typeof fileMap !== "object") {
     throw new Error("bundleToRichEntities: fileMap object required");
@@ -354,5 +389,7 @@ export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
     identifier_sources: buildIdentifierSources(arrOf(fileMap, "identifierSource.json")),
     relationship_types: buildRelationshipTypes(arrOf(fileMap, "relationshipType.json")),
     individual_relations: buildIndividualRelations(arrOf(fileMap, "individualRelation.json")),
+    report_cards: buildReportCards(arrOf(fileMap, "reportCard.json"), idx),
+    report_dashboards: buildReportDashboards(arrOf(fileMap, "reportDashboard.json")),
   };
 }
