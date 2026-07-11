@@ -393,3 +393,32 @@ test("locations: aggregates to totalCount + byType, excludes voided", async () =
   assert.equal(e.locations.totalCount, 2);
   assert.deepEqual(e.locations.byType, { District: 2 });
 });
+
+// ─── Task 13 — checklists/videos/documentations/ruleDependency ──────
+
+test("documentations: real community rows pull content from documentationItems[0]", { skip: skipNoCommunity }, async () => {
+  const { readRichBundleFileMap, bundleToRichEntities } = await loadEmit();
+  const e = bundleToRichEntities(readRichBundleFileMap(loadOracle(communityRow)));
+  const doc = e.documentations.find((d) => d.name === "Don't give Sodium valproate to Epileptic women");
+  assert.ok(doc, `docs: ${(e.documentations || []).map((d) => d.name).join(" | ")}`);
+  assert.equal(typeof doc.content, "string");
+  assert.ok(doc.content.length > 0);
+});
+
+test("ruleDependency: real community webpacked blob (743KB+) reduces to hasCode+codeLength", { skip: skipNoCommunity }, async () => {
+  const { readRichBundleFileMap, bundleToRichEntities } = await loadEmit();
+  const e = bundleToRichEntities(readRichBundleFileMap(loadOracle(communityRow)));
+  assert.equal(e.rule_dependency.hasCode, true);
+  assert.equal(typeof e.rule_dependency.codeLength, "number");
+  assert.ok(e.rule_dependency.codeLength > 100000);
+});
+
+test("checklists + videos: reshape when present (synthetic)", async () => {
+  const { bundleToRichEntities } = await loadEmit();
+  const e = bundleToRichEntities({
+    "checklist.json": [{ uuid: "c1", name: "Vaccination", items: [{ concept: { name: "BCG" }, status: [{ state: "Due" }] }] }],
+    "video.json": [{ uuid: "v1", title: "Newborn care", filePath: "" }],
+  });
+  assert.deepEqual(e.checklists[0], { name: "Vaccination", items: [{ name: "BCG", states: ["Due"] }] });
+  assert.deepEqual(e.videos[0], { title: "Newborn care", filePath: "" });
+});

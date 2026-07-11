@@ -427,6 +427,42 @@ function buildLocationsSummary(rows) {
   return { totalCount: active.length, byType };
 }
 
+// documentation content lives in documentationItems[].content (a Draft.js JSON
+// blob string), NOT a top-level content field.
+function buildDocumentations(rows) {
+  const active = (rows || []).filter(notVoided).map((d) => {
+    const out = { name: d.name || "" };
+    const items = (d.documentationItems || []).filter((it) => it && !it.voided);
+    if (items.length && items[0].content != null) out.content = items[0].content;
+    return out;
+  });
+  return undefinedIfEmpty(active);
+}
+
+// ruleDependency is a single {code, hash} object — the code is a webpacked JS
+// blob (can be 700KB+). Never emit the raw JS; reduce to presence + size.
+function buildRuleDependency(obj) {
+  if (obj && typeof obj.code === "string" && obj.code.length > 0) {
+    return { hasCode: true, codeLength: obj.code.length };
+  }
+  return undefined;
+}
+
+function buildChecklists(rows) {
+  const active = (rows || []).filter(notVoided).map((c) => ({
+    name: c.name || "",
+    items: (c.items || []).map((it) => ({
+      name: (it.concept && it.concept.name) || it.name || "",
+      states: (it.status || []).map((s) => s.state).filter(Boolean),
+    })),
+  }));
+  return undefinedIfEmpty(active);
+}
+function buildVideos(rows) {
+  const active = (rows || []).filter(notVoided).map((v) => ({ title: v.title || "", filePath: v.filePath || "" }));
+  return undefinedIfEmpty(active);
+}
+
 export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
   if (!fileMap || typeof fileMap !== "object") {
     throw new Error("bundleToRichEntities: fileMap object required");
@@ -485,5 +521,9 @@ export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
     group_dashboards: buildGroupDashboards(arrOf(fileMap, "groupDashboards.json")),
     catchments: buildCatchments(fileMap["catchments.json"]),
     locations: buildLocationsSummary(arrOf(fileMap, "locations.json")),
+    documentations: buildDocumentations(arrOf(fileMap, "documentations.json")),
+    rule_dependency: buildRuleDependency(fileMap["ruleDependency.json"]),
+    checklists: buildChecklists(arrOf(fileMap, "checklist.json")),
+    videos: buildVideos(arrOf(fileMap, "video.json")),
   };
 }
