@@ -248,3 +248,26 @@ test("bundleToRichEntities: identifier_sources reads prefix from options.prefix 
   assert.equal(src.type, "userBasedIdentifierGenerator");
   assert.equal(src.minLength, 5);
 });
+
+// ─── Task 8 — relationshipTypes + individualRelations (M7) ──────────
+
+test("relationshipTypes: real community rows collapse nested individualAIsToB/BIsToA objects to aIsToB/bIsToA names", { skip: skipNoCommunity }, async () => {
+  const { readRichBundleFileMap, bundleToRichEntities } = await loadEmit();
+  const e = bundleToRichEntities(readRichBundleFileMap(loadOracle(communityRow)));
+  assert.ok(e.relationship_types.some((r) => r.aIsToB === "father" && r.bIsToA === "son"));
+});
+
+test("relationshipTypes: defensive string-shape fallback (synthetic)", async () => {
+  const { bundleToRichEntities } = await loadEmit();
+  const e = bundleToRichEntities({
+    "relationshipType.json": [{ uuid: "r1", individualAIsToBRelation: "aunt", individualBIsToARelation: "niece" }],
+  });
+  assert.deepEqual(e.relationship_types[0], { aIsToB: "aunt", bIsToA: "niece" });
+});
+
+test("individualRelations: real social_security rows keep only non-voided gender names", { skip: skipNoSocialSecurity }, async () => {
+  const { readRichBundleFileMap, bundleToRichEntities } = await loadEmit();
+  const e = bundleToRichEntities(readRichBundleFileMap(loadOracle(socialSecurityRow)));
+  const father = e.individual_relations.find((r) => r.name === "Father");
+  assert.deepEqual(father.genders, ["Male"]);
+});

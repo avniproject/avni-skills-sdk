@@ -284,6 +284,26 @@ function buildIdentifierSources(rows) {
   return undefinedIfEmpty(active);
 }
 
+// relationshipType.json stores individualAIsToBRelation/BIsToARelation as nested
+// {uuid,id,name,genders} objects in the real corpus; the string branch is a
+// defensive fallback for a hypothetical alternate export shape (M7).
+function relationName(v) {
+  if (v == null) return "";
+  return typeof v === "string" ? v : (v.name || "");
+}
+function buildRelationshipTypes(rows) {
+  const active = (rows || []).filter(notVoided)
+    .map((r) => ({ aIsToB: relationName(r.individualAIsToBRelation), bIsToA: relationName(r.individualBIsToARelation) }));
+  return undefinedIfEmpty(active);
+}
+function buildIndividualRelations(rows) {
+  const active = (rows || []).filter(notVoided).map((r) => ({
+    name: r.name || "",
+    genders: (r.genders || []).filter((g) => g && !g.voided).map((g) => (typeof g === "object" ? g.name : String(g))),
+  }));
+  return undefinedIfEmpty(active);
+}
+
 export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
   if (!fileMap || typeof fileMap !== "object") {
     throw new Error("bundleToRichEntities: fileMap object required");
@@ -332,5 +352,7 @@ export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
     concepts_detail: buildConceptsDetail(arrOf(fileMap, "concepts.json")),
     group_roles: buildGroupRoles(arrOf(fileMap, "groupRole.json"), idx),
     identifier_sources: buildIdentifierSources(arrOf(fileMap, "identifierSource.json")),
+    relationship_types: buildRelationshipTypes(arrOf(fileMap, "relationshipType.json")),
+    individual_relations: buildIndividualRelations(arrOf(fileMap, "individualRelation.json")),
   };
 }
