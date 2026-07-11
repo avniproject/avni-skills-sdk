@@ -25,7 +25,7 @@ const CRITERIA = [
   { key: "C1-merged-kb",      theme: "C1 merged.md retrieval",        tier: "aspirational", live: false, story: "7", agent: true },
 ];
 
-async function runAcceptance({ real = false, hasKey = false } = {}) {
+async function runAcceptance({ real = false, hasKey = false, generate = false } = {}) {
   const rows = listRunnableOrgs(manifest(), { real });
   const orgs = [];
   for (const row of rows) {
@@ -52,6 +52,25 @@ async function runAcceptance({ real = false, hasKey = false } = {}) {
       } catch (e) {
         dims["C3-rule-grounding"] = { status: "amber", detail: `grounding failed: ${e.message}` };
       }
+      // C4 generate→diff (opt-in; slow — runs the avni-skills generator). Gap is
+      // expected for un-enhanced inputs → amber, never fails the floor.
+      if (generate && hasInputs(row)) {
+        try {
+          const { generateAndDiff } = require("./generation.cjs");
+          const gd = await generateAndDiff(row, dir);
+          dims["C4-generate"] = gd.skipped
+            ? { status: "skip", detail: gd.reason }
+            : gd.error
+            ? { status: "amber", detail: `generator failed: ${gd.error}` }
+            : {
+                status: gd.pass ? "green" : "amber",
+                detail: `parity ${gd.pass ? "PASS" : "gap"} — `
+                  + Object.entries(gd.gap).map(([k, v]) => `${k} ${v.present}/${v.present + v.missing}`).join("  "),
+              };
+        } catch (e) {
+          dims["C4-generate"] = { status: "amber", detail: `generation error: ${String(e.message).split("\n")[0]}` };
+        }
+      }
     } catch (e) {
       dims["I4-parity"] = { status: "red", detail: `load failed: ${e.message}` };
     }
@@ -75,7 +94,7 @@ async function runAcceptance({ real = false, hasKey = false } = {}) {
     if (floorKey(k) && d.status === "red") floorReds.push(`global/${k}`);
   }
 
-  return { orgs, global, criteria: CRITERIA, floorPass: floorReds.length === 0, floorReds, real, hasKey };
+  return { orgs, global, criteria: CRITERIA, floorPass: floorReds.length === 0, floorReds, real, hasKey, generate };
 }
 
 module.exports = { runAcceptance, CRITERIA };

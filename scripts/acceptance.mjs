@@ -14,7 +14,8 @@ const { runAcceptance, CRITERIA } = require("../tests/corpus/lib/acceptance-core
 
 const real = process.env.RUN_REAL === "1" || process.argv.includes("--real");
 const hasKey = !!process.env.ANTHROPIC_API_KEY;
-const res = await runAcceptance({ real, hasKey });
+const generate = !process.argv.includes("--fast"); // C4 generation on by default; --fast skips it
+const res = await runAcceptance({ real, hasKey, generate });
 
 const ICON = { green: "🟢", red: "🔴", amber: "🟡", skip: "⚪" };
 console.log(`\n=== Bundle-Authoring Acceptance Scorecard ===`);
@@ -26,13 +27,16 @@ for (const o of res.orgs) {
   const rg = o.dims["C3-rule-grounding"];
   console.log(`  ${ICON[p.status] || p.status} ${o.org.padEnd(16)} ${o.oracleOnly ? "[oracle]" : "[gen]   "} parity: ${p.detail}`);
   if (rg) console.log(`     ${ICON[rg.status] || rg.status} rules:  ${rg.detail}`);
+  const c4 = o.dims["C4-generate"];
+  if (c4) console.log(`     ${ICON[c4.status] || c4.status} gen:    ${c4.detail}`);
 }
 const c5 = res.global["C5-generic"];
 console.log(`\nGlobal — ${ICON[c5.status]} C5 genericity: ${c5.detail}\n`);
 
 console.log("Criteria coverage (six themes + floor):");
 for (const c of CRITERIA) {
-  const state = c.live ? "LIVE" : `pending (Story ${c.story})`;
+  const live = c.live || (c.key === "C4-generate" && generate);
+  const state = live ? "LIVE" : `pending (Story ${c.story})`;
   console.log(`  ${(c.tier === "floor" ? "floor " : "aspir.")} ${c.theme.padEnd(32)} ${state}${c.agent ? " [agent]" : ""}`);
 }
 
