@@ -181,6 +181,47 @@ function buildAddressLevels(rows, identityIndex) {
   });
 }
 
+// ─── settings (organisationConfig) — resolve every cross-ref UUID → name ──
+// searchFilters/myDashboardFilters carry raw FK UUIDs (subjectTypeUUID,
+// groupSubjectTypeUUID, scopeParameters.{programUUIDs,encounterTypeUUIDs}) and a
+// conceptUUID alongside an already-resolved conceptName. Resolve/strip them all
+// so ZERO raw UUIDs survive into the body (M11).
+const SETTINGS_PASSTHROUGH = [
+  "enableComments", "enableMessaging", "saveDrafts", "skipRuleExecution",
+  "enableRuleDesigner", "metabaseSetupEnabled", "showHierarchicalLocation",
+  "customRegistrationLocations", "searchResultFields", "worklistUpdationRule",
+];
+
+function resolveFilterEntry(f, identityIndex) {
+  const out = { ...f };
+  if (out.subjectTypeUUID) { out.subjectType = identityIndex.resolve(out.subjectTypeUUID) || ""; delete out.subjectTypeUUID; }
+  if (out.groupSubjectTypeUUID) { out.groupSubjectType = identityIndex.resolve(out.groupSubjectTypeUUID) || ""; delete out.groupSubjectTypeUUID; }
+  if (out.conceptUUID) delete out.conceptUUID; // conceptName already carries the resolved name
+  if (out.scopeParameters && typeof out.scopeParameters === "object") {
+    const sp = { ...out.scopeParameters };
+    if (sp.programUUIDs) { sp.programs = sp.programUUIDs.map((u) => identityIndex.resolve(u)).filter(Boolean); delete sp.programUUIDs; }
+    if (sp.encounterTypeUUIDs) { sp.encounterTypes = sp.encounterTypeUUIDs.map((u) => identityIndex.resolve(u)).filter(Boolean); delete sp.encounterTypeUUIDs; }
+    out.scopeParameters = sp;
+  }
+  return out;
+}
+
+function buildSettings(orgConfig, identityIndex) {
+  const src = (orgConfig && (orgConfig.settings || orgConfig.organisationConfig)) || {};
+  const out = {};
+  const langs = Array.isArray(src.languages) && src.languages.length ? src.languages : ["en"];
+  out.languages = langs;
+  for (const k of SETTINGS_PASSTHROUGH) {
+    if (src[k] !== undefined && src[k] !== null) out[k] = src[k];
+  }
+  for (const key of ["searchFilters", "myDashboardFilters"]) {
+    if (Array.isArray(src[key]) && src[key].length) {
+      out[key] = src[key].map((f) => resolveFilterEntry(f, identityIndex));
+    }
+  }
+  return out;
+}
+
 export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
   if (!fileMap || typeof fileMap !== "object") {
     throw new Error("bundleToRichEntities: fileMap object required");
@@ -204,9 +245,11 @@ export function bundleToRichEntities(fileMap, { identityIndex } = {}) {
     .map((f) => structuredClone(f));
   enrichFormsFromMappings(forms, formMappings, idx);
 
+  const orgConfig = fileMap["organisationConfig.json"];
+
   return {
     org_name: "",
-    settings: {},
+    settings: buildSettings(orgConfig, idx),
     address_levels: buildAddressLevels(arrOf(fileMap, "addressLevelTypes.json"), idx),
     subject_types: subjectTypes.map((s) => ({ ...s })),
     programs: programsRaw.map((p) => ({

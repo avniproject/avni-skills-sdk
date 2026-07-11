@@ -154,3 +154,30 @@ test("bundleToRichEntities: real phulwari addressLevelTypes.json → one address
   assert.deepEqual(e.address_levels.map((r) => r.name), ["Village"]);
   assert.equal(e.address_levels[0].parent, undefined);
 });
+
+// ─── Task 5 — settings (M11: real Concept + GroupSubject filters) ────
+
+test("bundleToRichEntities: settings resolve subjectType/groupSubjectType/scopeParameters UUIDs, no raw UUID left (phulwari)", { skip: skipNoCorpus }, async () => {
+  const { readRichBundleFileMap, buildIdentityIndex, bundleToRichEntities } = await loadEmit();
+  const fileMap = readRichBundleFileMap(loadOracle(phulwariRow));
+  const e = bundleToRichEntities(fileMap, { identityIndex: buildIdentityIndex(fileMap) });
+  assert.deepEqual(e.settings.languages, ["en", "hi_IN"]);
+  assert.ok(e.settings.searchFilters.length > 0);
+
+  for (const f of e.settings.searchFilters) {
+    assert.equal(f.subjectTypeUUID, undefined, "raw subjectTypeUUID must not survive");
+    assert.equal(f.groupSubjectTypeUUID, undefined, "raw groupSubjectTypeUUID must not survive");
+    assert.equal(f.conceptUUID, undefined, "raw conceptUUID must not survive");
+  }
+  const nameFilter = e.settings.searchFilters.find((f) => f.type === "Name" && f.subjectType === "Child");
+  assert.ok(nameFilter);
+  const groupFilter = e.settings.searchFilters.find((f) => f.type === "GroupSubject");
+  assert.equal(groupFilter.subjectType, "Child");
+  assert.equal(groupFilter.groupSubjectType, "Phulwari");
+  const conceptFilter = e.settings.searchFilters.find((f) => f.type === "Concept");
+  assert.equal(conceptFilter.conceptName, "Growth Faltering Status"); // preserved as-is
+  assert.equal(conceptFilter.scopeParameters.programUUIDs, undefined);
+  assert.equal(conceptFilter.scopeParameters.encounterTypeUUIDs, undefined);
+  assert.deepEqual(conceptFilter.scopeParameters.programs, ["Phulwari"]);
+  assert.deepEqual(conceptFilter.scopeParameters.encounterTypes, ["Anthropometry Assessment"]);
+});
