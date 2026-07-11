@@ -58,6 +58,20 @@ function externalReferences(bundleDir, target, { ownJsonPath = null, crossFileEx
   });
 }
 
+// Indices of formMappings.json entries that belong to THIS form (formUUID
+// match) — pruned together with the form (MAJ-6), so excluded from the
+// referenced-guard, not counted as an external reference.
+function ownFormMappingIndices(bundleDir, formUuid) {
+  const fp = path.join(bundleDir, "formMappings.json");
+  if (!fs.existsSync(fp)) return [];
+  let arr;
+  try { arr = JSON.parse(fs.readFileSync(fp, "utf8")); } catch { return []; }
+  if (!Array.isArray(arr)) return [];
+  const idxs = [];
+  arr.forEach((m, i) => { if (m && m.formUUID === formUuid) idxs.push(i); });
+  return idxs;
+}
+
 // Which files THIS operation could touch — used to scope the in-memory revert
 // snapshot (guardrail 2) and to know what to write.
 function candidateFiles(target) {
@@ -99,19 +113,65 @@ function pruneConcept(bundleDir, target) {
   return { filesTouched: [target.file] };
 }
 
+// Prune a form AND its own formMapping(s) as one unit (MAJ-6). Returns the
+// files actually touched.
+function pruneForm(bundleDir, target) {
+  const fp = path.join(bundleDir, target.file);
+  if (!fs.existsSync(fp)) throw new Error(`executor: prune target file not found: ${target.file}`);
+  fs.rmSync(fp);
+  const filesTouched = [target.file];
+  const mapFp = path.join(bundleDir, "formMappings.json");
+  if (fs.existsSync(mapFp)) {
+    const arr = JSON.parse(fs.readFileSync(mapFp, "utf8"));
+    if (Array.isArray(arr)) {
+      const remaining = arr.filter((m) => !(m && m.formUUID === target.uuid));
+      if (remaining.length !== arr.length) {
+        fs.writeFileSync(mapFp, JSON.stringify(remaining, null, 2));
+        filesTouched.push("formMappings.json");
+      }
+    }
+  }
+  return { filesTouched };
+}
+
 function pruneEntity(bundleDir, target) {
   if (normKind(target.entityKind) === "concept") return pruneConcept(bundleDir, target);
+  if (normKind(target.entityKind) === "form") return pruneForm(bundleDir, target);
   throw new Error(`executor: prune not supported for entityKind "${target.entityKind}" (only "concept" and "form" in this delivery)`);
 }
 
+// Apply a confident fix-candidate — write the finding's `replacement` in place
+// of the target entity (O-3). Concept fixes replace the array slot; the entity
+// keeps its uuid, so references stay valid (guardrail 2 catches any regression).
+function applyFix(bundleDir, target, replacement) {
+  if (normKind(target.entityKind) === "concept") {
+    const fp = path.join(bundleDir, target.file);
+    const raw = JSON.parse(fs.readFileSync(fp, "utf8"));
+    const arr = readConceptArray(raw);
+    const idx = findEntityIndex(arr, target);
+    if (idx === -1) throw new Error(`executor: fix target not found in ${target.file}: ${target.uuid || target.name}`);
+    arr[idx] = replacement;
+    fs.writeFileSync(fp, JSON.stringify(Array.isArray(raw) ? arr : { ...raw, concepts: arr }, null, 2));
+    return { filesTouched: [target.file] };
+  }
+  throw new Error(`executor: fix not supported for entityKind "${target.entityKind}" (only "concept" in this delivery)`);
+}
+
 // Compute the ownJsonPath / crossFileExclusions the referenced-guard needs for
-// this target kind (concept: exclude its own array slot).
+// this target kind (concept: exclude its own array slot; form: exclude its own
+// formMapping entries, MAJ-6).
 function guardExclusions(bundleDir, target) {
   if (normKind(target.entityKind) === "concept") {
     const fp = path.join(bundleDir, target.file);
     const arr = readConceptArray(JSON.parse(fs.readFileSync(fp, "utf8")));
     const idx = findEntityIndex(arr, target);
     return { ownJsonPath: idx !== -1 ? `[${idx}]` : null, crossFileExclusions: [] };
+  }
+  if (normKind(target.entityKind) === "form") {
+    return {
+      ownJsonPath: null,
+      crossFileExclusions: ownFormMappingIndices(bundleDir, target.uuid).map((i) => ({ file: "formMappings.json", jsonPath: `[${i}]` })),
+    };
   }
   return { ownJsonPath: null, crossFileExclusions: [] };
 }
@@ -147,10 +207,18 @@ export async function executor(bundleDir, findings, opts = {}) {
   const skipped = [];
 
   for (const f of findings) {
-    // guardrail 3 — action / confidence gate
+    // guardrail 3 — action / confidence gate. prune-candidate uses
+    // confidenceThreshold; fix-candidate uses the higher fixThreshold on
+    // fixConfidence (falling back to confidence). A fix with no replacement
+    // has nothing to apply → flag-only.
+    const isPrune = f.action === "prune-candidate";
+    const isFix = f.action === "fix-candidate";
     if (typeof f.confidence !== "number" || !f.action) { skipped.push({ ruleId: f.ruleId, target: f.target || null, reason: "flag-only" }); continue; }
-    if (f.action !== "prune-candidate") { skipped.push({ ruleId: f.ruleId, target: f.target, reason: "flag-only" }); continue; }
-    if (f.confidence < confidenceThreshold) { skipped.push({ ruleId: f.ruleId, target: f.target, reason: "below-threshold" }); continue; }
+    if (!isPrune && !isFix) { skipped.push({ ruleId: f.ruleId, target: f.target, reason: "flag-only" }); continue; }
+    if (isFix && f.replacement == null) { skipped.push({ ruleId: f.ruleId, target: f.target, reason: "flag-only" }); continue; }
+    const conf = isFix ? (typeof f.fixConfidence === "number" ? f.fixConfidence : f.confidence) : f.confidence;
+    const threshold = isFix ? fixThreshold : confidenceThreshold;
+    if (conf < threshold) { skipped.push({ ruleId: f.ruleId, target: f.target, reason: "below-threshold" }); continue; }
 
     // guardrail 1 — never touch a referenced/required entity
     if (referencedGuard) {
@@ -159,13 +227,14 @@ export async function executor(bundleDir, findings, opts = {}) {
       if (external.length > 0) { skipped.push({ ruleId: f.ruleId, target: f.target, reason: "referenced" }); continue; }
     }
 
-    if (dryRun) { applied.push({ ruleId: f.ruleId, target: f.target, op: "prune", filesTouched: candidateFiles(f.target) }); continue; }
+    const op = isFix ? "fix" : "prune";
+    if (dryRun) { applied.push({ ruleId: f.ruleId, target: f.target, op, filesTouched: candidateFiles(f.target) }); continue; }
 
     // guardrail 2 — snapshot → apply → revalidate → surgical revert on regression
     const candidates = candidateFiles(f.target);
     const preSnapshot = revalidate ? Object.fromEntries(candidates.map((rel) => [rel, snapshotFile(bundleDir, rel)])) : null;
     const before = revalidate ? await deterministicChecker(bundleDir, doc) : null;
-    const { filesTouched } = pruneEntity(bundleDir, f.target);
+    const { filesTouched } = isFix ? applyFix(bundleDir, f.target, f.replacement) : pruneEntity(bundleDir, f.target);
 
     if (revalidate) {
       const after = await deterministicChecker(bundleDir, doc);
@@ -175,7 +244,7 @@ export async function executor(bundleDir, findings, opts = {}) {
         continue;
       }
     }
-    applied.push({ ruleId: f.ruleId, target: f.target, op: "prune", filesTouched });
+    applied.push({ ruleId: f.ruleId, target: f.target, op, filesTouched });
   }
 
   const det = await deterministicChecker(bundleDir, doc);
