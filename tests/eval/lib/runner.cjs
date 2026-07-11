@@ -291,6 +291,13 @@ async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, 
   // 6. Build the assertion context + invoke
   let validatorCache = null;
   let transcriptCache = null;
+  // MAJ-7: a case's assertions() may make its OWN in-process AI calls (e.g. a
+  // standalone reviewBundle/reviewSpec) whose spend the chat-turn's
+  // dispatch.costUsd never sees. recordReviewCost() lets the case add that spend
+  // to the case's reported cost so run.cjs's running-cost budget gate AND the
+  // per-case maxCostUsd guard both account for it. Default 0 → identical
+  // behaviour for every existing case that never calls it.
+  let extraCostUsd = 0;
   const ctx = {
     sessionId: sid,
     sessionMeta: session.meta,
@@ -328,6 +335,8 @@ async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, 
       return http.getJson(`/v1/sessions/${sid}`);
     },
     getBundlePath() { return bundleDir; },
+    // MAJ-7 — accumulate a case's own in-assertion AI spend into the reported cost.
+    recordReviewCost(usd) { if (typeof usd === "number" && isFinite(usd) && usd > 0) extraCostUsd += usd; },
   };
 
   let assertErr = null;
@@ -337,11 +346,15 @@ async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, 
     assertErr = e;
   }
 
+  // MAJ-7: the reported cost is the chat turn PLUS any in-assertion review spend.
+  const totalCostUsd = dispatch.costUsd + extraCostUsd;
+
   // Cost guard runs LAST regardless — even if assertions passed, blowing
-  // the per-case budget is a fail-flag.
+  // the per-case budget is a fail-flag. Bounds the FULL case spend (chat +
+  // in-assertion review), not just the chat turn.
   if (!assertErr && typeof caseDef.maxCostUsd === "number") {
     try {
-      assertions.assertCostUnder(dispatch.costUsd, caseDef.maxCostUsd, { label: caseDef.name });
+      assertions.assertCostUnder(totalCostUsd, caseDef.maxCostUsd, { label: caseDef.name });
     } catch (e) {
       assertErr = e;
     }
@@ -358,7 +371,7 @@ async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, 
       error: assertErr.message,
       stack: assertErr.stack,
       turnsUsed: dispatch.turnEvent?.turn ? (dispatch.turnEvent.noChanges ? 0 : 1) : 0,
-      cost: dispatch.costUsd,
+      cost: totalCostUsd,
       inputTokens: dispatch.inputTokens,
       outputTokens: dispatch.outputTokens,
       sessionId: sid,
@@ -372,7 +385,7 @@ async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, 
     model: usedModel,
     status: "pass",
     turnsUsed: dispatch.turnEvent?.noChanges ? 0 : 1,
-    cost: dispatch.costUsd,
+    cost: totalCostUsd,
     inputTokens: dispatch.inputTokens,
     outputTokens: dispatch.outputTokens,
     sessionId: sid,
