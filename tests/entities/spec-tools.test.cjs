@@ -296,3 +296,35 @@ test("specEmitOnDir: emitting an empty bundle does not throw (returns a skeleton
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ─── Task 15 — the ONE rich emitter is now the production path (M5) ──
+// pipeline.bundleToEntities/emitSpec AND the MCP specEmitOnDir/specReviewOnDir
+// all feed the rich spec-view emitter. The old 6-family adapter never surfaced
+// ancillary families (reportCards, identifierSources, …); the thin 13-file
+// readBundleFileMap never even read reportCard.json off disk.
+
+test("emitSpec: now surfaces reportCards (rich emitter wired in, not the old 6-family adapter)", async () => {
+  const { emitSpec } = await loadPipeline();
+  const spec = emitSpec({ existingBundleFiles: {
+    "subjectTypes.json": [{ uuid: "s1", name: "X" }],
+    "reportCard.json": [{ uuid: "r1", name: "Total Population", color: "#eee" }],
+  }, org: "T" });
+  assert.match(spec, /reportCards:/);
+  assert.match(spec, /Total Population/);
+});
+
+test("specEmitOnDir: surfaces an ancillary family from disk (rich map, not the private 13-file whitelist)", async () => {
+  const { applySpec } = await loadPipeline();
+  const { specEmitOnDir } = await loadMcp();
+  const built = applySpec({ existingBundleFiles: {}, specYaml: "subjectTypes:\n  - {name: X, type: Person}\n" });
+  const dir = writeBundleToDir(built.patchedFiles);
+  fs.writeFileSync(path.join(dir, "reportCard.json"), JSON.stringify([{ uuid: "r1", name: "Total Population", color: "#eee" }]));
+  try {
+    const res = specEmitOnDir(dir);
+    assert.ok(!res.isError, `unexpected isError: ${res.content?.[0]?.text}`);
+    assert.match(res.content[0].text, /reportCards:/);
+    assert.match(res.content[0].text, /Total Population/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
