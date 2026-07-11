@@ -7,6 +7,17 @@
 // invariant of the Phase-4 wiring (delta shape + blast radius, commit-first
 // ordering, SDK_CRL_GATE off-switch, durable meta persistence, no-op/collision
 // bypass, reviewSpec on a spec-mutating turn), never a specific pass outcome.
+//
+// Live Spec View P4 (reviewSpec capability confirmation, NOT production-path
+// activation) — exactly ONE test (the LIVE opt-in below) opts INTO a real model
+// call to prove reviewSpec's ai-judged pass can fire correctly when driven by a
+// `rules:`-bearing doc (bespoke, via opts.doc), mirroring
+// tests/eval/cases/29-spec-completeness.cjs. The production spec-template.yaml
+// remains rules-less and flags nothing regardless of key (see the inert-gate
+// proof test below). Captured BEFORE the unconditional delete so that one test
+// can restore it in a `finally`; every OTHER test in this file stays
+// keyless/deterministic as documented.
+const LIVE_ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || null;
 delete process.env.ANTHROPIC_API_KEY;
 // This file exercises the ENABLED gate (keyless → deterministic), so it must
 // run with the gate ON even though the CI suite default (package.json
@@ -436,6 +447,34 @@ test("reviewSpec: a DERIVED incomplete spec (pipeline.emitSpec over buildMinimal
   assert.equal(review.kind, "spec");
   assert.deepEqual(review.ai, { findings: [], confidence: 1, costUsd: 0 },
     "keyless (ANTHROPIC_API_KEY unset for this whole file) — the ai-judged pass must clean-skip, never throw or silently spend");
+});
+
+test("reviewSpec: LIVE opt-in — the same DERIVED incomplete spec IS flagged by the ai-judged completeness rule when a real key is available (reuses the bespoke doc/intent above verbatim; AI part budget-gated — self-skips keyless; NOT the production spec-template.yaml path) [CAPABILITY test]", async (t) => {
+  if (!LIVE_ANTHROPIC_API_KEY) { t.skip("ANTHROPIC_API_KEY not set — eval-style test, opt-in"); return; }
+  const pipeline = await loadPipeline();
+  const { buildMinimalSkeleton } = await loadServer();
+  const { reviewSpec } = await loadReview();
+
+  const derivedSpecYaml = pipeline.emitSpec({ existingBundleFiles: buildMinimalSkeleton(), org: "SpecCompleteOrg" });
+
+  process.env.ANTHROPIC_API_KEY = LIVE_ANTHROPIC_API_KEY;
+  let review;
+  try {
+    review = await reviewSpec(derivedSpecYaml, {
+      doc: SPEC_COMPLETENESS_DOC,
+      scopingCtx: { orgAsk: FULL_INTENT },
+    });
+  } finally {
+    delete process.env.ANTHROPIC_API_KEY;
+  }
+
+  assert.equal(review.kind, "spec");
+  assert.ok(
+    review.ai.findings.some((f) => f.ruleId === "spec-completeness"),
+    "reviewSpec did not flag the derived incomplete spec against its stated intent " +
+    "(the missing monthly Health Check visit encounter form). ai findings: " + JSON.stringify(review.ai.findings),
+  );
+  assert.ok(review.ai.costUsd > 0, "a real paid model call must report a non-zero cost");
 });
 
 test.after(() => { try { fs.rmSync(SESSIONS_ROOT, { recursive: true, force: true }); } catch {} });
