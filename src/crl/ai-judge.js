@@ -23,8 +23,13 @@ import path from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { BLOCKED_ACCOUNT_MCP_SERVERS, blockAccountMcpPreToolUseHook } from "../agent.js";
 
-export const HAIKU_MODEL = "claude-haiku-4-5-20251001";
-export const SONNET_MODEL = "claude-sonnet-4-6";
+// Judge model tiers — env-overridable so the CRL judge can be pointed at any
+// model for A/B routing experiments and regression testing (production defaults
+// unchanged when the env vars are unset). SDK_JUDGE_MODEL overrides the base
+// (per-change delta) tier; SDK_JUDGE_ESCALATION_MODEL the low-confidence
+// re-judge tier. Set both to the same model to run "the whole judge on model M".
+export const HAIKU_MODEL = process.env.SDK_JUDGE_MODEL || "claude-haiku-4-5-20251001";
+export const SONNET_MODEL = process.env.SDK_JUDGE_ESCALATION_MODEL || "claude-sonnet-4-6";
 
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.85;
 const MAX_PROJECTED_CONCEPTS = 120;
