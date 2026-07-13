@@ -2,7 +2,7 @@
   "version": 1,
   "source": "interim-seed",
   "generatedAt": null,
-  "note": "INTERIM SEED — this qualification is a documented judgment, NOT eval data. Regenerate from a real eval run: run the 20-case suite per model with SDK_EVAL_RESULTS_JSONL set (see scripts/build-model-matrix.mjs header), then `node scripts/build-model-matrix.mjs --in <results.jsonl>`. Until then, selection falls back to the #11 default (claude-sonnet-4-6) for any category with no qualified model.",
+  "note": "INTERIM SEED — updated 2026-07-13 from the model-matrix run (case 24 repeat-N + hard CRL judge case). Authoring/structural default = Opus 4.8; CRL judge runs on Haiku 4.5 (a separate path — src/crl/ai-judge.js). Fallback = Opus 4.8. This is a documented judgment informed by a partial run, NOT a full per-model regeneration; run the 20-case suite per model with SDK_EVAL_RESULTS_JSONL set, then `node scripts/build-model-matrix.mjs --in <results.jsonl>` to refine.",
   "categories": [
     "data-integrity",
     "safety-refusal",
@@ -10,7 +10,7 @@
     "no-thrash",
     "srs-authorship"
   ],
-  "fallbackModel": "claude-sonnet-4-6",
+  "fallbackModel": "claude-opus-4-8",
   "models": {
     "claude-haiku-4-5": {
       "costRank": 1,
@@ -25,7 +25,7 @@
           "passed": null,
           "total": null,
           "passRate": null,
-          "rationale": "interim: cheapest model — low-risk explain/verify only; not trusted for structural work pending eval"
+          "rationale": "cheapest model — low-risk explain/verify only; not trusted for structural bundle mutation"
         },
         "safety-refusal": {
           "qualified": false,
@@ -34,7 +34,7 @@
           "passed": null,
           "total": null,
           "passRate": null,
-          "rationale": "interim: cheapest model — low-risk explain/verify only; not trusted for structural work pending eval"
+          "rationale": "cheapest model — low-risk explain/verify only; not trusted for structural bundle mutation"
         },
         "correctness": {
           "qualified": false,
@@ -43,7 +43,7 @@
           "passed": null,
           "total": null,
           "passRate": null,
-          "rationale": "interim: cheapest model — low-risk explain/verify only; not trusted for structural work pending eval"
+          "rationale": "cheapest model — low-risk explain/verify only; not trusted for structural bundle mutation"
         },
         "no-thrash": {
           "qualified": true,
@@ -52,7 +52,7 @@
           "passed": null,
           "total": null,
           "passRate": null,
-          "rationale": "interim: cheapest model — low-risk explain/verify only; not trusted for structural work pending eval"
+          "rationale": "cheapest model — low-risk explain/verify only; not trusted for structural bundle mutation"
         },
         "srs-authorship": {
           "qualified": false,
@@ -61,27 +61,24 @@
           "passed": null,
           "total": null,
           "passRate": null,
-          "rationale": "interim: cheapest model — low-risk explain/verify only; not trusted for structural work pending eval"
+          "rationale": "cheapest model — low-risk explain/verify only; not trusted for structural bundle mutation"
         }
       }
     },
     "claude-sonnet-4-6": {
       "costRank": 2,
       "toolTiers": [
-        "read",
-        "write",
-        "structural",
-        "export"
+        "read"
       ],
       "qualification": {
         "data-integrity": {
-          "qualified": true,
+          "qualified": false,
           "source": "interim",
           "runId": null,
           "passed": null,
           "total": null,
           "passRate": null,
-          "rationale": "interim: #11 default — treated as safe across all categories pending eval evidence"
+          "rationale": "2026-07-13 model-matrix: superseded by Opus 4.8 for structural/authoring; retained read-tier (no-thrash/safety-refusal) only"
         },
         "safety-refusal": {
           "qualified": true,
@@ -90,16 +87,16 @@
           "passed": null,
           "total": null,
           "passRate": null,
-          "rationale": "interim: #11 default — treated as safe across all categories pending eval evidence"
+          "rationale": "2026-07-13 model-matrix: superseded by Opus 4.8 for structural/authoring; retained read-tier (no-thrash/safety-refusal) only"
         },
         "correctness": {
-          "qualified": true,
+          "qualified": false,
           "source": "interim",
           "runId": null,
           "passed": null,
           "total": null,
           "passRate": null,
-          "rationale": "interim: #11 default — treated as safe across all categories pending eval evidence"
+          "rationale": "2026-07-13 model-matrix: superseded by Opus 4.8 for structural/authoring; retained read-tier (no-thrash/safety-refusal) only"
         },
         "no-thrash": {
           "qualified": true,
@@ -108,16 +105,16 @@
           "passed": null,
           "total": null,
           "passRate": null,
-          "rationale": "interim: #11 default — treated as safe across all categories pending eval evidence"
+          "rationale": "2026-07-13 model-matrix: superseded by Opus 4.8 for structural/authoring; retained read-tier (no-thrash/safety-refusal) only"
         },
         "srs-authorship": {
-          "qualified": true,
+          "qualified": false,
           "source": "interim",
           "runId": null,
           "passed": null,
           "total": null,
           "passRate": null,
-          "rationale": "interim: #11 default — treated as safe across all categories pending eval evidence"
+          "rationale": "2026-07-13 model-matrix: superseded by Opus 4.8 for structural/authoring; retained read-tier (no-thrash/safety-refusal) only"
         }
       }
     },
@@ -137,7 +134,7 @@
           "passed": null,
           "total": null,
           "passRate": null,
-          "rationale": "interim: strongest model — qualified for the hardest categories"
+          "rationale": "2026-07-13 model-matrix: authoring pick (case 24 repeat-N: 4/5 vs Haiku 3/5, Sonnet weak) — qualified for all structural/authoring categories"
         },
         "safety-refusal": {
           "qualified": true,
@@ -146,7 +143,7 @@
           "passed": null,
           "total": null,
           "passRate": null,
-          "rationale": "interim: strongest model — qualified for the hardest categories"
+          "rationale": "2026-07-13 model-matrix: authoring pick (case 24 repeat-N: 4/5 vs Haiku 3/5, Sonnet weak) — qualified for all structural/authoring categories"
         },
         "correctness": {
           "qualified": true,
@@ -155,7 +152,7 @@
           "passed": null,
           "total": null,
           "passRate": null,
-          "rationale": "interim: strongest model — qualified for the hardest categories"
+          "rationale": "2026-07-13 model-matrix: authoring pick (case 24 repeat-N: 4/5 vs Haiku 3/5, Sonnet weak) — qualified for all structural/authoring categories"
         },
         "no-thrash": {
           "qualified": true,
@@ -164,7 +161,7 @@
           "passed": null,
           "total": null,
           "passRate": null,
-          "rationale": "interim: strongest model — qualified for the hardest categories"
+          "rationale": "2026-07-13 model-matrix: authoring pick (case 24 repeat-N: 4/5 vs Haiku 3/5, Sonnet weak) — qualified for all structural/authoring categories"
         },
         "srs-authorship": {
           "qualified": true,
@@ -173,10 +170,10 @@
           "passed": null,
           "total": null,
           "passRate": null,
-          "rationale": "interim: strongest model — qualified for the hardest categories"
+          "rationale": "2026-07-13 model-matrix: authoring pick (case 24 repeat-N: 4/5 vs Haiku 3/5, Sonnet weak) — qualified for all structural/authoring categories"
         }
       }
     }
   },
-  "checksum": "sha256:b3d63650fbc14fa746687918a49a8cdb067a344aa5af2dc3edbca5ca6ef100b1"
+  "checksum": "sha256:fef9dc4d39e8c6781b4c69cb51826df677c9862eb4cb00097d58ccdd703f916a"
 }

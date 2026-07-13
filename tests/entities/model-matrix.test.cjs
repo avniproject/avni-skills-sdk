@@ -79,21 +79,22 @@ test("matrix: fallbackModel is pinned to agent.js DEFAULT_MODEL (no drift)", asy
 
 // ─── selectModel: qualified model per signal ────────────────────────
 
-test("selectModel: edit mode → cheapest qualified for data-integrity (sonnet, the #11 default)", async () => {
+test("selectModel: edit mode → cheapest qualified for data-integrity (opus, the 2026-07-13 structural default)", async () => {
   const M = await loadMatrixMod();
   const r = M.selectModel({ mode: "baseline", env: null });
   assert.equal(r.category, "data-integrity");
   assert.equal(r.source, "matrix");
-  // Under the interim seed only sonnet+opus qualify for data-integrity → cheapest = sonnet.
-  assert.equal(r.model, "claude-sonnet-4-6");
+  // 2026-07-13 model-matrix: Sonnet demoted from structural, so opus is the sole
+  // qualified model for data-integrity → cheapest qualified = opus.
+  assert.equal(r.model, "claude-opus-4-8");
 });
 
-test("selectModel: agent mode → cheapest qualified for srs-authorship (sonnet)", async () => {
+test("selectModel: agent mode → cheapest qualified for srs-authorship (opus)", async () => {
   const M = await loadMatrixMod();
   const r = M.selectModel({ mode: "agent", env: null });
   assert.equal(r.category, "srs-authorship");
   assert.equal(r.source, "matrix");
-  assert.equal(r.model, "claude-sonnet-4-6");
+  assert.equal(r.model, "claude-opus-4-8");
 });
 
 test("selectModel: low-risk signal (structural:false) → cheapest qualified for no-thrash (haiku)", async () => {
@@ -207,14 +208,16 @@ test("selectModel: empty matrix models {} → still returns the #11 default (nev
 
 // ─── tool tiers (evidence-driven tool promotion) ────────────────────
 
-test("tool tiers: haiku is read-only; sonnet/opus earn structural tiers", async () => {
+test("tool tiers: haiku + sonnet are read-only; only opus earns structural tiers (2026-07-13)", async () => {
   const M = await loadMatrixMod();
+  // 2026-07-13 model-matrix: Sonnet demoted from structural → read-only, like haiku.
   assert.deepEqual(M.toolTiersFor("claude-haiku-4-5"), ["read"]);
+  assert.deepEqual(M.toolTiersFor("claude-sonnet-4-6"), ["read"]);
   for (const tier of ["read", "write", "structural", "export"]) {
-    assert.ok(M.isToolTierQualified("claude-sonnet-4-6", tier), `sonnet should have ${tier}`);
     assert.ok(M.isToolTierQualified("claude-opus-4-8", tier), `opus should have ${tier}`);
   }
   assert.equal(M.isToolTierQualified("claude-haiku-4-5", "structural"), false);
+  assert.equal(M.isToolTierQualified("claude-sonnet-4-6", "structural"), false);
   // Unknown model → most conservative tier.
   assert.deepEqual(M.toolTiersFor("claude-nonexistent-9"), ["read"]);
 });

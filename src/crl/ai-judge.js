@@ -23,13 +23,19 @@ import path from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { BLOCKED_ACCOUNT_MCP_SERVERS, blockAccountMcpPreToolUseHook } from "../agent.js";
 
-// Judge model tiers — env-overridable so the CRL judge can be pointed at any
-// model for A/B routing experiments and regression testing (production defaults
-// unchanged when the env vars are unset). SDK_JUDGE_MODEL overrides the base
-// (per-change delta) tier; SDK_JUDGE_ESCALATION_MODEL the low-confidence
-// re-judge tier. Set both to the same model to run "the whole judge on model M".
+// Judge model tiers. Both default to Haiku 4.5 per the 2026-07-13 model-matrix
+// run: across the stray/orphan class (CRL2a/2b), every tier (Haiku → Opus)
+// scored identical precision/recall (1.000/1.000, zero false-prunes) with cost
+// converging to ~$0.08 — a stronger judge bought NOTHING, so the whole judge
+// runs on Haiku 4.5 (cheapest, and the deterministic never-prune-referenced
+// guardrail is what actually protects precision). Env-overridable for future
+// A/B: SDK_JUDGE_MODEL = base (per-change delta) tier; SDK_JUDGE_ESCALATION_MODEL
+// = the low-confidence re-judge / whole-artifact tier. The SONNET_MODEL name is
+// retained (it is still the "escalation tier" slot) though it now defaults to
+// Haiku; point it at a stronger model via the env var to restore cross-model
+// escalation.
 export const HAIKU_MODEL = process.env.SDK_JUDGE_MODEL || "claude-haiku-4-5-20251001";
-export const SONNET_MODEL = process.env.SDK_JUDGE_ESCALATION_MODEL || "claude-sonnet-4-6";
+export const SONNET_MODEL = process.env.SDK_JUDGE_ESCALATION_MODEL || "claude-haiku-4-5-20251001";
 
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.85;
 const MAX_PROJECTED_CONCEPTS = 120;

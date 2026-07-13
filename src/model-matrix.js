@@ -29,7 +29,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // chain into this small, dependency-free module). It is PINNED to agent.js's
 // DEFAULT_MODEL by a test (model-matrix.test.cjs) so the two can never drift —
 // the same "pin to the live source" discipline the brain's fk-matrix uses.
-export const FALLBACK_DEFAULT_MODEL = "claude-sonnet-4-6";
+export const FALLBACK_DEFAULT_MODEL = "claude-opus-4-8";
 
 // The canonical matrix lives at <repo>/spec/model-qualification.json. JSON (not
 // YAML) deliberately: no new dependency, and the #11 TODO already named

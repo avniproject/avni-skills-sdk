@@ -257,7 +257,11 @@ export function activeRulesBlock(opts = {}) {
 // defaultModel() (SDK_MODEL env override, else DEFAULT_MODEL) is retained for
 // back-compat callers; the SDK_MODEL override is also honored (highest priority)
 // inside selectModel().
-export const DEFAULT_MODEL = "claude-sonnet-4-6";
+// 2026-07-13 model-matrix run: authoring (case 24, repeat-N) — Opus 4.8 4/5,
+// Haiku 4.5 3/5, Sonnet 4.5 1/5, Sonnet 5 timeout-prone. Authoring is the one
+// place a stronger model earns its cost, so the default (and the matrix's
+// structural pick) is now Opus 4.8. Pinned to the matrix `fallbackModel`.
+export const DEFAULT_MODEL = "claude-opus-4-8";
 export function defaultModel() {
   const v = process.env.SDK_MODEL;
   return (typeof v === "string" && v.trim()) ? v.trim() : DEFAULT_MODEL;

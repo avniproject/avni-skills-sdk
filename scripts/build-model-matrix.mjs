@@ -52,7 +52,7 @@ import {
 } from "../src/model-matrix.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FALLBACK_MODEL = "claude-sonnet-4-6"; // the #11 default — the no-evidence floor
+const FALLBACK_MODEL = "claude-opus-4-8"; // the no-evidence floor — pinned to agent.js DEFAULT_MODEL (2026-07-13: Opus 4.8)
 
 // ─── args ────────────────────────────────────────────────────────────
 
@@ -112,27 +112,32 @@ function assembleMatrix({ models, source, generatedAt, note, runIds }) {
 // passRate=null, and a rationale on every cell. MUST be replaced by real numbers
 // via `--in <eval-results.jsonl>` once the paid eval run is done.
 const INTERIM = {
-  // #11 default: safe across the board pending evidence.
+  // Superseded for structural/authoring work by Opus 4.8 (2026-07-13 model-matrix
+  // run). Retained read-tier only (no-thrash / safety-refusal); no longer the
+  // structural default.
   "claude-sonnet-4-6": {
-    "data-integrity": true, "safety-refusal": true, "correctness": true,
-    "no-thrash": true, "srs-authorship": true,
-    _why: "interim: #11 default — treated as safe across all categories pending eval evidence",
+    "data-integrity": false, "safety-refusal": true, "correctness": false,
+    "no-thrash": true, "srs-authorship": false,
+    _why: "2026-07-13 model-matrix: superseded by Opus 4.8 for structural/authoring; retained read-tier (no-thrash/safety-refusal) only",
   },
-  // Cheapest model: interim-qualified ONLY for the low-risk no-thrash category
-  // (explain / verify / pure-question — no structural mutation). Deliberately
-  // NOT qualified for structural categories so the interim never downgrades
-  // data-integrity/correctness/srs-authorship to it without real evidence.
+  // Cheapest model: qualified ONLY for the low-risk no-thrash category (explain /
+  // verify / pure-question — no structural mutation). NOT qualified for
+  // structural categories, so it never downgrades data-integrity/correctness/
+  // srs-authorship. (The CRL judge, a separate path, DOES run on Haiku — see
+  // src/crl/ai-judge.js; that's judgment, not bundle mutation.)
   "claude-haiku-4-5": {
     "data-integrity": false, "safety-refusal": false, "correctness": false,
     "no-thrash": true, "srs-authorship": false,
-    _why: "interim: cheapest model — low-risk explain/verify only; not trusted for structural work pending eval",
+    _why: "cheapest model — low-risk explain/verify only; not trusted for structural bundle mutation",
   },
-  // Strongest model: interim-qualified across the board, the escalation target
-  // for the hardest categories once evidence differentiates it from sonnet.
+  // Authoring / structural default (2026-07-13 model-matrix): Opus 4.8 was the
+  // most reliable author (case 24 repeat-N: Opus 4/5 vs Haiku 3/5, Sonnet 4.5
+  // 1/5, Sonnet 5 timeout-prone). Sole qualified model for the structural
+  // categories → selectModel's cheapest-qualified picks it for authoring.
   "claude-opus-4-8": {
     "data-integrity": true, "safety-refusal": true, "correctness": true,
     "no-thrash": true, "srs-authorship": true,
-    _why: "interim: strongest model — qualified for the hardest categories",
+    _why: "2026-07-13 model-matrix: authoring pick (case 24 repeat-N: 4/5 vs Haiku 3/5, Sonnet weak) — qualified for all structural/authoring categories",
   },
 };
 
@@ -162,11 +167,12 @@ function buildInterim() {
     source: "interim-seed",
     generatedAt: null,
     note:
-      "INTERIM SEED — this qualification is a documented judgment, NOT eval data. " +
-      "Regenerate from a real eval run: run the 20-case suite per model with " +
-      "SDK_EVAL_RESULTS_JSONL set (see scripts/build-model-matrix.mjs header), then " +
-      "`node scripts/build-model-matrix.mjs --in <results.jsonl>`. Until then, selection " +
-      "falls back to the #11 default (claude-sonnet-4-6) for any category with no qualified model.",
+      "INTERIM SEED — updated 2026-07-13 from the model-matrix run (case 24 repeat-N + " +
+      "hard CRL judge case). Authoring/structural default = Opus 4.8; CRL judge runs on " +
+      "Haiku 4.5 (a separate path — src/crl/ai-judge.js). Fallback = Opus 4.8. This is a " +
+      "documented judgment informed by a partial run, NOT a full per-model regeneration; " +
+      "run the 20-case suite per model with SDK_EVAL_RESULTS_JSONL set, then " +
+      "`node scripts/build-model-matrix.mjs --in <results.jsonl>` to refine.",
   });
 }
 

@@ -271,7 +271,7 @@ async function runCase({ caseDef, http, apiKey, sessionsDir, envOverrides = {}, 
       prompt: caseDef.prompt,
       apiKey,
       model: dispatchModel,
-      timeoutMs: caseDef.timeoutMs || 180_000,
+      timeoutMs: caseDef.timeoutMs || Number(process.env.SDK_EVAL_TIMEOUT_MS) || 180_000,
     });
   } catch (e) {
     return errResult(caseDef, `dispatch failed: ${e.message}`, start, {

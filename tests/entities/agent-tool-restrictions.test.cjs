@@ -42,8 +42,8 @@ test("FIX2: runAgent's assembled options include the disallowedTools baseline se
   const A = await loadAgent();
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "agent-opts-"));
   try {
-    // A full-tier model (the production default) — proves the baseline is always applied.
-    const opts = A.buildQueryOptions({ model: "claude-sonnet-4-6", workspace: ws });
+    // A full-tier model (the production default, Opus 4.8) — proves the baseline is always applied.
+    const opts = A.buildQueryOptions({ model: "claude-opus-4-8", workspace: ws });
     assert.ok(Array.isArray(opts.disallowedTools), "options must carry a disallowedTools array");
     for (const t of A.BASELINE_DISALLOWED_TOOLS) {
       assert.ok(opts.disallowedTools.includes(t), `disallowedTools must include ${t}`);
@@ -72,9 +72,9 @@ test("FIX4: a KNOWN read-only-tier model (haiku, interim seed) loses write/struc
   assert.ok(list.includes("WebFetch"));
 });
 
-test("FIX4: a full-tier model (sonnet) is UNCHANGED — keeps write/structural/export", async () => {
+test("FIX4: a full-tier model (opus) is UNCHANGED — keeps write/structural/export", async () => {
   const A = await loadAgent();
-  const list = A.disallowedToolsForModel("claude-sonnet-4-6"); // full tiers in the seed
+  const list = A.disallowedToolsForModel("claude-opus-4-8"); // full tiers in the seed (2026-07-13 structural default)
   for (const t of ["Write", "Edit", EXPORT_TOOL, SPEC_APPLY, GEN_BASELINE]) {
     assert.ok(!list.includes(t), `full tier must NOT disallow ${t}`);
   }
@@ -120,7 +120,8 @@ test("FIX4: buildQueryOptions honours the tier — read-only model restricts, fu
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "agent-opts-tier-"));
   try {
     const readOnly = A.buildQueryOptions({ model: "claude-haiku-4-5", workspace: ws });
-    const full = A.buildQueryOptions({ model: "claude-sonnet-4-6", workspace: ws });
+    // 2026-07-13 model-matrix: opus is the structural/full-tier model (sonnet demoted to read-only).
+    const full = A.buildQueryOptions({ model: "claude-opus-4-8", workspace: ws });
     assert.ok(readOnly.disallowedTools.includes("Write"), "read-only model's options exclude Write");
     assert.ok(readOnly.disallowedTools.includes(EXPORT_TOOL), "read-only model's options exclude export");
     assert.ok(!full.disallowedTools.includes("Write"), "full-tier model keeps Write");
