@@ -28,7 +28,7 @@ function isF2Error(e) {
 // Generate a bundle directly from real .xlsx files (not the in-memory fixture).
 function generateFromXlsx({ formsXlsx, modelXlsx, org = "Doorstep" }) {
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "dss-gen-"));
-  const args = ["--srs", modelXlsx, "--forms", formsXlsx, "--org", org, "--output", outDir, "--no-validate"];
+  const args = ["--srs", modelXlsx, "--forms", formsXlsx, "--org", org, "--output", outDir, "--no-validate", "--include-admin-artifacts"];
   execSync(`node "${GENERATOR}" ${args.map((a) => `"${a}"`).join(" ")}`, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   return outDir;
 }

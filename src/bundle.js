@@ -16,7 +16,12 @@ export function generateBundle({ formsPath, modellingPath, org = "Bundle", outDi
   }
   outDir = outDir || path.join(os.tmpdir(), `bundle-${Date.now()}-${Math.floor(Math.random() * 1e6)}`);
   fs.mkdirSync(outDir, { recursive: true });
-  const args = ["--forms", formsPath, "--org", org, "--output", outDir, "--no-validate"];
+  // --include-admin-artifacts: scaffold reportCard / reportDashboard / groupDashboards
+  // (2026-07-13 prod-loop fix #1 — the generator gates these behind this flag and the
+  // SDK previously omitted it, so every generated bundle silently lacked report cards
+  // and dashboards vs the deployed UAT). Scaffolding the family is the generator's job;
+  // the agent refines the generic cards into the real ones.
+  const args = ["--forms", formsPath, "--org", org, "--output", outDir, "--no-validate", "--include-admin-artifacts"];
   if (modellingPath) args.unshift("--srs", modellingPath);
   let stdout = "";
   try {
