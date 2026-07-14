@@ -72,3 +72,17 @@ test("scrubProse never rejects on an internal error — resolves with a partial 
   assert.ok(typeof r.error === "string" && r.error.length > 0, `internal failure recorded in report.error; got ${JSON.stringify(r)}`);
   assert.deepEqual(r.pruned, [], "nothing pruned on a failed scrub");
 });
+
+test("scrubProse prunes NOTHING on the 5 clean reference bundles (deterministic)", async () => {
+  const { scrubProse } = await loadScrub();
+  const IMPL = path.resolve(__dirname, "../../../avni-impl-bundles/reference");
+  for (const org of ["phulwari", "community", "farming", "social_security", "water_bodies"]) {
+    const dir = path.join(IMPL, org);
+    if (!fs.existsSync(dir)) continue; // reference corpus optional in some checkouts
+    // Copy to a scratch dir so the guard never mutates the committed reference.
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), `ref-${org}-`));
+    fs.cpSync(dir, scratch, { recursive: true });
+    const r = await scrubProse(scratch, { ai: false });
+    assert.equal(r.pruned.length, 0, `${org}: expected 0 prunes, got ${JSON.stringify(r.pruned)}`);
+  }
+});
