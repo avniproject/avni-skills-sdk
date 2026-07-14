@@ -42,6 +42,11 @@ import { crlGate, reviewSpec } from "./crl/review.js";
 // half-built" gate). Pure function of the bundle dir, no LLM; folded into the
 // per-turn preamble so the agent can't claim done while it's red.
 import { completenessFloor } from "./completeness.js";
+// Prose cleanup — deterministic (+ opt-in AI) prune of prose-as-entity strays
+// (see src/crl/prose-scrub.js). Wired at turn 0 (createSession, baseline mode)
+// via the create route, and exposed here as scrubSessionBundle() for reuse by
+// the :scrub command.
+import { scrubProse } from "./crl/prose-scrub.js";
 
 const SESSIONS_DIR = process.env.SDK_SESSIONS_DIR || path.join(os.homedir(), ".avni-skills-sdk", "sessions");
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -651,6 +656,35 @@ export function commitTurn(id, summary, edits) {
  */
 export function bundleDir(id) {
   return path.join(sessionPath(id), "bundle");
+}
+
+/**
+ * Run the deterministic (+ opt-in AI) prose scrub against a session's bundle
+ * dir and commit any prunes as a follow-up turn. Never throws — scrubProse
+ * itself degrades to a partial report on internal failure (see
+ * src/crl/prose-scrub.js); this wrapper does not add its own try/catch so a
+ * git failure surfaces loudly to the caller, matching every other git-backed
+ * mutator in this module.
+ *
+ * Used by:
+ *   • the turn-0 wiring in the create route (src/routes/sessions-lifecycle.js),
+ *     gated behind SDK_PROSE_SCRUB, baseline mode only;
+ *   • the `:scrub` command (reruns the scrub on demand against the current
+ *     bundle state).
+ *
+ * @param {string} id sessionId
+ * @param {{ai?: boolean}} [opts] ai=true also runs the AI-judged pass (requires
+ *   ANTHROPIC_API_KEY; scrubProse no-ops that stage otherwise).
+ * @returns {Promise<{pruned:object[], skipped:object[], reverted:object[], report:string, error?:string}>}
+ */
+export async function scrubSessionBundle(id, { ai = false } = {}) {
+  const dir = bundleDir(id);
+  const r = await scrubProse(dir, { ai });
+  if (r.pruned.length) {
+    git(dir, "add", "-A");
+    git(dir, "commit", "-m", `scrub: prose cleanup (${r.pruned.length} pruned)`);
+  }
+  return r;
 }
 
 /**

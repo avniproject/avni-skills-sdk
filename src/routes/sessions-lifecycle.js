@@ -45,6 +45,22 @@ export function register(app) {
         org: fields.org || "Bundle",
         srs: fields.srs,
       });
+
+      // Turn-0 prose scrub (baseline mode only — the deterministic generator
+      // is the only create-time path that can emit a prose-as-entity stray
+      // straight from the uploaded SRS; agent mode starts empty). Gated via
+      // SDK_PROSE_SCRUB (default on; "off" disables, "ai" also runs the
+      // AI-judged pass). Best-effort: scrubSessionBundle/scrubProse never
+      // throw internally, but a git failure could — never block session
+      // creation on it.
+      if (mode === "baseline" && process.env.SDK_PROSE_SCRUB !== "off") {
+        try {
+          await sessions.scrubSessionBundle(result.sessionId, { ai: process.env.SDK_PROSE_SCRUB === "ai" });
+        } catch (e) {
+          console.warn("[/v1/sessions] prose scrub failed:", e.message);
+        }
+      }
+
       // Seed transcript + step log with the creation event.
       try {
         transcript.appendEvent(result.sessionId, {
