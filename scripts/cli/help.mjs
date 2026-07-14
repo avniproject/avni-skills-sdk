@@ -14,6 +14,8 @@ ${bold(":rules")}         list every populated rule (entity, field, bytes)
 ${bold(":rulev")}         run Layer-4 rules validator (R1-R6) on every rule
 ${bold(":summary")}       deterministic bundle audit — entity counts, anomalies, rule stats (free)
 ${bold(":eval")}          LLM semantic-gap audit via /v1/sessions/:id/evaluate (~$0.05-0.20)
+${bold(":scrub")} [ai]    run the prose scrub on the live bundle — prunes prose-as-entity strays, prints removals + report.
+                ${bold(":scrub ai")} also runs the AI-judged pass (needs ANTHROPIC_API_KEY).
 ${bold(":refs")} <q>      find every reference to a UUID or name across the bundle. q = UUID or "Name"
 ${bold(":changes")} [N]      semantic diff for turn N (default = last) — per-file added/updated/removed entries
 ${bold(":diag")}              multi-agent failure visibility — schema breaks, circuit-breakers,

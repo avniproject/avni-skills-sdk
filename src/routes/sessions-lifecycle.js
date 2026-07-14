@@ -1,5 +1,6 @@
 // /v1/sessions/* — session lifecycle endpoints (Phase 3 + 4 base operations).
-// Covers: create, list, get, file read, turns list, turn diff, revert, ZIP export, delete.
+// Covers: create, list, get, file read, turns list, turn diff, revert, scrub,
+// ZIP export, delete.
 // Excludes: edits (sessions-edit.js), agent dispatch (sessions-messages.js), observability
 // (sessions-observability.js), rules (sessions-rules.js), summary/evaluate (sessions-summary-evaluate.js).
 
@@ -133,6 +134,20 @@ export function register(app) {
       res.json(meta);
     } catch (e) {
       res.status(400).json({ error: e.message });
+    }
+  });
+
+  // On-demand prose scrub — reruns sessions.scrubSessionBundle() against the
+  // current bundle state (same engine as the turn-0 create-time pass). Deterministic
+  // by default; ?ai=1 also runs the AI-judged pass (requires ANTHROPIC_API_KEY).
+  // Used by the `:scrub` REPL command. Never throws internally (see
+  // scrubSessionBundle's doc comment) short of a git failure, which lands here.
+  app.post("/v1/sessions/:id/scrub", async (req, res) => {
+    try {
+      const r = await sessions.scrubSessionBundle(req.params.id, { ai: req.query.ai === "1" });
+      res.status(200).json(r);
+    } catch (e) {
+      res.status(404).json({ error: e.message });
     }
   });
 

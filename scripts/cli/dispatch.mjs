@@ -64,6 +64,7 @@ export function makeDispatcher({ commands, sendMessage, state }) {
         case "summary": await audit.cmdSummary(sid); break;
         case "eval": case "evaluate":
                         await audit.cmdEval(sid); break;
+        case "scrub":   await audit.cmdScrub(sid, arg1); break;
 
         // observability (Phase 5a + Phase 6)
         case "transcript": case "tx":

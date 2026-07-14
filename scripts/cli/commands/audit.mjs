@@ -1,11 +1,12 @@
 // commands/audit.mjs — bundle audit commands:
 //   :summary  deterministic audit (entity counts, anomalies, rule stats) — free
 //   :eval     LLM semantic-gap audit via /v1/sessions/:id/evaluate
+//   :scrub    on-demand prose scrub via /v1/sessions/:id/scrub (":scrub ai" also runs the AI-judged pass)
 
 import { bold, box, cyan, dim, green, red, yellow } from "../ui.mjs";
 
 export function makeAuditCommands({ http, BASE }) {
-  const { getJson } = http;
+  const { getJson, postJson } = http;
 
   async function cmdSummary(sid) {
     const d = await getJson(`/v1/sessions/${sid}/summary`);
@@ -59,5 +60,24 @@ export function makeAuditCommands({ http, BASE }) {
     }
   }
 
-  return { cmdSummary, cmdEval };
+  async function cmdScrub(sid, arg1) {
+    const ai = arg1 === "ai";
+    console.log(dim(`  ⠋ running prose scrub${ai ? " (+ AI-judged pass)" : ""}…`));
+    const r = await postJson(`/v1/sessions/${sid}/scrub${ai ? "?ai=1" : ""}`, {});
+    const pruned = r.pruned || [];
+    if (!pruned.length) {
+      console.log(green("  ✓ nothing to prune"));
+    } else {
+      console.log(green(`  ✓ pruned ${pruned.length}`));
+      for (const p of pruned) {
+        console.log(`  ${red("−")} ${bold(p.family)}: ${p.name} ${dim(`(${p.reason})`)}`);
+      }
+    }
+    if (r.report) {
+      console.log("");
+      for (const ln of r.report.split("\n")) console.log("  " + ln);
+    }
+  }
+
+  return { cmdSummary, cmdEval, cmdScrub };
 }
