@@ -96,6 +96,14 @@ rules:
     inputs: [artifact.concepts, scopingCtx, deterministicFindings]
     provenance: "design gap#1: a concept left behind by a prior edit or import, referenced by no form/rule/answer. The deterministic layer can prove NON-reference (bundle_find_references) but not INTENT — whether it's dead or deliberately pre-provisioned needs judgment against scopingCtx."
 
+  - id: prose-as-entity-name
+    tier: ai-judged
+    class: stray
+    severity: warning
+    action: prune-candidate
+    inputs: [artifact.forms, deterministicFindings]
+    provenance: "design gap#1 (names): a FORM whose NAME reads like a requirement/prose line (a numbered/bulleted heading, a trailing-colon directive, a run-on sentence, or a '(N cards…)' note) rather than a form title — leaked from a scoping-doc row. Prune-only; DISTINCT from prose-should-be-form (Notes-content that should become a form, still flag-only). Names-only scope: never target a form referenced by real fields/rules — the executor's referencedGuard enforces this."
+
   - id: rule-contradicts-intent
     tier: ai-judged
     class: contradicts-intent
