@@ -144,6 +144,7 @@ export function register(app) {
   // scrubSessionBundle's doc comment) short of a git failure, which lands here.
   app.post("/v1/sessions/:id/scrub", async (req, res) => {
     try {
+      sessions.getSession(req.params.id); // 404 on an unknown session, like sibling routes
       const r = await sessions.scrubSessionBundle(req.params.id, { ai: req.query.ai === "1" });
       res.status(200).json(r);
     } catch (e) {

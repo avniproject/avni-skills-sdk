@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { completenessFloor } from "../completeness.js";
 import { executor } from "./executor.js";
-import { crlGate } from "./review.js";
+import { reviewBundle } from "./review.js";
 import { loadComplianceDoc } from "./compliance-doc.js";
 
 // Resolve a "form:<name>" completeness finding to an executor prune target by
@@ -45,15 +45,27 @@ export async function scrubProse(bundleDir, { ai = false, confidenceThreshold = 
       out.reverted.push(...ex.reverted);
     }
     // ── stage 2: AI pass (opt-in; only when a key is present) ──
+    // Scope the AI scrub to PROSE ONLY. crlGate/reviewBundle-scrub would apply
+    // the WHOLE ai-judged rule set (also orphan-stray-concept prunes + fixes) —
+    // out of this feature's scope, and those mutations would land on disk but
+    // never appear in out.pruned (a "never-silent" violation, and an uncommitted
+    // change if out.pruned stayed empty). Instead: run the ai pass in inspect
+    // mode (no mutation), keep only prose-as-entity-name prune-candidates, and
+    // apply THOSE through the guardrailed executor ourselves — so the executor
+    // is the sole mutator and out.pruned reflects every on-disk change exactly.
     if (ai && process.env.ANTHROPIC_API_KEY) {
-      const g = await crlGate(bundleDir, { confidenceThreshold, doc, hitl: false });
-      const executed = g.review?.executed;
-      if (executed) {
-        for (const a of executed.applied || []) {
-          if (a.ruleId === "prose-as-entity-name") out.pruned.push({ family: a.target?.entityKind || "form", name: a.target?.name, reason: "ai-judged", confidence: a.confidence });
+      const review = await reviewBundle(bundleDir, { mode: "inspect", doc, confidenceThreshold });
+      const proseFindings = (review.ai?.findings || []).filter(
+        (f) => f.ruleId === "prose-as-entity-name" && f.action === "prune-candidate",
+      );
+      if (proseFindings.length) {
+        const confByUuid = new Map(proseFindings.map((f) => [f.target?.uuid, f.confidence]));
+        const ex = await executor(bundleDir, proseFindings, { confidenceThreshold, doc });
+        for (const a of ex.applied) {
+          out.pruned.push({ family: a.target?.entityKind || "form", name: a.target?.name, reason: "ai-judged", confidence: confByUuid.get(a.target?.uuid) });
         }
-        out.skipped.push(...(executed.skipped || []));
-        out.reverted.push(...(executed.reverted || []));
+        out.skipped.push(...ex.skipped);
+        out.reverted.push(...ex.reverted);
       }
     }
   } catch (e) {
