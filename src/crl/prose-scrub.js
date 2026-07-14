@@ -22,9 +22,14 @@ function resolveFormTargets(bundleDir, proseFormNames) {
   return targets;
 }
 
-export async function scrubProse(bundleDir, { ai = false, confidenceThreshold = 0.85, doc = loadComplianceDoc() } = {}) {
+export async function scrubProse(bundleDir, { ai = false, confidenceThreshold = 0.85, doc: docOpt } = {}) {
   const out = { pruned: [], skipped: [], reverted: [], report: null };
   try {
+    // loadComplianceDoc() can throw (missing avni-skills sibling, malformed/
+    // mid-edit yaml) — call it INSIDE the try so a doc-load failure degrades to
+    // a partial report like every other failure, never a rejected promise. (A
+    // default-parameter default would evaluate outside this try.)
+    const doc = docOpt || loadComplianceDoc();
     // ── stage 1: deterministic prose FORMS (free, high-precision) ──
     const floor = completenessFloor(bundleDir);
     const proseFormNames = (floor.findings || [])

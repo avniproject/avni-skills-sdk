@@ -53,3 +53,22 @@ test("scrubProse prunes a prose-named form (deterministic), keeps the real form"
   assert.ok(!maps.includes("7. Custom Report Cards (9 cards with Realm queries):"), "prose form mapping cascade-removed");
   assert.ok(maps.includes("Student Registration"), "real form mapping kept");
 });
+
+// Contract: scrubProse must NEVER throw/reject — an internal failure degrades to
+// a partial report with `error` set. Deterministic trigger: make `forms` a FILE
+// (not a directory), so the forms readdir throws ENOTDIR inside scrubProse's try.
+// Regression guard for the default-parameter bug where `doc = loadComplianceDoc()`
+// evaluated OUTSIDE the try and rejected the promise on a doc-load failure.
+test("scrubProse never rejects on an internal error — resolves with a partial report", async () => {
+  const { scrubProse } = await loadScrub();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prose-bad-"));
+  fs.writeFileSync(path.join(dir, "subjectTypes.json"), JSON.stringify([]));
+  fs.writeFileSync(path.join(dir, "concepts.json"), JSON.stringify([]));
+  fs.writeFileSync(path.join(dir, "formMappings.json"), JSON.stringify([]));
+  fs.writeFileSync(path.join(dir, "forms"), "not a directory"); // forms is a FILE → readdir throws
+  let r;
+  await assert.doesNotReject(async () => { r = await scrubProse(dir, { ai: false }); }, "scrubProse must resolve, never reject");
+  assert.ok(r && typeof r === "object", "returns a report object");
+  assert.ok(typeof r.error === "string" && r.error.length > 0, `internal failure recorded in report.error; got ${JSON.stringify(r)}`);
+  assert.deepEqual(r.pruned, [], "nothing pruned on a failed scrub");
+});
