@@ -38,7 +38,10 @@ function nameOf(byUuid, uuid) {
 // mapDataType() recognizes. Location/GroupAffiliation etc. have no scoping
 // representation (mapDataType can't emit them) → Text, and we count them as a
 // known generator expressivity limit, not a round-trip bug.
-const DT_UNEXPRESSIBLE = new Set(["Location", "GroupAffiliation", "PhoneNumber", "Encounter"]);
+// Location/GroupAffiliation/Encounter still have no scoping-doc representation
+// (they need target refs — address-level/group-subject bindings — beyond a
+// data-type token). PhoneNumber is now expressible (generator fix #4).
+const DT_UNEXPRESSIBLE = new Set(["Location", "GroupAffiliation", "Encounter"]);
 function reverseDataType(dt) {
   switch (dt) {
     case "Coded": return "Coded";
@@ -49,6 +52,7 @@ function reverseDataType(dt) {
     case "Id": return "Id";
     case "Notes": return "Notes";
     case "Subject": return "Subject";
+    case "PhoneNumber": return "Phone Number";
     case "Image":
     case "ImageV2": return "Image";
     case "Text": return "Text";
