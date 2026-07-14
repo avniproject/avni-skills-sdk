@@ -38,6 +38,10 @@ import { runBundleIntegrityCheck, buildCrlScopingCtx, findReferencesOnDir } from
 // (function-body-only) cycle. See src/crl/review.js for the CRIT-1 key-guard
 // that makes a keyless gate a no-op rather than a throw.
 import { crlGate, reviewSpec } from "./crl/review.js";
+// Phase 3 — the deterministic completeness floor (the "production-ready 🎉 while
+// half-built" gate). Pure function of the bundle dir, no LLM; folded into the
+// per-turn preamble so the agent can't claim done while it's red.
+import { completenessFloor } from "./completeness.js";
 
 const SESSIONS_DIR = process.env.SDK_SESSIONS_DIR || path.join(os.homedir(), ".avni-skills-sdk", "sessions");
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -451,6 +455,14 @@ export function currentValidatorStateText(id) {
   let crl = null;
   try { crl = readMeta(id).crlAtCurrent || null; } catch { crl = null; }
 
+  // Phase 3 — deterministic completeness floor. Fresh per turn (like integrity);
+  // never throws. A red floor means the bundle is semantically half-built even
+  // if the validator/integrity/CRL are clean — so it must block a "done" claim.
+  let completeness;
+  try { completeness = completenessFloor(bundleDir); }
+  catch (e) { completeness = { green: false, evaluated: false, findings: [], error: e.message }; }
+  const completenessClean = completeness.evaluated && completeness.green;
+
   const validatorClean = r.valid && r.warnings.length === 0;
   const integrityClean = integrityErrors.length === 0 && integrityWarnings.length === 0;
   // A bundle can be validator-clean AND integrity-clean yet still carry an
@@ -461,8 +473,8 @@ export function currentValidatorStateText(id) {
   const crlClean = !crl || crl.pass === true;
 
   let text;
-  if (validatorClean && integrityClean && crlClean) {
-    text = "CURRENT VALIDATOR + INTEGRITY STATE (server-truth): ✓ bundle is clean — no validator errors, no integrity errors, no warnings, CRL review passed.";
+  if (validatorClean && integrityClean && crlClean && completenessClean) {
+    text = "CURRENT VALIDATOR + INTEGRITY + COMPLETENESS STATE (server-truth): ✓ bundle is clean — no validator errors, no integrity errors, no warnings, CRL review passed, completeness floor green.";
   } else {
     const lines = ["CURRENT VALIDATOR + INTEGRITY STATE (server-truth — do not re-discover, do not guess error codes, do not fabricate codes):"];
     // ── validator section ──
@@ -516,8 +528,19 @@ export function currentValidatorStateText(id) {
         lines.push("    ✓ clean — deterministic + AI-judged review passed.");
       }
     }
+    // ── COMPLETENESS section (Phase 3 — deterministic semantic-build floor) ──
+    if (!completeness.evaluated) {
+      lines.push("  COMPLETENESS: unknown — floor could not be evaluated. Not clean; do not treat as done.");
+    } else if (completeness.findings.length) {
+      lines.push("  COMPLETENESS (deterministic semantic-build floor — a clean validator does NOT mean the bundle is built):");
+      lines.push(`    findings (${completeness.findings.length}):`);
+      for (const f of completeness.findings.slice(0, 8)) lines.push(`      • [${f.code}] ${f.entity} — ${f.message}`);
+      if (completeness.findings.length > 8) lines.push(`      … and ${completeness.findings.length - 8} more`);
+    } else {
+      lines.push("  COMPLETENESS: ✓ floor green (no prose-as-entity leaks, forms present, content forms carry fields).");
+    }
     lines.push("");
-    lines.push("If the user says \"what is the error?\" or \"fix the error\", refer to the items above verbatim. Validator codes are real (C-class = concepts, F-class = forms/formMappings, R-class = rules, G-class = enums); integrity codes (FE_CONCEPT_NOT_OBJECT, ALT_INVALID_NAME, MISSING_REQUIRED_REF, DANGLING_REF) are the server-only traps. Use them exactly as shown. Do not invent a code that is not in this list. The bundle is NOT ready to export until the VALIDATOR and INTEGRITY sections are error-free AND any CRL escalation above has been resolved with the user.");
+    lines.push("If the user says \"what is the error?\" or \"fix the error\", refer to the items above verbatim. Validator codes are real (C-class = concepts, F-class = forms/formMappings, R-class = rules, G-class = enums); integrity codes (FE_CONCEPT_NOT_OBJECT, ALT_INVALID_NAME, MISSING_REQUIRED_REF, DANGLING_REF) are the server-only traps; completeness codes (PROSE_AS_ENTITY, NO_FORMS, FORM_NO_ELEMENTS) are the semantic-build floor. Use them exactly as shown. Do not invent a code that is not in this list. The bundle is NOT ready to export — and you MUST NOT tell the user it is \"done\", \"production-ready\", or \"ready to export\" — until the VALIDATOR, INTEGRITY, and COMPLETENESS sections are all error-free AND any CRL escalation above has been resolved with the user. A red COMPLETENESS floor means the bundle is still half-built; surface those findings and keep working, do not downgrade them to \"optional\".");
     text = lines.join("\n");
   }
   VALIDATOR_CACHE.set(id, { sha: headSha, text, ts: Date.now() });
