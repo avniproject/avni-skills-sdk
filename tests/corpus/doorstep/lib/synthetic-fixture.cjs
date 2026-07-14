@@ -36,11 +36,12 @@ const modellingSheets = {
 };
 
 // Declared expected active-name graph, calibrated against the real generator
-// output (see task-4-report.md for the run). The generator auto-derives a
-// "<encounter> Cancellation" form + formMapping for every encounter type
-// (IndividualEncounterCancellation/ProgramEncounterCancellation), so
-// "wellness checkup cancellation" is a genuine, deterministic entry — not
-// hand-authored in either forms sheet or modelling sheet above.
+// output. The generator auto-derives a "<encounter> Encounter Cancellation"
+// form + formMapping for every encounter type
+// (IndividualEncounterCancellation/ProgramEncounterCancellation) — deployed
+// convention, generator fix #1 (2026-07-14) — so "wellness checkup encounter
+// cancellation" is a genuine, deterministic entry — not hand-authored in
+// either forms sheet or modelling sheet above.
 const EXPECTED = {
   addressLevelTypes: new Set(["village"]),
   subjectTypes: new Set(["member"]),
@@ -51,14 +52,14 @@ const EXPECTED = {
     "wellness enrolment",
     "wellness exit",
     "wellness checkup",
-    "wellness checkup cancellation",
+    "wellness checkup encounter cancellation",
   ]),
   formMappings: new Set([
     "member registration",
     "wellness enrolment",
     "wellness exit",
     "wellness checkup",
-    "wellness checkup cancellation",
+    "wellness checkup encounter cancellation",
   ]),
 };
 
