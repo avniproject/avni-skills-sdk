@@ -72,6 +72,21 @@ function ownFormMappingIndices(bundleDir, formUuid) {
   return idxs;
 }
 
+// The real on-disk file for a form, resolved by uuid. The ai-judge's bundle
+// projection does NOT carry a form's file path, so a model-supplied prune
+// target.file is a guessed "forms/<name>.json" that rarely matches the real
+// "forms/<sanitized>_<uuid>.json" — which then makes the form's OWN record read
+// as an external reference and wrongly skips the prune as "referenced". We trust
+// the bundle over the finding's path and correct it before the guards run.
+function resolveFormFileByUuid(bundleDir, uuid) {
+  const formsDir = path.join(bundleDir, "forms");
+  if (!uuid || !fs.existsSync(formsDir)) return null;
+  for (const fn of fs.readdirSync(formsDir).filter((n) => n.endsWith(".json"))) {
+    try { if (JSON.parse(fs.readFileSync(path.join(formsDir, fn), "utf8"))?.uuid === uuid) return path.join("forms", fn); } catch { /* skip unreadable */ }
+  }
+  return null;
+}
+
 // Which files THIS operation could touch — used to scope the in-memory revert
 // snapshot (guardrail 2) and to know what to write.
 function candidateFiles(target) {
@@ -219,6 +234,14 @@ export async function executor(bundleDir, findings, opts = {}) {
     const conf = isFix ? (typeof f.fixConfidence === "number" ? f.fixConfidence : f.confidence) : f.confidence;
     const threshold = isFix ? fixThreshold : confidenceThreshold;
     if (conf < threshold) { skipped.push({ ruleId: f.ruleId, target: f.target, reason: "below-threshold" }); continue; }
+
+    // Correct a form target's file from the bundle (by uuid) before the guards —
+    // the ai-judge cannot supply the real forms/*_<uuid>.json path, and an
+    // exact target.file match is what the own-record exclusion below relies on.
+    if (isPrune && normKind(f.target?.entityKind) === "form" && f.target?.uuid) {
+      const realFile = resolveFormFileByUuid(bundleDir, f.target.uuid);
+      if (realFile) f.target = { ...f.target, file: realFile };
+    }
 
     // guardrail 1 — never touch a referenced/required entity
     if (referencedGuard) {

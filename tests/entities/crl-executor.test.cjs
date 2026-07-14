@@ -177,3 +177,21 @@ test("executor: returns a merged report — deterministic per-rule status + the 
   assert.equal(aiRules[0].status, "resolved");
   cleanup(dir);
 });
+
+// ─── form-file resolution (ai-judge projection carries no file path) ───
+test("executor: form prune resolves the real forms/*_<uuid>.json by uuid when the finding's file path is a wrong guess", async () => {
+  const { executor } = await loadExecutor();
+  const dir = tmpBundle(baseBundle());
+  // The ai-judge cannot supply a form's on-disk path, so it guesses
+  // "forms/Registration.json" — but the real file is "forms/Registration_f1.json".
+  // Pre-fix this skipped as "referenced" (own record miscounted); it must prune.
+  const f = pruneFinding(
+    { entityKind: "form", file: "forms/Registration.json", uuid: "f1", name: "Registration" },
+    { ruleId: "prose-as-entity-name", verdict: "stray" },
+  );
+  const { applied, skipped } = await executor(dir, [f], { doc: integrityDoc() });
+  assert.equal(applied.length, 1, `form should be pruned via uuid resolution; skipped=${JSON.stringify(skipped)}`);
+  assert.equal(applied[0].op, "prune");
+  assert.equal(fs.existsSync(path.join(dir, "forms/Registration_f1.json")), false, "real form file removed");
+  cleanup(dir);
+});
