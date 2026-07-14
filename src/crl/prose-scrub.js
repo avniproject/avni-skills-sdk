@@ -54,7 +54,13 @@ export async function scrubProse(bundleDir, { ai = false, confidenceThreshold = 
     // apply THOSE through the guardrailed executor ourselves — so the executor
     // is the sole mutator and out.pruned reflects every on-disk change exactly.
     if (ai && process.env.ANTHROPIC_API_KEY) {
-      const review = await reviewBundle(bundleDir, { mode: "inspect", doc, confidenceThreshold });
+      // Judge ONLY the prose rule: a prose-scoped doc keeps every deterministic
+      // rule (no LLM cost) but drops all OTHER ai-judged rules, so the ai pass
+      // doesn't spend tokens/time/escalations judging orphans/naming/etc. across
+      // the whole bundle. The executor below still revalidates against the FULL
+      // doc, so a prune that breaks any deterministic rule is still reverted.
+      const proseDoc = { ...doc, rules: (doc.rules || []).filter((r) => r.tier !== "ai-judged" || r.id === "prose-as-entity-name") };
+      const review = await reviewBundle(bundleDir, { mode: "inspect", doc: proseDoc, confidenceThreshold });
       const proseFindings = (review.ai?.findings || []).filter(
         (f) => f.ruleId === "prose-as-entity-name" && f.action === "prune-candidate",
       );
