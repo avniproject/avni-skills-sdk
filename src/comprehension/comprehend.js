@@ -26,6 +26,11 @@ import { validatePatch } from "./patch-schema.js";
 // truncated (kept present, flagged), and the total rendering is capped.
 const MAX_CELL_CHARS = 800;
 const MAX_TOTAL_CHARS = 140000;
+// The single Opus call is non-deterministic; a run can occasionally return prose
+// with no parseable JSON block (observed once on Doorstep). Retry a bounded number
+// of times before surfacing the failure — a silent empty patch would masquerade as
+// "nothing to correct" and skip real fixes.
+const DEFAULT_ATTEMPTS = 2;
 
 const SYSTEM_PROMPT = `You are a SCOPING-COMPREHENSION pass for AVNI bundle generation.
 
@@ -133,7 +138,7 @@ function buildUserMessage(scopingRender, modellingRender, projection) {
 
 // Extract the JSON patch object from the model's text. Mirrors ai-judge.js
 // parseJsonBlock: prefer a ```json fence, else the first {...} span. Never throws.
-function parseJsonBlock(text) {
+export function parseJsonBlock(text) {
   const fenced = String(text).match(/```json\s*([\s\S]*?)```/);
   const candidate = fenced ? fenced[1] : text;
   try { return JSON.parse(candidate); }
@@ -173,12 +178,14 @@ async function callModel(model, userMsg) {
  * bundle → a provenanced correction patch (validated, never applied here).
  *
  * @param {string} bundleDir  the deterministic DRAFT bundle to correct.
- * @param {{scopingXlsx?:string, modellingXlsx?:string, model?:string}} [opts]
+ * @param {{scopingXlsx?:string, modellingXlsx?:string, model?:string, attempts?:number}} [opts]
  * @returns {Promise<{patch:object|null, valid:object[], dropped:object[], skipped?:string, error?:string}>}
  *   NEVER throws. { patch: null, valid: [], dropped: [], skipped } with no key;
- *   { patch: null, valid: [], dropped: [], error } on any failure.
+ *   { patch: null, valid: [], dropped: [], error } when every attempt returns an
+ *   unparseable response or on any failure. An empty { corrections: [] } is a
+ *   SUCCESS (patch present, no valid ops) — distinct from an unparseable failure.
  */
-export async function comprehendBundle(bundleDir, { scopingXlsx, modellingXlsx, model = "claude-opus-4-8" } = {}) {
+export async function comprehendBundle(bundleDir, { scopingXlsx, modellingXlsx, model = "claude-opus-4-8", attempts = DEFAULT_ATTEMPTS } = {}) {
   if (!process.env.ANTHROPIC_API_KEY) {
     return { patch: null, valid: [], dropped: [], skipped: "no ANTHROPIC_API_KEY" };
   }
@@ -186,11 +193,24 @@ export async function comprehendBundle(bundleDir, { scopingXlsx, modellingXlsx, 
     const scopingRender = renderWorkbook("SCOPING DOC", scopingXlsx);
     const modellingRender = renderWorkbook("MODELLING DOC", modellingXlsx);
     const projection = buildBundleProjection(bundleDir);
-
     const userMsg = buildUserMessage(scopingRender, modellingRender, projection);
-    const { text } = await callModel(model, userMsg);
 
-    const patch = parseJsonBlock(text);
+    const tries = Math.max(1, attempts | 0);
+    let patch = null;
+    let lastLen = 0;
+    for (let attempt = 1; attempt <= tries; attempt++) {
+      const { text } = await callModel(model, userMsg);
+      lastLen = text ? text.length : 0;
+      if (process.env.COMPREHEND_DEBUG) { try { fs.writeFileSync(process.env.COMPREHEND_DEBUG, text); } catch {} }
+      const parsed = parseJsonBlock(text);
+      // A usable response has a corrections array (possibly empty = nothing to
+      // correct, a valid terminal result). Null/malformed → retry, don't mask.
+      if (parsed && Array.isArray(parsed.corrections)) { patch = parsed; break; }
+    }
+
+    if (!patch) {
+      return { patch: null, valid: [], dropped: [], error: `unparseable model response after ${tries} attempt(s) (last length ${lastLen})` };
+    }
     const { valid, dropped } = validatePatch(patch);
     return { patch, valid, dropped };
   } catch (e) {

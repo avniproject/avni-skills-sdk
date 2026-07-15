@@ -13,6 +13,25 @@ async function load() {
   return import(pathToFileURL(path.resolve(__dirname, "../../src/comprehension/comprehend.js")).href);
 }
 
+test("parseJsonBlock: extracts a fenced patch; returns null (not empty) on unparseable/truncated text", async () => {
+  const { parseJsonBlock } = await load();
+  // fenced valid patch → object
+  assert.deepEqual(
+    parseJsonBlock('here it is\n```json\n{ "corrections": [ { "op": "add-answers" } ] }\n```'),
+    { corrections: [{ op: "add-answers" }] }
+  );
+  // bare valid patch (no fence) → object
+  assert.deepEqual(parseJsonBlock('{ "corrections": [] }'), { corrections: [] });
+  // a valid EMPTY patch is a success, NOT a parse failure — distinct from null
+  assert.deepEqual(parseJsonBlock('```json\n{ "corrections": [] }\n```'), { corrections: [] });
+  // truncated JSON (output cut mid-object) → null, so the caller retries/errors
+  assert.equal(parseJsonBlock('```json\n{ "corrections": [ { "op": "add-answers", "answers": ["Male'), null);
+  // prose-only, no JSON at all → null
+  assert.equal(parseJsonBlock("I could not find any grounded corrections."), null);
+  // empty → null
+  assert.equal(parseJsonBlock(""), null);
+});
+
 test("comprehendBundle: no ANTHROPIC_API_KEY → clean skip shape, no model call, never throws", async () => {
   const { comprehendBundle } = await load();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "comprehend-"));
