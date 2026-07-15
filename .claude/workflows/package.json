@@ -1,0 +1,4 @@
+{
+  "//": "Scopes .claude/workflows/*.js out of the repo root's `type: module`. The Workflow-tool script format combines an ESM `export const meta` with a top-level `return` (the runtime evals the file body inside an async wrapper; node never imports it directly). That combination is only valid JS under node's module-syntax detection, which requires NO explicit `type` here — do not add a `type` field, or `node --check` will reject the format.",
+  "private": true
+}

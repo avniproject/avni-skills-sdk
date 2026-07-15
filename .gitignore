@@ -73,8 +73,13 @@ tests/resources/*/*.json
 /to
 
 
-# Sub-agent worktree artifacts (Claude Code harness creates these)
-.claude/
+# Sub-agent worktree artifacts (Claude Code harness creates these).
+# Ignore everything under .claude/ EXCEPT the committed Workflow-tool scripts.
+# The recursive negation also overrides the earlier **/*-prod-* rule for the
+# bundle-to-prod-ready.js workflow script.
+.claude/*
+!.claude/workflows/
+!.claude/workflows/**
 
 # corpus:parity transient failure artifact (never commit — gained.json + baseline are the committed witnesses)
 tests/corpus/parity/lost.json
