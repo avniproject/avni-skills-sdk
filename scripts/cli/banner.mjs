@@ -12,6 +12,7 @@ export async function renderHeader({
   ORG,
   FORMS_PATH,
   MODELLING_PATH,
+  MODE = "baseline",
 }) {
   // Fetch live skill list from HTTP API so the banner reflects what the agent
   // will actually see in its workspace. This makes the "HTTP API of skills"
@@ -42,6 +43,9 @@ export async function renderHeader({
     headerLines.push(`${dim("resume")}    ${cyan(RESUME_SID)}  ${dim("(skipping deterministic generator)")}`);
   } else {
     headerLines.push(`${dim("org")}       ${bold(ORG)}`);
+    headerLines.push(`${dim("mode")}      ${MODE === "agent"
+      ? magenta("agent") + dim(" (agent reads every SRS sheet, then bootstraps a baseline)")
+      : cyan("baseline") + dim(" (deterministic generator at turn 0)")}`);
     headerLines.push(`${dim("forms")}     ${path.basename(FORMS_PATH)}`);
     headerLines.push(`${dim("modelling")} ${MODELLING_PATH ? path.basename(MODELLING_PATH) : dim("(none)")}`);
   }
@@ -78,11 +82,18 @@ export async function renderBundleStats({ BASE, sess, getJson }) {
   const nForms = filesList.filter((f) => f.startsWith("forms/")).length;
 
   const v = sess.validation;
-  const validIcon = v?.valid ? green("✓ valid") : red("✗ " + v?.errors + " errors");
-  const warnTag = v?.warnings ? dim(" · " + v.warnings + " warnings") : "";
+  // An agent-mode turn 0 is an EMPTY workspace, not a validated bundle. Reporting
+  // it as "✗ 0 errors" reads as a broken bundle and "✓ valid" would be a false
+  // clean claim — both mislead on the very first screen. Say what it actually is.
+  const validIcon = v?.emptyWorkspace
+    ? yellow("— empty workspace (nothing generated yet)")
+    : v?.valid ? green("✓ valid") : red("✗ " + v?.errors + " errors");
+  const warnTag = (!v?.emptyWorkspace && v?.warnings) ? dim(" · " + v.warnings + " warnings") : "";
 
   const headerTurn = sess.resumed ? (sess.meta?.currentTurn ?? 0) : 0;
-  const headerTag = sess.resumed ? "resumed" : "deterministic first-pass";
+  const headerTag = sess.resumed
+    ? "resumed"
+    : (v?.emptyWorkspace ? "empty workspace" : "deterministic first-pass");
   // Session mode (story #12): baseline (generator at turn 0) | agent (author from SRS).
   // Absent on pre-#12 sessions → baseline. Surfaced so the operator knows which
   // pipeline this session runs.
@@ -121,7 +132,14 @@ export function renderSuggestions(sessMeta, validation, isResumed) {
                cyan(":cost") + dim(" to see spend so far"));
   }
 
-  if (errs === 0) {
+  if (validation?.emptyWorkspace) {
+    // Agent mode, turn 0. Zero validator errors here means "nothing to validate",
+    // NOT "clean" — suggesting a clean-bundle next step would be a false signal.
+    lines.push(dim("agent mode: the bundle is ") + yellow("empty") +
+               dim(" and the SRS is attached under input/. Try:"));
+    lines.push("  " + cyan("free-text") + dim(" → \"index every sheet in the forms and modelling workbooks, then bootstrap a baseline\""));
+    lines.push("  " + cyan("free-text") + dim(" → \"reconcile the baseline against the sheets the generator skips\""));
+  } else if (errs === 0) {
     lines.push(dim("validator is clean. Try:"));
     lines.push("  " + cyan("free-text") + dim(" → \"add a Volunteer subject type with a registration form\""));
     lines.push("  " + cyan(":summary") + dim(" → deterministic bundle audit (free)"));

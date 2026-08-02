@@ -19,7 +19,15 @@
 // Usage:
 //   export ANTHROPIC_API_KEY='sk-ant-...'
 //   AVNI_SKILLS_PATH=~/code/avni-skills npm run cli -- \
-//     --forms /path/to/Forms.xlsx [--modelling /path/to/Modelling.xlsx] [--org MyOrg]
+//     --forms /path/to/Forms.xlsx [--modelling /path/to/Modelling.xlsx] [--org MyOrg] \
+//     [--mode baseline|agent]
+//
+//   --mode baseline (default) runs the deterministic generator at turn 0; the
+//   agent then refines the generated bundle but cannot read the source SRS.
+//   --mode agent starts from an empty bundle with the SRS attached, so the agent
+//   reads every sheet (bundle_read_srs) — including the tabs the generator skips
+//   (Reports, Permissions, App Dashboard, Visit Scheduling, Key Concepts …) —
+//   and bootstraps the same deterministic skeleton via bundle_generate_baseline.
 //
 //   # Or built-in synthetic SRS:
 //   npm run cli -- --demo
@@ -63,6 +71,7 @@ const RESUME_SID = arg("resume", null);
 let FORMS_PATH = arg("forms");
 let MODELLING_PATH = arg("modelling");
 let ORG = arg("org", DEMO ? "DemoOrg" : "Bundle");
+const MODE = arg("mode", "baseline");
 const PORT = Number(arg("port", process.env.PORT || 3030));
 const BASE = `http://localhost:${PORT}`;
 
@@ -147,10 +156,20 @@ if (DEMO && !FORMS_PATH) {
 }
 
 // ─── Resume vs new-session arg validation ──────────────────────────
+if (!["baseline", "agent"].includes(MODE)) {
+  console.error(`--mode: invalid value "${MODE}" (expected "baseline" or "agent")`);
+  process.exit(2);
+}
 if (RESUME_SID) {
   if (!/^sess_[0-9a-f]{16}$/.test(RESUME_SID)) {
     console.error(`--resume: invalid session id "${RESUME_SID}" (expected sess_<16-hex>)`);
     process.exit(2);
+  }
+  // --mode describes how a session is CREATED; a resumed session already has one
+  // recorded in its meta. Silently ignoring the flag here would misreport the
+  // banner, so say so rather than pretend it took effect.
+  if (MODE !== "baseline") {
+    console.error(`--mode is ignored with --resume (the session's mode was fixed at creation).`);
   }
 } else {
   if (!FORMS_PATH || !fs.existsSync(FORMS_PATH)) {
@@ -160,6 +179,7 @@ No SRS provided. Try one of:
   npm run cli -- --demo                                     # built-in synthetic SRS
 
   npm run cli -- --forms ./MyOrg-Forms.xlsx [--modelling ./MyOrg-Modelling.xlsx] [--org MyOrg]
+                 [--mode baseline|agent]     # agent = SRS-first; the agent reads every sheet
 
 To continue an existing session instead:
   npm run cli -- --resume sess_xxxxxxxxxxxxxxxx
@@ -192,7 +212,7 @@ const commands = {
 const { handleLine } = makeDispatcher({ commands, sendMessage, state });
 
 // Header banner — server URL, model, skills, org/forms/modelling info.
-await renderHeader({ BASE, MODEL: state.MODEL, RESUME_SID, ORG, FORMS_PATH, MODELLING_PATH });
+await renderHeader({ BASE, MODEL: state.MODEL, RESUME_SID, ORG, FORMS_PATH, MODELLING_PATH, MODE });
 
 console.log("");
 
@@ -210,10 +230,14 @@ if (RESUME_SID) {
   }
   if (sess.meta?.org) ORG = sess.meta.org;
 } else {
+  // Agent mode deliberately does NOT run the generator at turn 0 — the empty
+  // workspace is the expected starting point, so don't promise one in the spinner.
   sess = await withSpinner(
-    "uploading SRS · running deterministic generator · committing turn 0 · validating…",
-    () => createSession({ formsPath: FORMS_PATH, modellingPath: MODELLING_PATH, org: ORG }),
-    { okMsg: "session created (turn 0 committed)" },
+    MODE === "agent"
+      ? "uploading SRS · attaching requirements · committing turn 0 (empty workspace)…"
+      : "uploading SRS · running deterministic generator · committing turn 0 · validating…",
+    () => createSession({ formsPath: FORMS_PATH, modellingPath: MODELLING_PATH, org: ORG, mode: MODE }),
+    { okMsg: `session created (turn 0 committed${MODE === "agent" ? ", agent mode" : ""})` },
   );
 }
 state.sid = sess.sessionId;
