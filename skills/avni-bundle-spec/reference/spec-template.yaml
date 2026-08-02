@@ -5,11 +5,22 @@
 # stated intent BEFORE it is applied to a bundle — the "intent" half of the
 # compliance-guided review, mirroring compliance-doc.yaml's "artifact" half.
 #
-# NOT WIRED to a caller yet — no step in /spec or the authoring pipeline
-# invokes reviewSpec this delivery (open question O-1 in the CRL
-# reconciliation: product/pipeline-owner call on whether and where to gate
-# spec authoring on it). Authored now so Phase 2 has a real, versioned doc to
-# load instead of an inline test fixture.
+# WIRED, BUT CURRENTLY INERT. reviewSpec is now invoked from TWO call sites in
+# src/sessions.js commitWorkspaceChanges: (1) the O-1 frozen-changedFiles path,
+# when an agent hand-authors a spec.yaml; and (2) the O-2 Live Spec View path,
+# which derives + commits a spec.yaml every mutating turn (SDK_SPEC_VIEW, default
+# on) and calls runSpecGateSafely("spec.yaml") on it. HOWEVER, this doc is
+# `sections:`-shaped (a top-level `sections:` array, NO top-level `rules:` key),
+# and reviewSpec resolves rules via deterministicRulesOf/aiRulesOf, which both
+# filter `(doc.rules || [])` — so with no `rules:` key BOTH resolve to [] and the
+# gate flags NOTHING on either tier, key or no key (the ai pass short-circuits on
+# judged.length===0 before it even checks ANTHROPIC_API_KEY). The Live Spec View
+# delivery is scoped to spec PERSISTENCE + AUDIT TRAIL (the derived spec is
+# committed, diffable, and passed through the gate wrapper at zero new spend), NOT
+# active intent-completeness flagging. Giving the gate real teeth means converting
+# these `sections:` into a tiered `rules:` array and exercising the production
+# path against a seeded-incomplete bundle — a deferred, human-gated decision
+# (Residual Q1), not done here.
 
 version: 1
 

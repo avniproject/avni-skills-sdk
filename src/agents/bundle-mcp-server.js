@@ -24,6 +24,10 @@ import { z } from "zod";
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { validateBundle, generateBundle, zipBundle as zipBundleDir } from "../bundle.js";
 import { applySpec, emitSpec } from "../pipeline.js";
+// The rich, full-bundle file map (all ancillary families) — so spec_emit /
+// spec_review surface the SAME 25 families the committed live-view spec does,
+// not the thin 13-file whitelist (M5: exactly one rich emitter, no divergence).
+import { readRichBundleFileMap } from "../spec-view/emit.js";
 import { BUNDLE_TOOL_NAMES as FROZEN_BUNDLE_TOOL_NAMES } from "./bundle-mcp-tool-names.js";
 // Phase 4 — the CRL review layer. This creates a real bidirectional module
 // cycle (bundle-mcp-server.js ↔ crl/review.js ↔ crl/executor.js: review.js/
@@ -843,7 +847,7 @@ export function specApplyOnDir(bundleCwd, spec) {
  */
 export function specEmitOnDir(bundleCwd) {
   try {
-    const files = readBundleFileMap(bundleCwd);
+    const files = readRichBundleFileMap(bundleCwd);
     let org = "";
     try {
       const metaFp = path.join(bundleCwd, "..", "meta.json");
@@ -1438,7 +1442,7 @@ export async function scrubOnDir(bundleCwd, opts = {}) {
  */
 export async function specReviewOnDir(bundleCwd) {
   try {
-    const files = readBundleFileMap(bundleCwd);
+    const files = readRichBundleFileMap(bundleCwd);
     let org = "";
     try {
       const metaFp = path.join(bundleCwd, "..", "meta.json");

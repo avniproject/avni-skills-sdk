@@ -20,6 +20,7 @@ const ENGINE_FILES = [
 // no ENGINE_FILES edit required on every future CRL task (MAJ-10).
 const ENGINE_DIRS = [
   "src/crl",
+  "src/spec-view",
 ];
 
 // Single-directory (non-recursive) glob entries: { dir, ext } — every file

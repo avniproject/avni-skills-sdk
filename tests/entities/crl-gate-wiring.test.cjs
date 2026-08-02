@@ -7,6 +7,17 @@
 // invariant of the Phase-4 wiring (delta shape + blast radius, commit-first
 // ordering, SDK_CRL_GATE off-switch, durable meta persistence, no-op/collision
 // bypass, reviewSpec on a spec-mutating turn), never a specific pass outcome.
+//
+// Live Spec View P4 (reviewSpec capability confirmation, NOT production-path
+// activation) — exactly ONE test (the LIVE opt-in below) opts INTO a real model
+// call to prove reviewSpec's ai-judged pass can fire correctly when driven by a
+// `rules:`-bearing doc (bespoke, via opts.doc), mirroring
+// tests/eval/cases/29-spec-completeness.cjs. The production spec-template.yaml
+// remains rules-less and flags nothing regardless of key (see the inert-gate
+// proof test below). Captured BEFORE the unconditional delete so that one test
+// can restore it in a `finally`; every OTHER test in this file stays
+// keyless/deterministic as documented.
+const LIVE_ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || null;
 delete process.env.ANTHROPIC_API_KEY;
 // This file exercises the ENABLED gate (keyless → deterministic), so it must
 // run with the gate ON even though the CI suite default (package.json
@@ -28,6 +39,9 @@ process.env.SDK_SESSIONS_DIR = SESSIONS_ROOT;
 
 async function loadSessions() { return import("../../src/sessions.js?t=" + Date.now()); }
 async function loadServer() { return import("../../src/agents/bundle-mcp-server.js?t=" + Date.now()); }
+async function loadCrlDoc() { return import("../../src/crl/compliance-doc.js?t=" + Date.now()); }
+async function loadPipeline() { return import("../../src/pipeline.js?t=" + Date.now()); }
+async function loadReview() { return import("../../src/crl/review.js?t=" + Date.now()); }
 
 function writeSkeleton(bundleDir, files) {
   for (const [rel, val] of Object.entries(files)) {
@@ -248,16 +262,230 @@ test("commitWorkspaceChanges: a spec-mutating turn also gates the spec artifact 
   sessions.deleteSession(created.sessionId);
 });
 
-test("commitWorkspaceChanges: a bundle-only turn carries NO specGate (reviewSpec only fires on a spec artifact)", async () => {
+test("commitWorkspaceChanges: a bundle-only turn carries NO specGate from the O-1 frozen-changedFiles path (SDK_SPEC_VIEW=off isolates O-1 from the always-on O-2 live-spec-view sync — see tests/spec-view/sync.test.cjs for the O-2 default-on case)", async () => {
   const sessions = await loadSessions();
   const { buildMinimalSkeleton } = await loadServer();
   const created = sessions.createSession({ mode: "agent", org: "CrlWiring", srs: "requirements" });
   writeSkeleton(sessions.bundleDir(created.sessionId), buildMinimalSkeleton());
 
-  const res = await sessions.commitWorkspaceChanges(created.sessionId, "author minimal skeleton");
-  assert.equal(res.specGate, undefined, "a turn that touches no spec artifact must not run reviewSpec");
+  // P3 (synthesis M2) — since the O-2 live-spec-view sync now derives+commits a
+  // spec.yaml on EVERY mutating turn (default-on), a bundle-only turn would
+  // otherwise carry a specGate from the DERIVED spec. This test isolates the
+  // O-1 path (a hand-authored spec artifact in the frozen changedFiles) by
+  // turning O-2 off, so it keeps asserting exactly what it originally intended:
+  // no hand-authored spec artifact ⇒ no O-1 specGate. P4 adds the net-new
+  // on-case (a bundle-only turn DOES get a specGate from the derived spec).
+  const prev = process.env.SDK_SPEC_VIEW;
+  process.env.SDK_SPEC_VIEW = "off";
+  let res;
+  try {
+    res = await sessions.commitWorkspaceChanges(created.sessionId, "author minimal skeleton");
+  } finally {
+    if (prev === undefined) delete process.env.SDK_SPEC_VIEW; else process.env.SDK_SPEC_VIEW = prev;
+  }
+  assert.equal(res.specGate, undefined, "a turn that touches no spec artifact, with SDK_SPEC_VIEW off, must not run reviewSpec");
 
   sessions.deleteSession(created.sessionId);
+});
+
+// ─── O-2: the derived spec.yaml (Live Spec View sync) ALSO drives the O-1 gate ───
+// NET-NEW (synthesis M2) — P3 owns rewriting the pre-existing off-case assertion
+// above this test in place (the SDK_SPEC_VIEW=off isolation variant); this test
+// does not replace or duplicate it. It adds the on-case coverage P3's rewrite
+// does not cover.
+//
+// Supersedes the pre-Live-Spec-View assumption that a bundle-only turn (the
+// agent never wrote spec.yaml itself) carries no specGate. With SDK_SPEC_VIEW
+// on (default), src/spec-view/sync.js derives + commits spec.yaml from the
+// bundle EVERY mutating turn, and commitWorkspaceChanges calls
+// runSpecGateSafely(dir, "spec.yaml") directly on that derived file (contract
+// §2.4) — reusing the SAME O-1 wrapper, not a new gate. So a bundle-only turn
+// now DOES carry a specGate, sourced from the derived artifact, not an
+// agent-authored one.
+//
+// Sets SDK_SPEC_VIEW="on" EXPLICITLY for its own commit call (restored in
+// `finally`), mirroring the C3 pattern P3's tests/spec-view/sync.test.cjs
+// already uses. This is deliberate, not belt-and-suspenders: the package.json
+// `test`/`test:entities` scripts force SDK_SPEC_VIEW=off (synthesis C3, to keep
+// every OTHER entity test free of an unbudgeted per-turn AI call + collateral
+// `turn N.spec` commit), so relying on the ambient default here would make this
+// test pass under a bare `node --test` but FAIL under `npm test`. Explicit
+// per-test on-setting makes the sync fire regardless of the harness default.
+//
+// NOTE ON INERTNESS (synthesis M1): this asserts the gate is WIRED to the
+// derived spec, not that it FLAGS anything. The production spec-template.yaml is
+// sections:-shaped (no top-level `rules:` key), so deterministicRulesOf/aiRulesOf
+// read `doc.rules` (undefined) → zero rules fire on either tier, key or no key.
+// The derived spec is therefore persisted + committed + diffable + passed through
+// the gate wrapper at zero new spend — P4 ships persistence + audit trail, not
+// intent-completeness teeth. See Tasks below for reviewSpec's flagging CAPABILITY
+// (bespoke rules:-bearing doc) — explicitly NOT this production path.
+test("commitWorkspaceChanges: SDK_SPEC_VIEW on (set explicitly — the harness forces it off) — a bundle-only turn gets a specGate from the DERIVED spec.yaml, not an agent-authored one", async () => {
+  const sessions = await loadSessions();
+  const { buildMinimalSkeleton } = await loadServer();
+  const created = sessions.createSession({ mode: "agent", org: "CrlWiring", srs: "requirements" });
+  const bundleDir = sessions.bundleDir(created.sessionId);
+  writeSkeleton(bundleDir, buildMinimalSkeleton()); // note: no spec.yaml written by the agent
+
+  const prevSpecView = process.env.SDK_SPEC_VIEW;
+  process.env.SDK_SPEC_VIEW = "on";
+  let res;
+  try {
+    res = await sessions.commitWorkspaceChanges(created.sessionId, "author minimal skeleton");
+  } finally {
+    if (prevSpecView === undefined) delete process.env.SDK_SPEC_VIEW; else process.env.SDK_SPEC_VIEW = prevSpecView;
+  }
+
+  assert.ok(res.specSync, "commitWorkspaceChanges must always return a specSync field (contract §2.4)");
+  assert.equal(res.specSync.disabled, undefined, "SDK_SPEC_VIEW defaults on — specSync must not report disabled");
+  assert.equal(res.specSync.specChanged, true, "the first mutating turn always changes spec.yaml from nonexistent to emitted");
+  assert.equal(res.specSync.specRelPath, "spec.yaml");
+  assert.equal(res.specSync.identityRelPath, "identity-map.yaml");
+
+  assert.ok(res.specGate, "the derived spec.yaml must ALSO drive the O-1 gate — no agent-authored spec.yaml required");
+  assert.ok(res.specGate.pass === null || typeof res.specGate.pass === "boolean",
+    `specGate.pass must be boolean or null, got ${JSON.stringify(res.specGate.pass)}`);
+  assert.ok(res.specGate.review && res.specGate.review.kind === "spec",
+    "specGate must review the SPEC artifact against spec-template.yaml, not the bundle");
+
+  // The derived files actually landed at the bundle root...
+  assert.ok(fs.existsSync(path.join(bundleDir, "spec.yaml")), "spec.yaml must be persisted at the bundle root");
+  assert.ok(fs.existsSync(path.join(bundleDir, "identity-map.yaml")), "identity-map.yaml must be persisted at the bundle root");
+
+  // ...committed with its own distinguishable provenance, separate from the
+  // agent's own "turn N: ..." commit (contract §2.4 — never folded together).
+  const log = execFileSync("git", ["log", "--format=%s"], { cwd: bundleDir, encoding: "utf8" });
+  assert.match(log, /^turn \d+\.spec: derived spec view$/m,
+    "the derived spec must land as its own follow-up commit, distinguishable from the agent's turn commit");
+
+  // Durably persisted alongside the existing specCrlAtCurrent/crlAtCurrent.
+  const metaOnDisk = JSON.parse(fs.readFileSync(path.join(SESSIONS_ROOT, created.sessionId, "meta.json"), "utf8"));
+  assert.ok(metaOnDisk.specViewAtCurrent, "specViewAtCurrent must be persisted to meta.json");
+  assert.ok(metaOnDisk.specCrlAtCurrent, "specCrlAtCurrent must be persisted to meta.json");
+
+  sessions.deleteSession(created.sessionId);
+});
+
+// ─── HONEST INERT-GATE NOTE (synthesis M1, P4 T2) ────────────────────────────
+// The pre-existing off-case assertion above is owned by P3 (the SDK_SPEC_VIEW=off
+// isolation variant); there is NO duplicate off-variant in this file for P4 to
+// delete. What P4 T2 adds instead is this: an EXECUTABLE proof of WHY the wired
+// production spec gate is inert today — so the "no teeth this delivery" claim is
+// a checked invariant, not a comment that can silently rot.
+//
+// The production spec-template.yaml is `sections:`-shaped: a top-level `sections:`
+// array and NO top-level `rules:` key. reviewSpec resolves its doc via
+// `opts.doc || loadSpecTemplate()`; both deterministicRulesOf(doc) and
+// aiRulesOf(doc) filter `(doc.rules || [])`, so with no `rules:` key BOTH return
+// [] unconditionally. Through the production path (runSpecGateSafely → reviewSpec,
+// no doc override): the deterministic checker runs over zero rules (vacuously ok)
+// and runAiPass short-circuits on `judged.length === 0` BEFORE it ever reads
+// ANTHROPIC_API_KEY (review.js:48). So the wired gate flags nothing on EITHER
+// tier, key or no key. P4 ships the derived spec persisted + committed + diffable
+// + passed through the gate wrapper at zero new spend — NOT intent-completeness
+// teeth. Real teeth (a `rules:`-bearing template exercised through the unmodified
+// production path) is a deferred, human-gated Task 5 (Residual Q1) — not built
+// here, not stubbed here.
+//
+// LOSSY ROUND-TRIP NOTE (synthesis M1): even were the template rules-bearing,
+// reviewSpec re-materializes the spec via applySpec → the brain's specToEntities,
+// which round-trips only the 6 hard-coded top-level entities + 9 PASSTHROUGH
+// families (menuItems, messageRules, groupPrivileges, groupDashboards,
+// individualRelations, catchments, locations, concepts, ruleDependency). P1's
+// rich families outside that set — reportCards, reportDashboards,
+// identifierSources, documentations, checklists, videos — are persisted +
+// diffable in the committed spec.yaml but silently dropped the moment reviewSpec
+// re-materializes into its throwaway tmpDir, so they can never be AI-reviewed by
+// reviewSpec — a structural ceiling independent of any future template.
+test("spec-template.yaml is `sections:`-shaped (no top-level `rules:` key) → the WIRED production spec gate is INERT: deterministicRulesOf/aiRulesOf both resolve to [], so it flags nothing on either tier, key or no key (synthesis M1 — P4 is persistence+audit, not teeth)", async () => {
+  const { loadSpecTemplate, deterministicRulesOf, aiRulesOf } = await loadCrlDoc();
+  const doc = loadSpecTemplate(); // the REAL production template — no opts.doc override, exactly what runSpecGateSafely → reviewSpec loads
+  assert.ok(Array.isArray(doc.sections), "the production template is sections-shaped (a `sections:` array)");
+  assert.equal(doc.rules, undefined, "the production template has NO top-level `rules:` key — this is the SOLE reason the gate is inert");
+  assert.deepEqual(deterministicRulesOf(doc), [], "no `rules:` key ⇒ zero deterministic rules fire, unconditionally");
+  assert.deepEqual(aiRulesOf(doc), [], "no `rules:` key ⇒ zero ai-judged rules fire (runAiPass short-circuits on judged.length===0 BEFORE the ANTHROPIC_API_KEY check)");
+});
+
+// ─── reviewSpec CAPABILITY tests (synthesis M1, P4 T3/T4) ────────────────────
+// The two tests below drive reviewSpec with a BESPOKE `rules:`-bearing doc via
+// opts.doc. They prove reviewSpec's own AI-pass wiring + CRIT-1 keyless guard
+// behave correctly WHEN GIVEN a doc that actually has ai-judged rules. They are
+// EXPLICITLY NOT the production path: the real spec-template.yaml is rules-less
+// (proven inert by the test above) and never reaches this code path at all, and
+// `scopingCtx: {orgAsk}` is not the shape buildCrlScopingCtx ever produces in
+// production (`{srs}` or `{}`). Reuses the shape of tests/eval/cases/29-spec-
+// completeness.cjs, applied to a spec EMITTED from a real bundle (pipeline.emitSpec
+// — the same emitter src/spec-view/sync.js writes spec.yaml from), not hand-typed
+// YAML — so the "derived, not hand-authored" spec still carries the signal.
+const SPEC_COMPLETENESS_DOC = {
+  version: 1,
+  rules: [
+    {
+      id: "spec-completeness",
+      tier: "ai-judged",
+      class: "incomplete-intent",
+      severity: "warning",
+      action: "flag-only",
+      inputs: ["spec", "scopingCtx"],
+      description:
+        "The spec must fully capture the stated intent. Flag any entity, form, encounter, or workflow step the stated intent explicitly asked for that the spec omits (e.g. a required monthly visit / encounter form that is missing).",
+    },
+  ],
+};
+
+const FULL_INTENT =
+  "The Individual registration flow must capture BOTH: (1) registration — record " +
+  "the person's Name at registration; AND (2) a monthly Health Check VISIT " +
+  "encounter form recording the person's Weight at every visit. The spec must " +
+  "model both the registration form and the monthly Health Check visit " +
+  "encounter form.";
+
+test("reviewSpec: a DERIVED incomplete spec (pipeline.emitSpec over buildMinimalSkeleton — registration only, no encounter) clean-skips the ai-judged completeness rule keyless (CRIT-1) — the AI part is budget-gated, never silently required [CAPABILITY test, bespoke doc, NOT the production spec-template.yaml path]", async () => {
+  const pipeline = await loadPipeline();
+  const { buildMinimalSkeleton } = await loadServer();
+  const { reviewSpec } = await loadReview();
+
+  const derivedSpecYaml = pipeline.emitSpec({ existingBundleFiles: buildMinimalSkeleton(), org: "SpecCompleteOrg" });
+  assert.equal(typeof derivedSpecYaml, "string");
+  assert.doesNotMatch(derivedSpecYaml, /encounterTypes:/,
+    "buildMinimalSkeleton has no encounter type — the derived spec must genuinely omit it, or this test proves nothing");
+
+  const review = await reviewSpec(derivedSpecYaml, {
+    doc: SPEC_COMPLETENESS_DOC,
+    scopingCtx: { orgAsk: FULL_INTENT },
+  });
+
+  assert.equal(review.kind, "spec");
+  assert.deepEqual(review.ai, { findings: [], confidence: 1, costUsd: 0 },
+    "keyless (ANTHROPIC_API_KEY unset for this whole file) — the ai-judged pass must clean-skip, never throw or silently spend");
+});
+
+test("reviewSpec: LIVE opt-in — the same DERIVED incomplete spec IS flagged by the ai-judged completeness rule when a real key is available (reuses the bespoke doc/intent above verbatim; AI part budget-gated — self-skips keyless; NOT the production spec-template.yaml path) [CAPABILITY test]", async (t) => {
+  if (!LIVE_ANTHROPIC_API_KEY) { t.skip("ANTHROPIC_API_KEY not set — eval-style test, opt-in"); return; }
+  const pipeline = await loadPipeline();
+  const { buildMinimalSkeleton } = await loadServer();
+  const { reviewSpec } = await loadReview();
+
+  const derivedSpecYaml = pipeline.emitSpec({ existingBundleFiles: buildMinimalSkeleton(), org: "SpecCompleteOrg" });
+
+  process.env.ANTHROPIC_API_KEY = LIVE_ANTHROPIC_API_KEY;
+  let review;
+  try {
+    review = await reviewSpec(derivedSpecYaml, {
+      doc: SPEC_COMPLETENESS_DOC,
+      scopingCtx: { orgAsk: FULL_INTENT },
+    });
+  } finally {
+    delete process.env.ANTHROPIC_API_KEY;
+  }
+
+  assert.equal(review.kind, "spec");
+  assert.ok(
+    review.ai.findings.some((f) => f.ruleId === "spec-completeness"),
+    "reviewSpec did not flag the derived incomplete spec against its stated intent " +
+    "(the missing monthly Health Check visit encounter form). ai findings: " + JSON.stringify(review.ai.findings),
+  );
+  assert.ok(review.ai.costUsd > 0, "a real paid model call must report a non-zero cost");
 });
 
 test.after(() => { try { fs.rmSync(SESSIONS_ROOT, { recursive: true, force: true }); } catch {} });

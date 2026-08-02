@@ -40,6 +40,10 @@ const { buildBundleGraph, integrityCheck }                  = require(path.join(
 const { bundleFromZip, bundleToZip }                        = require(path.join(brainPath, "srs-bundle-generator/spec/bundle-io.js"));
 
 import { compileByField, ruleTypeForField } from "./rules-brain/compile.js";
+// The ONE rich spec emitter (Live Spec View, P1). bundleToEntities delegates to
+// it so pipeline.emitSpec, the MCP spec tools, the per-turn sync, and reviewSpec
+// all share a single 25-family, name-keyed, deterministic reconstruction.
+import { bundleToRichEntities, buildIdentityIndex } from "./spec-view/emit.js";
 
 // ─── Declarative-IR → JS rule materialization ────────────────────────
 
@@ -264,73 +268,19 @@ function integrityOnFileMap(files) {
 // of top-level entities (subjectTypes / programs / encounterTypes / concepts) by
 // name, which is what makes re-applying an emitted spec a no-op ADD (it updates
 // in place, never duplicates) — the property the round-trip test pins down.
+// As of P1 (Live Spec View) this delegates to the ONE rich emitter in
+// src/spec-view/emit.js — a strict superset of the old 6-family adapter: it
+// reconstructs all ~25 families (address_levels, settings, and the 18 ancillary
+// passthrough families the old body never emitted), resolves every cross-ref
+// UUID → name, deterministically sorts every array (incl. voided-filtered,
+// tuple-sorted forms), and reads scope from formMappings.json rather than off
+// form objects (real bundle forms carry no scope). Signature preserved for
+// emitSpec + the MCP spec tools + reviewSpec's round-trip.
 export function bundleToEntities(fileMap) {
   if (!fileMap || typeof fileMap !== "object") {
     throw new Error("bundleToEntities: fileMap object required");
   }
-  const arr = (k) => (Array.isArray(fileMap[k]) ? fileMap[k] : []);
-  const subjectTypes   = arr("subjectTypes.json");
-  const programs       = arr("programs.json");
-  const encounterTypes = arr("encounterTypes.json");
-  const concepts       = arr("concepts.json");
-  const groups         = arr("groups.json");
-
-  // Collect form objects. Forms produced by the patcher carry their scope
-  // (formType/subjectType/program/encounterType) directly on the object; we
-  // rely on that so the emitter's findForm() can nest each form under the right
-  // subjectType / program / encounterType.
-  const forms = [];
-  for (const [p, f] of Object.entries(fileMap)) {
-    if (!p.startsWith("forms/") || !p.endsWith(".json")) continue;
-    if (!f || typeof f !== "object" || Array.isArray(f)) continue;
-    forms.push(f);
-  }
-
-  // Derive relationships the bundle JSON stores implicitly (via forms) so the
-  // emitted spec names them explicitly: a program's target subject type comes
-  // from its enrolment form; an encounter's program/subject/kind from its form.
-  const enrolSubjectByProgram = {};
-  const encScopeByName = {};
-  for (const f of forms) {
-    if (f.formType === "ProgramEnrolment" && f.program) {
-      enrolSubjectByProgram[f.program] = f.subjectType || "";
-    }
-    if ((f.formType === "ProgramEncounter" || f.formType === "Encounter") && f.encounterType) {
-      encScopeByName[f.encounterType] = {
-        subjectType: f.subjectType || "",
-        program: f.program || "",
-        isProgram: f.formType === "ProgramEncounter",
-      };
-    }
-  }
-
-  return {
-    org_name: "",
-    settings: {},
-    subject_types: subjectTypes.map((s) => ({ ...s })),
-    programs: programs.map((p) => ({
-      ...p,
-      name: p.name,
-      target_subject_type: p.target_subject_type || enrolSubjectByProgram[p.name] || "",
-    })),
-    encounter_types: encounterTypes.map((e) => {
-      const sc = encScopeByName[e.name] || {};
-      const programName = e.program_name || sc.program || "";
-      return {
-        ...e,
-        name: e.name,
-        program_name: programName,
-        subject_type: e.subject_type || sc.subjectType || "",
-        is_program_encounter: e.is_program_encounter != null
-          ? !!e.is_program_encounter
-          : (programName ? true : !!sc.isProgram),
-        is_scheduled: e.is_scheduled == null ? true : !!e.is_scheduled,
-      };
-    }),
-    groups: groups.map((g) => ({ name: g.name, has_all_privileges: !!g.hasAllPrivileges })),
-    forms,
-    concepts_detail: concepts,
-  };
+  return bundleToRichEntities(fileMap, { identityIndex: buildIdentityIndex(fileMap) });
 }
 
 /**

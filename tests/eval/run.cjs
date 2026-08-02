@@ -129,6 +129,15 @@ async function bootServer({ port, sessionsDir, envOverrides = {} }) {
     // tripping a case's "no collateral drift" assertion through no fault of the
     // agent. Individual cases may still override via their own envOverrides.
     SDK_CRL_GATE: "off",
+    // Synthesis C3 — same reasoning, for the Live Spec View's O-2 spec-sync
+    // step (commitWorkspaceChanges, contract §2.4). SDK_SPEC_VIEW defaults ON,
+    // so every committed turn inside an eval case would otherwise ALSO run a
+    // full rich re-emit + (on a changed spec) an unbudgeted reviewSpec AI pass,
+    // plus a collateral `turn N.spec` commit neither the case author nor its
+    // "no collateral drift" assertion ever asked for. Placed immediately before
+    // ...envOverrides so individual cases can still opt back in via their own
+    // overrides.
+    SDK_SPEC_VIEW: "off",
     ...envOverrides,
   };
   // We pipe stdio to a log file so the harness output stays clean. On
