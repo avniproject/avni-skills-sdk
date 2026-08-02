@@ -6,7 +6,7 @@
 // one date, and the SRS keeps moving. Where the two disagree, the SRS is the
 // authority — it is the requirement — and the export is merely older.
 //
-// Measured on Door Step School (2026-08-02): of 14 "missing" forms, 3 were named
+// Measured on a real org (2026-08-02): of 14 "missing" forms, 3 were named
 // in the current scoping workbook and 11 were not. The 11 were dominated by
 // `<x> cancellation` and `<x> program exit` — configuration the 31 Jul export
 // carries and the 2 Aug scoping document no longer asks for. A loop gating on

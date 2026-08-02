@@ -161,7 +161,7 @@ function regressed(before, after) {
 // The workbooks are passed so measure can split the parity diff into gaps the
 // SRS asks for and gaps only the (older) reference export has. Without them
 // every missing name counts, and the loop burns its budget authoring config the
-// current scope dropped — on Door Step School that was 38 of 70 gated items,
+// current scope dropped — on one real org that was 38 of 70 gated items,
 // all of which would have moved the bundle AWAY from the requirement.
 const measureCmd = (bDir) =>
   `node scripts/measure-bundle.mjs ${JSON.stringify(bDir)}` +
@@ -317,7 +317,7 @@ Return exactly that parsed object.`;
 // same bundle git, so concurrent fix agents would race on the index — which made
 // one-agent-per-finding the dominant cost of the whole loop: ~30 findings x one
 // Opus spin-up each ran 1.5-4 HOURS per iteration. Most of that was structural,
-// not work: 16 of the 32 gated Door Step School items are report cards, and all
+// not work: 16 of the 32 gated items on one real org are report cards, and all
 // 16 live in the SAME file. Findings are therefore grouped by the file they
 // touch and handed to one agent per group, which reads that file once and makes
 // every edit in a single turn. Same edits, same commit granularity per group,
