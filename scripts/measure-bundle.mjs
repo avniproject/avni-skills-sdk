@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { validateBundle } from "../src/bundle.js";
 import { completenessFloor } from "../src/completeness.js";
 import { scrubProse } from "../src/crl/prose-scrub.js";
+import { buildSrsVocabulary, classifyMissing } from "../src/srs-vocabulary.js";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { bundleActiveNames } = require("../tests/corpus/doorstep/lib/entity-names.cjs");
@@ -14,7 +15,7 @@ const { diffNames, FULL_GATE_CLASSES } = require("../tests/corpus/doorstep/lib/p
 
 function isF2(e) { const s = typeof e === "string" ? e : (e?.code || e?.message || ""); return /^\s*F2\b/.test(s) || String(e?.code).toUpperCase() === "F2"; }
 
-export async function measure(bundleDir, uatZip) {
+export async function measure(bundleDir, uatZip, srsXlsxPaths = []) {
   const v = validateBundle(bundleDir);
   const nonF2 = (v.errors || []).filter((e) => !isF2(e)).length;
   const cf = completenessFloor(bundleDir);
@@ -39,15 +40,35 @@ export async function measure(bundleDir, uatZip) {
     // caller cares about. Missing names are listed per family (capped) so the
     // loop's fix stage gets a target, not just a count.
     const d = diffNames(bundleActiveNames(bundleDir), bundleActiveNames(root), FULL_GATE_CLASSES);
+    // The reference export is a snapshot; the SRS keeps moving. Gate on the part
+    // of the diff the SRS actually asks for, and report the rest as drift rather
+    // than sending the loop off to author config nobody wants. See
+    // src/srs-vocabulary.js for why the matching bias is inclusive.
+    const vocab = buildSrsVocabulary(srsXlsxPaths);
     const byFamily = {}; let pass = true;
     const gateFailures = [];
+    let driftTotal = 0;
     for (const [k, c] of Object.entries(d.classes)) {
       const tot = c.present.length + c.missing.length;
       const cov = tot ? c.present.length / tot : 1;
-      byFamily[k] = { coverage: cov, missing: c.missing.length, extra: c.extra.length, missingNames: c.missing.slice(0, 25) };
-      if (FULL_GATE_CLASSES.includes(k) && c.missing.length) { pass = false; gateFailures.push(k); }
+      const { backed, drift } = classifyMissing(vocab, c.missing);
+      driftTotal += drift.length;
+      byFamily[k] = {
+        coverage: cov,
+        missing: c.missing.length,
+        extra: c.extra.length,
+        srsBacked: backed.length,
+        drift: drift.length,
+        missingNames: backed,          // what to actually fix
+        driftNames: drift,             // reported, never chased
+      };
+      if (FULL_GATE_CLASSES.includes(k) && backed.length) { pass = false; gateFailures.push(k); }
     }
-    parity = { byFamily, coveragePass: pass, gateClasses: FULL_GATE_CLASSES, gateFailures };
+    parity = {
+      byFamily, coveragePass: pass, gateClasses: FULL_GATE_CLASSES, gateFailures,
+      srsVocabulary: vocab.size ? { terms: vocab.size } : null,
+      driftTotal,
+    };
     fs.rmSync(uatDir, { recursive: true, force: true });
   }
   const floorGreen = nonF2 === 0 && (cf.evaluated && cf.green) && pr.pruned.length === 0 && (parity === null || parity.coveragePass);
@@ -62,6 +83,9 @@ export async function measure(bundleDir, uatZip) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [dir, uat] = process.argv.slice(2);
-  measure(dir, uat).then((sc) => console.log(JSON.stringify(sc, null, 2)));
+  // usage: measure-bundle.mjs <bundleDir> [uatZip] [scopingXlsx] [modellingXlsx]
+  // The workbooks are optional; without them every missing name is treated as
+  // SRS-backed, so the gate stays as strict as it was before drift-splitting.
+  const [dir, uat, scoping, modelling] = process.argv.slice(2);
+  measure(dir, uat, [scoping, modelling].filter(Boolean)).then((sc) => console.log(JSON.stringify(sc, null, 2)));
 }

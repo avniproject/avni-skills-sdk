@@ -158,9 +158,16 @@ function regressed(before, after) {
 }
 
 // ── Prompt builders ───────────────────────────────────────────────────────
+// The workbooks are passed so measure can split the parity diff into gaps the
+// SRS asks for and gaps only the (older) reference export has. Without them
+// every missing name counts, and the loop burns its budget authoring config the
+// current scope dropped — on Door Step School that was 38 of 70 gated items,
+// all of which would have moved the bundle AWAY from the requirement.
 const measureCmd = (bDir) =>
   `node scripts/measure-bundle.mjs ${JSON.stringify(bDir)}` +
-  (A.uatZip ? ` ${JSON.stringify(A.uatZip)}` : '');
+  (A.uatZip ? ` ${JSON.stringify(A.uatZip)}` : '') +
+  (A.uatZip && A.scopingXlsx ? ` ${JSON.stringify(A.scopingXlsx)}` : '') +
+  (A.uatZip && A.scopingXlsx && A.modellingXlsx ? ` ${JSON.stringify(A.modellingXlsx)}` : '');
 
 // AGENT mode, not baseline. Both modes produce the SAME deterministic bundle —
 // generateBaselineOnDir runs the real brain-generator whenever the session has
