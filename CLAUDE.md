@@ -186,6 +186,70 @@ When you add a new rule: if it is safety-critical, write the code-enforcement fi
 
 ---
 
+## Working a bundle from Claude Code (without session mode)
+
+Session mode (`npm run cli`) is the supported product path and is **not** going away. But the bundle tools are plain deterministic functions over a directory — nothing about them is session-specific — and when the REPL misbehaves they used to become unreachable along with it. `scripts/mcp-stdio.mjs` puts a stdio transport on the *same* `createBundleMcpServer(bundleCwd)` factory, so any MCP client gets the identical 13 tools under the identical frozen names (rule §7).
+
+**Setup — once per bundle you want to work on:**
+
+```bash
+export AVNI_SKILLS_PATH=~/code/avni-skills
+export AVNI_SESSION_ID=sess_xxxxxxxxxxxxxxxx   # or AVNI_BUNDLE_CWD=/abs/path/to/bundle
+node scripts/stage-skills.mjs                  # skills → .claude/skills/ (gitignored)
+```
+
+Then start Claude Code in this repo. `.mcp.json` registers the server; the tools appear as `mcp__avni-bundle__*`. **The bundle is bound at spawn**, so switching sessions means changing `AVNI_SESSION_ID` and restarting Claude Code.
+
+Prefer `AVNI_SESSION_ID` over `AVNI_BUNDLE_CWD` where you have one: `bundle_read_srs`, `bundle_generate_baseline`, and `bundle_export_to_path` read `../meta.json` and will return an actionable error against a bare directory.
+
+### Tool index
+
+| Tool | Does | Cost |
+|---|---|---|
+| `bundle_validator_run` | Validator with structured output (F/C/M/R/G codes) | free |
+| `bundle_integrity_check` | FK refs, FE_CONCEPT_NOT_OBJECT, ALT_INVALID_NAME, AUTOCREATED_ENTITY | free |
+| `bundle_summary` | Deterministic anomaly summary | free |
+| `bundle_find_concept` | Case-insensitive concept lookup by name/UUID | free |
+| `bundle_find_references` | Every referent of a UUID — check before deleting anything | free |
+| `bundle_read_srs` | Read ANY sheet of the attached workbooks, incl. the ones the generator skips | free |
+| `bundle_generate_baseline` | Run the deterministic generator into an agent-mode bundle | free |
+| `spec_emit` / `spec_apply` | Round-trip bundle ↔ canonical YAML spec | free |
+| `bundle_export_to_path` | Path-jailed ZIP export; **refuses on any integrity error** | free |
+| `bundle_review` / `bundle_scrub` / `spec_review` | CRL review; scrub also applies high-confidence fixes | **LLM — costs money** |
+
+### Verification, without the REPL
+
+The `:state` / `:eval` commands have direct equivalents — run the functions:
+
+```bash
+AVNI_SKILLS_PATH=~/code/avni-skills node -e '
+Promise.all([import("./src/bundle.js"), import("./src/agents/bundle-mcp-server.js")]).then(([b, m]) => {
+  const d = process.env.HOME + "/.avni-skills-sdk/sessions/" + process.env.AVNI_SESSION_ID + "/bundle";
+  const v = b.validateBundle(d);
+  console.log("validator errors=" + v.errors.length);
+  v.errors.forEach(e => console.log("   " + e));
+  const r = m.runBundleIntegrityCheck(d);
+  console.log("integrity ok=" + r.ok + " findings=" + r.findings.length);
+  r.findings.forEach(f => console.log("   [" + f.severity + "] " + f.code + " " + f.locator));
+});'
+```
+
+**Committing turns.** The stdio path edits files but does NOT commit — there is no server wrapping the turn. Snapshot deliberate units yourself so `:turns` / `:revert` still work later:
+
+```bash
+AVNI_SKILLS_PATH=~/code/avni-skills node -e '
+import("./src/sessions.js").then(s =>
+  console.log(s.commitTurn(process.env.AVNI_SESSION_ID, "what changed", {})));'
+```
+
+A session left with uncommitted files is not lost — `GET /v1/sessions/:id` reports them under `uncommitted`, and the REPL banner leads with that on resume.
+
+### Skill index (`.claude/skills/`, after staging)
+
+`srs-bundle-generator` (generator + validator internals, bundle shape) · `rules-author` (authoring JS rules — read before writing any rule) · `avni-bundle-spec` (canonical spec schema) · `avni-implementer-reference` · `product-knowledge` · `org-setup` · `implementation-engineer` · `field-implementation` · `data-migration` · `metabase-reports` · `go-live-checklist` · plus the rest of the 19.
+
+**Careful with `:eval` / the LLM evaluator.** It reasons over a *sample* of bundle metadata and will report entities it wasn't shown as missing — watch for "in the sample", "not visible", "unshown" in its evidence. Confirm against `formMappings.json` before acting; a real run produced four findings, all false positives, on a bundle that was already clean.
+
 ## Common tasks
 
 ### Run all tests

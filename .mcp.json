@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "avni-bundle": {
+      "command": "node",
+      "args": ["scripts/mcp-stdio.mjs"],
+      "env": {
+        "AVNI_SESSION_ID": "${AVNI_SESSION_ID}",
+        "AVNI_BUNDLE_CWD": "${AVNI_BUNDLE_CWD:-}",
+        "AVNI_SKILLS_PATH": "${AVNI_SKILLS_PATH:-}",
+        "SDK_SESSIONS_DIR": "${SDK_SESSIONS_DIR:-}"
+      }
+    }
+  }
+}

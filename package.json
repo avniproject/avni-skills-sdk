@@ -29,7 +29,9 @@
     "acceptance:floor": "node --test tests/acceptance/*.test.cjs",
     "dashboard": "node scripts/observability-dashboard.mjs",
     "head-to-head": "node scripts/head-to-head.mjs",
-    "repl:observed": "bash scripts/repl-with-dashboard.sh"
+    "repl:observed": "bash scripts/repl-with-dashboard.sh",
+    "mcp:stdio": "node scripts/mcp-stdio.mjs",
+    "skills:stage": "node scripts/stage-skills.mjs"
   },
   "engines": {
     "node": ">=22"

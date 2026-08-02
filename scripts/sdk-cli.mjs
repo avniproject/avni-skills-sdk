@@ -80,8 +80,9 @@ const BASE = `http://localhost:${PORT}`;
 // the SSE renderer so it can detect validator regressions. sid is mutated
 // by `:session resume <id>` so the REPL can hop between sessions without a
 // restart — Claude-Code-style.
+const DEFAULT_MODEL = "claude-haiku-4-5-20251001";
 const state = {
-  MODEL: arg("model", "claude-haiku-4-5-20251001"),
+  MODEL: arg("model", DEFAULT_MODEL),
   priorValidationGroups: null,
   sid: null,
   // AbortController for the turn currently streaming, or null when idle. Set by
@@ -289,6 +290,17 @@ function safePrompt() { if (!rlClosed) rl.prompt(); }
 // interactive case that actually matters. Piped/non-TTY runs still go through
 // `process`. Same handler either way; whichever fires first clears the state the
 // other would act on.
+// Both exit paths print the exact command to get back in. The session id alone
+// left you to reconstruct the invocation from memory; carry the model through
+// too (`:model` may have changed it mid-session) so resuming lands you where you
+// left off rather than back on the default.
+function printResumeHint() {
+  if (!state.sid) return;
+  const modelFlag = state.MODEL && state.MODEL !== DEFAULT_MODEL ? ` --model ${state.MODEL}` : "";
+  console.log(dim("session preserved · resume with:"));
+  console.log("  " + cyan(`npm run cli -- --resume ${state.sid}${modelFlag}`));
+}
+
 let sigintArmed = false;
 const handleInterrupt = () => {
   if (state.inFlight) {
@@ -308,7 +320,7 @@ const handleInterrupt = () => {
     return;
   }
   console.log("");
-  console.log(dim(`session preserved at ${state.sid}`));
+  printResumeHint();
   if (startedServer && serverProc) serverProc.kill();
   process.exit(130);
 };
@@ -331,7 +343,7 @@ for await (const line of rl) {
   safePrompt();
 }
 
-console.log(dim(`session preserved at ${state.sid}`));
+printResumeHint();
 if (!rlClosed) rl.close();
 if (startedServer && serverProc) serverProc.kill();
 process.exit(0);
