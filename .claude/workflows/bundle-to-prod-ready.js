@@ -438,16 +438,18 @@ if (iter >= (args.maxIterations || 6) && reason === 'budget') {
   log(`Reached maxIterations (${args.maxIterations || 6}).`);
 }
 
-// ── Final: UAT-vs-candidate spec diff (only when a UAT reference is given) ──
-let specDiff = null;
-if (args.uatZip) {
-  const sd = await agent(specDiffPrompt(bundleDir), {
-    model: 'haiku',
-    schema: specDiffSchema,
-    phase: 'Regression-guard',
-    label: 'spec-diff',
-  });
-  specDiff = sd;
+// ── Final: UAT-vs-candidate gap report, straight off the bundle config files ──
+// This used to emit a canonical SPEC for both sides and diff those. Two reasons
+// it no longer does: the comparison is specified against the bundle's own config
+// files, not an intermediate spec view; and measure-bundle already computes
+// exactly this diff every iteration via the widened parity comparator (roster
+// classes PLUS visit schedules, decision rules, report cards, dashboards). An
+// extra model call to restate a number we already hold deterministically buys
+// nothing, so the last scorecard's parity block IS the final gap report.
+const parityGap = lastScorecard ? lastScorecard.parity : null;
+if (parityGap) {
+  log(`Final parity: coveragePass=${parityGap.coveragePass}` +
+      (parityGap.gateFailures?.length ? ` failing [${parityGap.gateFailures.join(', ')}]` : ''));
 }
 
 return {
@@ -456,5 +458,5 @@ return {
   reason,
   generatorDefects: allDefects,
   floorGreen: lastScorecard ? !!lastScorecard.floorGreen : false,
-  specDiff,
+  parityGap,
 };
