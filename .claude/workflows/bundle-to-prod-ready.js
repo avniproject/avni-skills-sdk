@@ -313,17 +313,33 @@ ${JSON.stringify(confirmed)}
 It prints { findings, generatorDefects, counts } to stdout (bundle-fixable findings + logged generator defects).
 Return exactly that parsed object.`;
 
-const fixPrompt = (finding, bDir) => `You are a fix agent working ONLY inside the session bundle (never the generator).
+// BATCHED. The fix stage is necessarily sequential — every fix commits to the
+// same bundle git, so concurrent fix agents would race on the index — which made
+// one-agent-per-finding the dominant cost of the whole loop: ~30 findings x one
+// Opus spin-up each ran 1.5-4 HOURS per iteration. Most of that was structural,
+// not work: 16 of the 32 gated Door Step School items are report cards, and all
+// 16 live in the SAME file. Findings are therefore grouped by the file they
+// touch and handed to one agent per group, which reads that file once and makes
+// every edit in a single turn. Same edits, same commit granularity per group,
+// roughly an order of magnitude less wall clock.
+const fixPrompt = (findings, bDir, groupLabel) => `You are a fix agent working ONLY inside the session bundle (never the generator).
 Bundle directory (cwd for git): ${bDir}
-Finding to fix: ${JSON.stringify(finding)}
+You have ${findings.length} finding(s) to resolve, all in the same area (${groupLabel}):
+${JSON.stringify(findings, null, 2)}
 
-Edit the bundle files under that directory to resolve THIS finding only (case-insensitive upsert: update in
-place if the entity exists, else append copying field shapes from existing neighbours verbatim). Do not touch
-unrelated entities. Then commit the change as one turn:
+Resolve EVERY finding listed above, then commit once. For each: case-insensitive upsert — update in place if
+the entity exists, else append, copying field shapes from existing neighbours in the same file VERBATIM
+(uuid format, key order, every field the neighbours carry). Read the file once, make all the edits, write once.
+
+Do not touch entities that are not listed. Do not "improve" anything you were not asked to change.
+
+Then commit the whole group as one turn:
   git -C ${JSON.stringify(bDir)} add -A
-  git -C ${JSON.stringify(bDir)} commit -m "fix: <short summary of this finding>"
-If, after reading the files, the finding is not actually fixable as a bundle edit, make no change, do not commit,
-and return fixed:false. Return { fixed: true|false, summary }.`;
+  git -C ${JSON.stringify(bDir)} commit -m "fix: <short summary of this group>"
+
+If some findings turn out not to be fixable as a bundle edit, fix the ones that are, commit those, and say
+which you skipped and why. If NONE are fixable, make no change, do not commit, and return fixed:false.
+Return { fixed: true|false, summary } where summary names how many of the ${findings.length} you resolved.`;
 
 const revertPrompt = (bDir) => `You are a mechanical runner. The last fix regressed the bundle floor. Revert exactly the last commit:
   git -C ${JSON.stringify(bDir)} reset --hard HEAD~1
@@ -523,15 +539,44 @@ while (iter < (A.maxIterations || 6) && budget.remaining() > RESERVE) {
 
   // ── Fix: sequential (agents edit the same dir; avoid conflicts) ──
   phase('Fix');
-  for (const finding of fixable) {
-    const fixModel = OPUS_FIX_KINDS.has(finding.kind) ? 'opus' : 'haiku';
-    const res = await agent(fixPrompt(finding, bundleDir), {
+  // Group by the bundle file a finding lands in, so one agent owns one file.
+  // Derived from the finding's own entity prefix ("form:X", "reportCard:Y", …)
+  // with a fallback to category, so an unrecognised shape still groups sanely
+  // rather than silently collapsing everything into one bucket.
+  const fileOf = (f) => {
+    const e = String(f.entity || '').toLowerCase();
+    const c = String(f.category || '').toLowerCase();
+    const hay = `${e} ${c}`;
+    if (/reportcard|report card/.test(hay)) return 'reportCard.json';
+    if (/dashboard/.test(hay)) return 'reportDashboard.json';
+    if (/^concept:|concept/.test(hay)) return 'concepts.json';
+    if (/subjecttype/.test(hay)) return 'subjectTypes.json';
+    if (/program(?!encounter)/.test(hay) && !/encounter/.test(hay)) return 'programs.json';
+    if (/encountertype/.test(hay)) return 'encounterTypes.json';
+    if (/formmapping/.test(hay)) return 'formMappings.json';
+    if (/group|privilege/.test(hay)) return 'groups.json';
+    // Per-form work (visit schedules, decision rules, elements) touches ONE form
+    // file each, so key on the form name to keep those groups small and precise.
+    const m = e.match(/^form:(.+)$/);
+    if (m) return `forms/${m[1].trim()}`;
+    return e || c || 'other';
+  };
+  const groups = new Map();
+  for (const f of fixable) {
+    const k = fileOf(f);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(f);
+  }
+  log(`Fix: ${fixable.length} finding(s) in ${groups.size} group(s) — ${[...groups].map(([k, v]) => `${k}×${v.length}`).join(', ')}`);
+  for (const [groupKey, groupFindings] of groups) {
+    const fixModel = groupFindings.some((f) => OPUS_FIX_KINDS.has(f.kind)) ? 'opus' : 'haiku';
+    const res = await agent(fixPrompt(groupFindings, bundleDir, groupKey), {
       model: fixModel,
       schema: fixSchema,
       phase: 'Fix',
-      label: `fix:${finding.entity || finding.category}:iter${iter}`,
+      label: `fix:${groupKey}:iter${iter}`,
     });
-    log(`Fix (${fixModel}) ${finding.entity || finding.category}: fixed=${res.fixed} — ${res.summary}`);
+    log(`Fix (${fixModel}) ${groupKey} [${groupFindings.length}]: fixed=${res.fixed} — ${res.summary}`);
   }
 
   // ── Regression-guard: re-measure; revert the last fix if the floor regressed ──
