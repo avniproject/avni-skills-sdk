@@ -119,3 +119,244 @@ rules:
     action: flag-only
     inputs: [artifact.concepts, artifact.forms]
     provenance: "design gap#3: an entity name that is internally inconsistent with its sibling entities' naming convention (e.g. mixed casing/abbreviation style within one form's element group) — a coherence judgment, not a closed-set check."
+
+  # ─── ai-judged — design gap#4: SRS conformance (intent vs. config) ───
+  # Every rule above judges the bundle against ITSELF. These four are the only
+  # ones that judge it against the SCOPING_INTENT block — the org's own SRS text
+  # — and they do it by comparing that text with the bundle's OWN config files as
+  # projected into ARTIFACT (concepts / forms incl. their rule bodies /
+  # subjectTypes / programs / encounterTypes / formMappings / groups /
+  # groupPrivileges / addressLevelTypes / reportCards / reportDashboards /
+  # groupDashboards / counts). Never through the spec layer: `spec_review`'s
+  # spec-template.yaml is `sections:`-shaped with no top-level `rules:` key, so
+  # aiRulesOf() resolves to [] there and anything placed on that path is inert by
+  # construction. These live here, on the `bundle_review` / `reviewOnDir` path.
+  #
+  # The gap they close: a bundle can be validator-clean, integrity-clean,
+  # completeness-green AND clean on all five rules above while simply not being
+  # what the org asked for — template-default user groups instead of the named
+  # roles, no visit schedules where the SRS specified them, plain data-entry
+  # boxes where the SRS said "(auto)", a one-card stub against a specified
+  # dashboard. Nothing self-referential can see that; only intent-vs-config can.
+  # The four rules below split that comparison by what is being compared:
+  # the ENTITY ROSTER (srs-requested-entity-absent), a form's FIELD CONTENT
+  # (srs-requested-form-content-absent), configured BEHAVIOUR — schedules,
+  # decision rules, roles, dashboards (srs-specified-behaviour-not-configured),
+  # and the mirror direction, config nobody asked for (config-not-requested-by-srs).
+  #
+  # FOUR INVARIANTS. All four are safety, not style:
+  #   (a) action: flag-only, ALWAYS — never `apply`, never `prune-candidate`.
+  #       `scrubOnDir` runs the CRL in apply mode and the executor executes
+  #       high-confidence actionable findings. A conformance rule that could
+  #       prune would delete REAL entities that merely LOOK unrequested because
+  #       the SRS worded them differently. Conformance is advice to a human; it
+  #       must never be self-executing. Do not upgrade these actions.
+  #   (b) INERT WITHOUT AN SRS. ai-judge.js buildUserMessage only emits the
+  #       SCOPING_INTENT block when scopingCtx carries orgAsk/scopingText/srs —
+  #       a baseline-mode session has none (buildCrlScopingCtx returns {}). With
+  #       no SRS there is no "requested" side to compare against, so a
+  #       "missing X" finding would be a pure false positive. Each description
+  #       below states the no-SRS behaviour in its FIRST clause.
+  #   (c) EVIDENCE-BOUNDED. ARTIFACT is a BOUNDED PROJECTION of the bundle
+  #       (ai-judge.js buildBundleProjection). It was widened FOR these rules and
+  #       now carries user groups, a group-privilege summary, address-level
+  #       types, report cards, dashboards, group→dashboard assignments, and the
+  #       per-form visitScheduleRule / decisionRule / validationRule bodies — so
+  #       the categories these rules exist to judge ARE visible. What keeps that
+  #       from becoming a hallucination surface is two projection conventions,
+  #       which every description below restates because the judge must apply
+  #       them, not just the author:
+  #         • null vs [] — a key is `null` when its file was absent or
+  #           unparseable ("I could not look" ⇒ say nothing) and an array,
+  #           possibly EMPTY, when the file was read ("I looked and there is
+  #           nothing" ⇒ reportable). A per-form rule field is likewise `null`
+  #           when the form carries no such rule, which is a fact about the
+  #           BUNDLE, not about the sample.
+  #         • counts{} — concepts and forms are still capped;
+  #           counts.<key>.truncated says so explicitly. Never call a concept or
+  #           a form absent off a truncated list.
+  #       Anything still outside the projection stays outside these rules:
+  #       widen buildBundleProjection first, then widen the prose.
+  #   (d) THE SRS SIDE IS A SAMPLE — and it is asymmetric with the bundle side.
+  #       buildCrlScopingCtx renders a spreadsheet SRS into a char-capped digest:
+  #       a COMPLETE workbook index (every sheet named, each with its total row
+  #       count, "### <book> > <sheet> (19 row(s))") followed by only the first
+  #       couple of rows of each sheet — typically the datatype banner and the
+  #       column headers — then "… N more row(s) of this sheet not shown". The
+  #       cap is deliberate and is NOT going to be raised: the CRL judge is a
+  #       single-shot pass that cannot ask for more, while the workflow's review
+  #       lenses hold unbounded paginated `readSrsOnDir` access and can pull any
+  #       sheet in full. THE DIVISION OF LABOUR FOLLOWS FROM THAT — CRL judge:
+  #       roster-level conformance. Lenses: field-level. So: the PRESENCE of a
+  #       sheet, and its declared row COUNT, are reliable evidence. The ABSENCE
+  #       of a row is not evidence of anything. No rule below may ask the judge
+  #       to enumerate what the SRS specified field-by-field, card-by-card or
+  #       schedule-by-schedule; each defers enumeration to a human or a lens.
+  #
+  # Deliberately NOT duplicated here: dangling/missing FK refs, duplicate names,
+  # displayOrder collisions, empty forms and prose-as-entity-name are already
+  # deterministic gates (bundle-validator / bundle-integrity / completeness
+  # floor). Re-asking a model about them costs tokens and double-reports.
+  - id: srs-requested-entity-absent
+    tier: ai-judged
+    class: missing-requested-config
+    severity: warning
+    action: flag-only
+    inputs: [artifact.files, scopingCtx]
+    description: >-
+      REQUIRES the SCOPING_INTENT block. If this request has NO SCOPING_INTENT
+      section, this rule is INAPPLICABLE — emit zero findings for it. A missing
+      SRS is never itself a gap. Otherwise: read SCOPING_INTENT for the subject
+      types, programs, encounter types and forms the org asked to run, then check
+      each against the matching roster in ARTIFACT (subjectTypes, programs,
+      encounterTypes, forms, formMappings). Emit one finding per SRS-named entity
+      that has NO plausible counterpart in the bundle. Match on MEANING, not
+      string equality — a rename, an abbreviation or a differently-cased variant
+      is NOT a gap. Judge ONLY what ARTIFACT actually carries, and read its two
+      conventions before any absence claim: a key whose value is `null` means
+      that file was absent or unreadable, so say NOTHING about that category; a
+      key holding an array — EVEN AN EMPTY ONE — means the file WAS read, so
+      absence from it is a real gap you may report. Consult ARTIFACT.counts
+      first: when counts.forms.truncated or counts.concepts.truncated is true
+      that list is only a sample and a name missing from it proves nothing
+      (subjectTypes / programs / encounterTypes / formMappings are never
+      truncated). The SRS side is a SAMPLE and must be read the same way: the
+      digest's WORKBOOK INDEX names every sheet and is complete and reliable,
+      but each sheet shows only its first couple of rows before "… N more
+      row(s) of this sheet not shown". Ground each finding in a sheet name or a
+      row you can actually SEE; never infer a requested entity from rows you
+      were not shown. Scope: this rule owns the ENTITY ROSTER only. Missing user
+      roles, dashboards, report cards, visit schedules and decision rules belong
+      to srs-specified-behaviour-not-configured — do not report them here. Set
+      target.entityKind to the family (subjectType | program | encounterType |
+      form) and target.name to the SRS's own wording. Ignore shape/FK/duplicate
+      defects entirely; those are handled deterministically.
+    provenance: "design gap#4 (requested-but-absent): a bundle that passes every self-referential gate can still omit whole categories of configuration the scoping document asked for. Only a comparison of the SRS text against the bundle's own entity rosters can see this, so it cannot be made deterministic. flag-only and severity:warning — a prose-vs-config judgment is advisory, and no gate may be hardened on it. Inert when no scoping context was supplied."
+
+  - id: srs-requested-form-content-absent
+    tier: ai-judged
+    class: missing-requested-config
+    severity: warning
+    action: flag-only
+    inputs: [artifact.files, scopingCtx]
+    description: >-
+      REQUIRES the SCOPING_INTENT block. If this request has NO SCOPING_INTENT
+      section, this rule is INAPPLICABLE — emit zero findings for it. This is a
+      MAGNITUDE comparison, not a field-by-field one. You CANNOT see the SRS's
+      individual questions: the SCOPING_INTENT digest shows only the first
+      couple of rows of each sheet (usually the datatype banner and the column
+      headers) before "… N more row(s) of this sheet not shown". What you CAN
+      see reliably is each sheet's DECLARED ROW COUNT in its header line, e.g.
+      "### <book> > <sheet name> (19 row(s))". So: for a form sheet in the
+      workbook index that plainly corresponds to a form in ARTIFACT.forms,
+      compare that declared row count against the number of projected `elements`
+      on the matching form. Emit a finding ONLY on a GROSS shortfall — a sheet
+      declaring dozens of rows against a form carrying a couple of elements —
+      and quote both numbers in the rationale. Never report a small numeric
+      mismatch: a sheet's rows include the banner and header rows and not every
+      row is a field, so the count is an order-of-magnitude signal only. NEVER
+      name which questions are missing and never assert that a particular field
+      is absent — you have not been shown the rows; say that the sheet declares
+      N rows, the form carries M elements, and that a human or a review lens
+      (which can page the full sheet) should reconcile them. Do NOT emit for a
+      form the ARTIFACT does not include (check ARTIFACT.counts.forms.truncated
+      before drawing ANY conclusion from that list's membership), or for a
+      registration / enrolment / exit / cancellation shell — those are
+      legitimately field-less. A form with ZERO elements is already reported
+      deterministically by the completeness floor; do not repeat it here.
+      Missing AUTOMATION on an otherwise complete form (a visit schedule, an
+      "(auto)" computed value) is srs-specified-behaviour-not-configured, not
+      this rule. Set target.entityKind to "form" and target.name to the form's
+      name as it appears in ARTIFACT.
+    provenance: "design gap#4 (requested-but-half-built): the entity roster can be complete while the forms behind it are stubs, and the deterministic completeness floor catches only the zero-element case (FORM_NO_ELEMENTS) — a form carrying 2 elements against a sheet declaring 19 rows is invisible to it. Deliberately scoped to a MAGNITUDE comparison (declared sheet row count vs. projected element count): the scoping digest is char-capped and shows ~2 rows per sheet, so the judge can see THAT a sheet is substantial but not WHICH questions it holds. Enumeration is the review lenses' job — they hold unbounded paginated SRS access; this single-shot pass does not. flag-only, severity:warning — it raises a reconciliation task for a human, never a verdict."
+
+  - id: srs-specified-behaviour-not-configured
+    tier: ai-judged
+    class: missing-requested-config
+    severity: warning
+    action: flag-only
+    inputs: [artifact.files, scopingCtx]
+    description: >-
+      REQUIRES the SCOPING_INTENT block. If this request has NO SCOPING_INTENT
+      section, this rule is INAPPLICABLE — emit zero findings for it. Otherwise:
+      the entity roster can be complete and every form fully fielded while none
+      of the BEHAVIOUR the SRS asked for is configured. THE TWO SIDES OF THIS
+      COMPARISON ARE ASYMMETRIC AND YOU MUST TREAT THEM DIFFERENTLY. The BUNDLE
+      side is hard fact: `visitScheduleRule: null` on a form, an empty
+      `reportCards` array, a `reportDashboards` entry whose sections total one
+      card — each is a definite statement about the bundle, provided the key is
+      an ARRAY or an explicit per-form value; a key that is `null` means that
+      file was absent or unreadable, so stay silent about that whole category.
+      The SRS side is a SAMPLE: the digest names EVERY sheet of the workbook
+      (that index is complete and reliable) but shows only the first couple of
+      rows of each sheet before "… N more row(s) of this sheet not shown". So
+      key each finding on SHEET PRESENCE plus BUNDLE-SIDE ABSENCE, and NEVER on
+      enumeration. (1) VISIT SCHEDULES — if the workbook index carries a visit-
+      scheduling sheet and NO form in ARTIFACT.forms has a non-null
+      `visitScheduleRule`, report that: the SRS devotes a sheet to scheduling
+      and nothing in the bundle schedules anything. Do NOT claim how many
+      schedules were specified or which encounters they cover. (2) COMPUTED
+      FIELDS — if the SRS text you CAN see marks fields "(auto)", "system
+      generated", "calculated" or "derived", or a sheet is devoted to them, and
+      the relevant forms' `decisionRule` is null, report that no decision rule
+      exists to compute them. Quote only the markers actually visible to you;
+      never assert a specific field is uncomputed if you have not seen it named.
+      A `decisionRule` body may arrive clipped with a "[truncated, N chars
+      total]" marker — never claim a rule omits something you may simply not
+      have been shown. (3) ROLES — compare in BOTH directions against
+      ARTIFACT.groups: a role the visible SRS names with no matching group, and
+      a group name the SRS never mentions (typically a generator template
+      default) are each a finding. ARTIFACT.groupPrivileges is a SUMMARY
+      ({total, allowed, byGroupUUID}), never rows — you may note a group with no
+      privilege entries at all, but never judge WHICH privileges are missing.
+      ARTIFACT.groupDashboards shows which dashboard each group can see.
+      (4) DASHBOARDS AND REPORT CARDS — if the workbook index carries a
+      dashboard/report sheet and ARTIFACT.reportCards / ARTIFACT.reportDashboards
+      is empty or a single-card stub, report the mismatch quoting the bundle-side
+      number and the sheet's declared row count. Do NOT enumerate which cards
+      were specified. In every case, end the rationale by deferring enumeration
+      to a human or a review lens with full paginated SRS access — you are a
+      single-shot pass and cannot page the sheet. Emit at most one finding per
+      distinct gap; set target.entityKind to "form" | "group" | "dashboard" |
+      "reportCard" and target.name to the entity in ARTIFACT (or the sheet name
+      when nothing exists to name). Do not restate roster gaps
+      (srs-requested-entity-absent) or form-size gaps
+      (srs-requested-form-content-absent), and do not judge rule CORRECTNESS —
+      a rule that exists but does the wrong thing is rule-contradicts-intent.
+    provenance: "design gap#4 (requested-but-not-automated): the class of gap where every entity exists, every form is fielded, every deterministic gate is green — and none of the behaviour the scoping document specified was configured. Scheduled encounters with no visit-schedule rule, SRS-computed fields sitting as plain data-entry boxes with no decision rule, template-default user groups standing in for the named roles, a stub dashboard against a specified card set. Deterministically unanswerable: only the SRS says which encounters recur, which fields are derived and which roles exist. Judgeable only because the projection now carries groups / groupPrivileges / addressLevelTypes / reportCards / reportDashboards / groupDashboards plus the per-form visitScheduleRule / decisionRule / validationRule. Scoped to sheet-presence-vs-bundle-absence rather than enumeration, because the scoping digest is char-capped: the workbook INDEX is complete, the row sample is not. Enumerating which schedules or cards were asked for belongs to the review lenses, which can page any sheet in full. flag-only, severity:warning — advisory, never self-executing, never a ship gate."
+
+  - id: config-not-requested-by-srs
+    tier: ai-judged
+    class: unrequested-config
+    severity: warning
+    action: flag-only
+    inputs: [artifact.files, scopingCtx]
+    description: >-
+      REQUIRES the SCOPING_INTENT block. If this request has NO SCOPING_INTENT
+      section, this rule is INAPPLICABLE — emit zero findings for it. Otherwise:
+      scan ARTIFACT's subjectTypes, programs, encounterTypes and forms for
+      entries the SRS never asks for — typically generator template defaults, or
+      leftovers from an unrelated configuration that survived into this bundle.
+      Emit one finding per such entity, quoting target.name verbatim from
+      ARTIFACT and saying in the rationale which part of the SRS you checked. Be
+      CONSERVATIVE: an entity whose purpose is clearly implied by the SRS without
+      being named is NOT a violation, and a plausible rename of a requested
+      entity is NOT a violation — when unsure, stay silent. BE ESPECIALLY
+      CAREFUL HERE, because "the SRS never asks for it" is a claim about rows
+      you have NOT been shown: the digest's WORKBOOK INDEX is complete, but each
+      sheet renders only its first couple of rows before "… N more row(s) of
+      this sheet not shown", so an entity could well be named in a row you never
+      saw. Only report an entity that no sheet name and no VISIBLE row accounts
+      for, cap your confidence accordingly, and say in the rationale that the
+      SRS was seen only as a sample so a human or a review lens with full
+      paginated access must confirm before anything is removed. CONCEPTS ARE OUT OF
+      SCOPE for this rule: an SRS describes forms in prose and rarely names
+      concepts, so concept-level judgments belong to orphan-stray-concept.
+      Unrequested USER GROUPS, dashboards and report cards are also out of scope
+      here — srs-specified-behaviour-not-configured owns both directions for
+      those, so reporting them here would double-report. Apply the projection
+      conventions before any claim: a `null` key means the file was unreadable
+      (stay silent), an array means it was read, and a truncated `forms` list
+      (ARTIFACT.counts.forms.truncated) is not evidence about what the bundle
+      contains. This finding is ADVISORY — it never removes anything.
+    provenance: "design gap#4 (present-but-not-requested): the mirror of requested-but-absent — configuration the generator or a template supplied that the scoping document never asked for. DISTINCT from orphan-stray-concept (a concept nothing references) and prose-as-entity-name (a name that reads like a requirement line): the entities this rule flags are well-formed, referenced and internally coherent — their only defect is that nobody asked for them, which only the SRS can establish. flag-only by design and NOT prune-candidate: an entity can look unrequested purely because the SRS worded it differently, and an automated prune on that judgment would delete real configuration. Inert when no scoping context was supplied."

@@ -147,27 +147,65 @@ const measureCmd = (bDir) =>
   `node scripts/measure-bundle.mjs ${JSON.stringify(bDir)}` +
   (args.uatZip ? ` ${JSON.stringify(args.uatZip)}` : '');
 
+// AGENT mode, not baseline. Both modes produce the SAME deterministic bundle —
+// generateBaselineOnDir runs the real brain-generator whenever the session has
+// hasGeneratorInputs. The difference is what survives: baseline CONSUMES the
+// workbooks (bundle_read_srs hard-refuses, and buildCrlScopingCtx early-returns
+// {} on meta.mode !== "agent"), so every downstream reviewer is blind to the
+// org's ask. The "completeness" lens below is asked to find what the scoping
+// intent implies but the bundle omits — that question is unanswerable without
+// the workbooks, and the refuter's default-to-refuted then kills whatever the
+// lens guessed. Agent mode keeps input/ readable so both can actually ground.
 const generatePrompt = () => `You are a mechanical runner in the avni-skills-sdk repo (cwd = repo root).
-Create a fresh BASELINE bundle session from these two workbooks and report where it landed.
+Create a fresh bundle session from these two workbooks, run the deterministic generator into it,
+and report where it landed.
 
 Run exactly this (adapt only if it errors, by reading src/sessions.js):
 
   node --input-type=module -e '
   import fs from "node:fs";
-  import { createSession, bundleDir } from "./src/sessions.js";
+  import { createSession, bundleDir, commitTurn } from "./src/sessions.js";
+  import { generateBaselineOnDir } from "./src/agents/bundle-mcp-server.js";
   const [scoping, modelling, org] = process.argv.slice(1);
   const r = createSession({
     formsBuffer: fs.readFileSync(scoping),
-    formsFilename: "scoping.xlsx",
     modellingBuffer: modelling && modelling !== "-" ? fs.readFileSync(modelling) : undefined,
-    modellingFilename: modelling && modelling !== "-" ? "modelling.xlsx" : undefined,
     org,
-    mode: "baseline",
+    mode: "agent",
   });
-  console.log(JSON.stringify({ sessionId: r.sessionId, bundleDir: bundleDir(r.sessionId) }));
+  const bDir = bundleDir(r.sessionId);
+  generateBaselineOnDir(bDir);
+  commitTurn(r.sessionId, "turn 1: deterministic baseline", {});
+  console.log(JSON.stringify({ sessionId: r.sessionId, bundleDir: bDir }));
   ' ${JSON.stringify(args.scopingXlsx)} ${JSON.stringify(args.modellingXlsx || '-')} ${JSON.stringify(args.org)}
 
+generateBaselineOnDir runs the REAL SRS→bundle generator (not the minimal skeleton) because the
+session carries generator inputs. If its output says source is anything other than "brain-generator",
+stop and report that — a skeleton bundle would invalidate the whole run.
+
 The last stdout line is JSON { sessionId, bundleDir }. Return exactly that object.`;
+
+// Every reviewer gets this. The workbooks live in <session>/input/, a sibling of
+// the bundle dir; readSrsOnDir is a plain exported function over that layout, so
+// it works here without the MCP transport.
+const srsAccessBlock = (bDir) => `
+READING THE ORG'S ACTUAL ASK (the scoping + modelling workbooks):
+This session keeps its source workbooks on disk. Read them — do not guess at the requirements.
+
+  # list the sheets in a workbook ("forms" = the scoping doc, "modelling" = the modelling doc)
+  AVNI_SKILLS_PATH=\${AVNI_SKILLS_PATH:-/Users/himeshr/IdeaProjects/avni-skills} node --input-type=module -e '
+  import { readSrsOnDir } from "./src/agents/bundle-mcp-server.js";
+  console.log(readSrsOnDir(${JSON.stringify(bDir)}, { file: "forms" }).content[0].text);'
+
+  # read one sheet (add offset/limit to paginate; default limit is 200 rows)
+  AVNI_SKILLS_PATH=\${AVNI_SKILLS_PATH:-/Users/himeshr/IdeaProjects/avni-skills} node --input-type=module -e '
+  import { readSrsOnDir } from "./src/agents/bundle-mcp-server.js";
+  console.log(readSrsOnDir(${JSON.stringify(bDir)}, { file: "forms", sheet: "SHEET NAME", format: "csv" }).content[0].text);'
+
+The generator deliberately SKIPS several scoping tabs — dashboards, cancellation forms, visit
+scheduling, reports, permissions are common ones. Configuration those tabs ask for will be absent
+from the bundle by construction, and that absence is exactly what this panel exists to catch.
+`;
 
 const measurePrompt = (bDir) => `You are a mechanical runner in the avni-skills-sdk repo (cwd = repo root).
 Run the deterministic bundle scorecard and return its JSON verbatim:
@@ -186,6 +224,10 @@ Read the bundle files under that directory. Lens focus:
 - correctness: entities/observations/rules that are internally inconsistent, dangling references, mis-typed concepts, wrong form associations.
 - completeness: entities/rules/answers that the scoping+modelling intent implies but the bundle omits.
 - semantic-intent: entities present but whose naming/wording/structure drifts from the requirement's meaning.
+${srsAccessBlock(bDir)}
+Ground every finding in a CITATION: name the bundle file (and entity) and, where the claim is about
+what the org asked for, the workbook sheet + row that asks for it. A completeness or semantic-intent
+finding with no sheet citation will be refuted downstream, so do not raise one you have not read.
 
 Report ONLY defects that fall under YOUR lens and are NOT already on the scorecard. For each, give:
   entity (e.g. "form:Household Registration" or "subjectType:Member"),
@@ -200,7 +242,13 @@ Claimed finding: ${JSON.stringify(finding)}
 
 Read the relevant bundle files. If the finding is wrong, already satisfied, out of scope, or you cannot
 positively confirm it, it is REFUTED. Only when you can positively confirm the defect is real is it NOT refuted.
-Default to refuted when uncertain. Return { refuted: true|false, reason }.`;
+Default to refuted when uncertain. Return { refuted: true|false, reason }.
+${srsAccessBlock(bDir)}
+Refuting a "the bundle omits what the org asked for" claim requires you to CHECK THE WORKBOOK, not to
+note that you lack the requirement. "I cannot see the requirement" is not grounds for refutation when
+the workbooks are readable above — go read the sheet the finding cites. Refute it if the sheet does not
+ask for the thing, or if the bundle already has it under another name; confirm it if the sheet asks and
+the bundle lacks it.`;
 
 const consolidatePrompt = (scorecard, confirmed) => `You are a mechanical runner in the avni-skills-sdk repo (cwd = repo root).
 Merge the scorecard with the confirmed review findings via the deterministic consolidator.
