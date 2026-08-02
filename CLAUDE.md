@@ -257,7 +257,7 @@ Not relevant to the stdio path, but the trap next door: `npm run cli`'s REPL is 
 The `:state` / `:eval` commands have direct equivalents — run the functions:
 
 ```bash
-AVNI_SKILLS_PATH=~/code/avni-skills node -e '
+node -e '
 Promise.all([import("./src/bundle.js"), import("./src/agents/bundle-mcp-server.js")]).then(([b, m]) => {
   const d = process.env.HOME + "/.avni-skills-sdk/sessions/" + process.env.AVNI_SESSION_ID + "/bundle";
   const v = b.validateBundle(d);
@@ -272,7 +272,7 @@ Promise.all([import("./src/bundle.js"), import("./src/agents/bundle-mcp-server.j
 **Committing turns.** The stdio path edits files but does NOT commit — there is no server wrapping the turn. Snapshot deliberate units yourself so `:turns` / `:revert` still work later:
 
 ```bash
-AVNI_SKILLS_PATH=~/code/avni-skills node -e '
+node -e '
 import("./src/sessions.js").then(s =>
   console.log(s.commitTurn(process.env.AVNI_SESSION_ID, "what changed", {})));'
 ```
@@ -287,29 +287,43 @@ A session left with uncommitted files is not lost — `GET /v1/sessions/:id` rep
 
 ## Common tasks
 
+> **`AVNI_SKILLS_PATH` is usually unnecessary.** Every helper falls back to the
+> sibling clone at `../avni-skills`, so if the two repos are checked out next to
+> each other the commands below just work. Set the env var only when your brain
+> checkout lives somewhere else. (This file used to prefix every example with
+> `AVNI_SKILLS_PATH=~/code/avni-skills` — a path that does not exist on most
+> machines, which sent more than one agent chasing a phantom missing dependency.)
+
 ### Run all tests
 
 ```bash
-AVNI_SKILLS_PATH=~/code/avni-skills npm test
+npm test
 ```
+
+808 tests across `tests/entities/`, `tests/discovery/`, `tests/corpus/`,
+`tests/acceptance/`, `tests/spec-view/` and `scripts/recovery/`. Note the glob is
+explicit, not recursive: **a new test directory does not run until you add it to
+the `test` script in `package.json`.** `tests/corpus/lib/` and
+`tests/acceptance/` were missing from it until 2026-08-02, which hid 63 tests —
+including one that had been failing on `main`.
 
 ### Run the verify script (L1–L5)
 
 ```bash
-AVNI_SKILLS_PATH=~/code/avni-skills bash scripts/verify.sh
+bash scripts/verify.sh
 ```
 
 ### Run all six levels (needs API key)
 
 ```bash
 export ANTHROPIC_API_KEY='sk-ant-...'   # in your shell only — NEVER paste in conversations
-AVNI_SKILLS_PATH=~/code/avni-skills bash scripts/verify.sh
+bash scripts/verify.sh
 ```
 
 ### Start the dev server
 
 ```bash
-AVNI_SKILLS_PATH=~/code/avni-skills npm run dev
+npm run dev
 ```
 
 Listens on `:3030`. Endpoints documented in `README.md`.
@@ -351,7 +365,7 @@ npm run eval
 ```bash
 cp examples/manifest.example.json my-manifest.json
 # edit my-manifest.json with your orgs' Forms+Modelling paths
-AVNI_SKILLS_PATH=~/code/avni-skills node scripts/multi-org-run.js \
+node scripts/multi-org-run.js \
   --manifest=./my-manifest.json --out=./out
 ```
 
@@ -364,7 +378,7 @@ The manifest contains absolute paths to private SRS files. **Do not commit the m
 3. Add a `test("description (regression)", ...)` block with a synthetic SRS that triggers the bug.
 4. Run `npm test` — confirm it fails.
 5. Fix the generator in `avniproject/avni-skills`, PR it.
-6. Pull the fix into your local `~/code/avni-skills`, re-run `npm test` — confirm it now passes.
+6. Pull the fix into your local `avni-skills` checkout, re-run `npm test` — confirm it now passes.
 
 ---
 

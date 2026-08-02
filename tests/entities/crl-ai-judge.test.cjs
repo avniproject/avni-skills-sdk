@@ -88,6 +88,41 @@ test("buildBundleProjection: emits real concept + form content (names, uuids, da
   cleanup(dir);
 });
 
+// ─── no-key: attribution — a finding we cannot map to a rule must be DROPPED ───
+// stampFindings used to fall back to rules[0] whenever the set held exactly one
+// rule, silently re-labelling an absent/hallucinated ruleId as that rule — and
+// handing it that rule's authoritative class, severity and action. The
+// whole-artifact pass has many rules so it never saw this; the low-confidence
+// Sonnet re-judge filters down to just the escalated ids, which is exactly the
+// single-rule case.
+test("stampFindings: a finding with an UNKNOWN ruleId is dropped even when only one rule was judged — never re-labelled as that rule", async () => {
+  const { stampFindings } = await loadAij();
+  const rules = [orphanRule()];
+  const out = stampFindings(
+    [{ ruleId: "some-rule-that-does-not-exist", entity: "concept:X", confidence: 0.9 }],
+    rules,
+  );
+  assert.deepEqual(out, [], "unattributable finding must not inherit the lone rule's identity");
+});
+
+test("stampFindings: a finding with NO ruleId at all is dropped from a single-rule set", async () => {
+  const { stampFindings } = await loadAij();
+  const out = stampFindings([{ entity: "concept:X", confidence: 0.9 }], [orphanRule()]);
+  assert.deepEqual(out, []);
+});
+
+test("stampFindings: a correctly-attributed finding still stamps the rule's class/severity/action", async () => {
+  const { stampFindings } = await loadAij();
+  const out = stampFindings(
+    [{ ruleId: "orphan-stray-concept", entity: "concept:Junk", confidence: 0.9 }],
+    [orphanRule()],
+  );
+  assert.equal(out.length, 1);
+  assert.equal(out[0].ruleId, "orphan-stray-concept");
+  assert.equal(out[0].class, "stray");
+  assert.equal(out[0].action, "prune-candidate");
+});
+
 // ─── no-key: widened projection (design gap#4 — the SRS-conformance categories) ───
 // The projection used to stop at concepts/forms/subjectTypes/programs/
 // encounterTypes/formMappings, so user groups, privileges, dashboards, report

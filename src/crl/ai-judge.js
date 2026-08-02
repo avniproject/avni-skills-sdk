@@ -199,13 +199,22 @@ function ruleThreshold(rule, scopingCtx) {
 // Stamp each raw model finding with the rule's authoritative class/severity/
 // action (the model never invents an action) and drop anything that doesn't
 // map to one of the rules we asked about or that the model marked compliant.
-function stampFindings(raw, rules) {
+export function stampFindings(raw, rules) {
   const byId = new Map(rules.map((r) => [r.id, r]));
   const out = [];
   for (const f of raw || []) {
     if (!f || typeof f !== "object") continue;
-    let rule = f.ruleId ? byId.get(f.ruleId) : null;
-    if (!rule && rules.length === 1) rule = rules[0];
+    const rule = f.ruleId ? byId.get(f.ruleId) : null;
+    // No arity fallback. This used to read `if (!rule && rules.length === 1)
+    // rule = rules[0]`, which silently RE-LABELLED a finding whose ruleId was
+    // absent or hallucinated as belonging to the only rule in the set. The
+    // whole-artifact pass is unaffected (many rules), but the low-confidence
+    // Sonnet re-judge below filters aiRules down to just the escalated ids —
+    // frequently exactly one — so that is precisely where a mis-attributed
+    // finding lands, and it arrives wearing the authoritative class, severity
+    // and action of a rule the model never actually judged. Dropping unmatched
+    // findings loses nothing real: a finding we cannot attribute is a finding
+    // we cannot act on.
     if (!rule) continue;
     if (f.verdict === "compliant") continue;
     const action = rule.action ?? rule.judge?.action ?? "flag-only";
