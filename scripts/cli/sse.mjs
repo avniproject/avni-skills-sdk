@@ -113,7 +113,11 @@ export function makeSseSender({ BASE, state }) {
 
         const lines = [];
         if (data.noChanges) {
-          lines.push(yellow("turn") + " " + dim("(no changes · counter unchanged)"));
+          // A no-op turn is the single most common way a session silently stalls:
+          // the agent explains what it WOULD do, edits nothing, and the reply reads
+          // like success. The old one-line dim note was routinely missed — three
+          // consecutive no-op turns went unnoticed in a real session. Say it plainly.
+          lines.push(red("✗ NO FILES CHANGED") + dim("  · the agent edited nothing · turn counter still ") + bold(String(data.turn ?? "?")));
         } else {
           lines.push(bold("turn " + data.turn) + dim("  · " + data.sha));
           const cf = (data.changedFiles || []);
@@ -138,8 +142,12 @@ export function makeSseSender({ BASE, state }) {
           lines.push(dim("cost        $") + costUsd.toFixed(4) + dim("   tokens in/out  ") + inputTokens + "/" + outputTokens);
         }
 
-        box(lines, { style: isRegression ? "square" : "round", indent: 0 });
+        box(lines, { style: (isRegression || data.noChanges) ? "square" : "round", indent: 0 });
 
+        if (data.noChanges) {
+          console.log(dim("  ↪ Nothing was written. If you asked for an edit, the agent answered in prose instead —"));
+          console.log(dim("    re-send with an imperative opener: ") + cyan("\"Edit the files now — do not describe the changes, make them.\""));
+        }
         if (isRegression && !data.noChanges) {
           console.log(dim("  ↪ The agent may have claimed success. Consider ") + cyan(":diff " + data.turn) + dim(" then ") + cyan(":revert " + (data.turn - 1)) + dim(" — or ") + cyan(":model opus") + dim(" (deeper reasoning) before re-attempting."));
         }

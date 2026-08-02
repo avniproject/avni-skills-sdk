@@ -690,6 +690,44 @@ export function runBundleIntegrityCheck(bundleCwd) {
     });
   }
 
+  // (d) AUTOCREATED_ENTITY — an entity the generator INFERRED rather than read
+  // from a declaration. `ensureSubjectTypeExists` stamps `_autoCreated: true`
+  // when a name it encountered (a program's "Target Subject Type", an encounter
+  // row's subject reference) matched nothing declared in the modelling workbook.
+  //
+  // Every other check here asks "does this UUID resolve?". A phantom entity
+  // answers yes — the formMappings pointing at it are perfectly well-formed. The
+  // question nobody was asking is "should this entity exist?", and the answer is
+  // only in the SRS. Seen twice on real SRSes: a qualified target subject
+  // ("<Subject> (female)") and program names leaking into a subject column, each
+  // minting a phantom that owned an entire program's mappings while the validator
+  // and FK checks reported zero errors.
+  //
+  // WARNING, not error, and deliberately so: auto-creation is sometimes correct,
+  // so this is a prompt to go verify against the SRS — never a ship gate. Making
+  // it an error would wedge bundles that are genuinely fine.
+  for (const [rel, val] of Object.entries(files)) {
+    if (!Array.isArray(val)) continue;
+    val.forEach((entity, i) => {
+      if (!entity || typeof entity !== "object" || !entity._autoCreated) return;
+      const name = typeof entity.name === "string" && entity.name ? entity.name : `[${i}]`;
+      findings.push({
+        code: "AUTOCREATED_ENTITY",
+        severity: "warning",
+        file: rel,
+        locator: `${rel} "${name}" (_autoCreated)`,
+        message:
+          `"${name}" was INFERRED by the generator, not declared in the SRS — it appears ` +
+          `nowhere in the modelling workbook's declarations, so the generator minted it to ` +
+          `resolve a reference. Verify against the SRS with bundle_read_srs: if the name is a ` +
+          `variant of a declared entity (a qualifier like "(female)", a plural, a program name ` +
+          `in a subject column), repoint every reference at the declared entity and DELETE this ` +
+          `one. Referential-integrity checks cannot see this — they only confirm the UUID ` +
+          `resolves, and it does.`,
+      });
+    });
+  }
+
   const ok = !findings.some((f) => f.severity === "error");
   return { ok, findings };
 }
@@ -697,7 +735,7 @@ export function runBundleIntegrityCheck(bundleCwd) {
 function buildIntegrityCheckTool(bundleCwd) {
   return tool(
     "bundle_integrity_check",
-    "Run deterministic DATA-INTEGRITY checks on the current bundle that the validator and the model both miss. Covers: (1) FK / dangling references (formMappings, operational entities, form-element concepts, coded answers) pointing at UUIDs not present in the bundle; (2) FE_CONCEPT_NOT_OBJECT — a formElement whose `concept` is a bare UUID string instead of a nested object (AVNI server crashes on deserialize); (3) ALT_INVALID_NAME — an addressLevelType name that is empty or contains < > = \" ' (AVNI LocationService rejects it). Returns { ok, findings:[{code,severity,file,locator,message}], counts }. Run this BEFORE export — a clean validator does NOT guarantee a clean upload.",
+    "Run deterministic DATA-INTEGRITY checks on the current bundle that the validator and the model both miss. Covers: (1) FK / dangling references (formMappings, operational entities, form-element concepts, coded answers) pointing at UUIDs not present in the bundle; (2) FE_CONCEPT_NOT_OBJECT — a formElement whose `concept` is a bare UUID string instead of a nested object (AVNI server crashes on deserialize); (3) ALT_INVALID_NAME — an addressLevelType name that is empty or contains < > = \" ' (AVNI LocationService rejects it); (4) AUTOCREATED_ENTITY (warning) — an entity the generator INFERRED because a name matched nothing declared in the SRS. Checks 1-3 ask whether a UUID resolves; check 4 asks whether the entity should exist at all, which no reference check can tell you. Returns { ok, findings:[{code,severity,file,locator,message}], counts }. Run this BEFORE export — a clean validator does NOT guarantee a clean upload, and zero dangling references does NOT mean zero phantom entities.",
     {},
     async () => {
       try {
