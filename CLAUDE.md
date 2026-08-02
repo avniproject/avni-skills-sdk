@@ -193,14 +193,49 @@ Session mode (`npm run cli`) is the supported product path and is **not** going 
 **Setup — once per bundle you want to work on:**
 
 ```bash
-export AVNI_SKILLS_PATH=~/code/avni-skills
-export AVNI_SESSION_ID=sess_xxxxxxxxxxxxxxxx   # or AVNI_BUNDLE_CWD=/abs/path/to/bundle
-node scripts/stage-skills.mjs                  # skills → .claude/skills/ (gitignored)
+export AVNI_SKILLS_PATH=/abs/path/to/avni-skills  # optional — falls back to the ../avni-skills sibling clone
+export AVNI_SESSION_ID=sess_xxxxxxxxxxxxxxxx      # or AVNI_BUNDLE_CWD=/abs/path/to/bundle
+node scripts/stage-skills.mjs                     # skills → .claude/skills/ (gitignored; idempotent, usually already done)
 ```
 
 Then start Claude Code in this repo. `.mcp.json` registers the server; the tools appear as `mcp__avni-bundle__*`. **The bundle is bound at spawn**, so switching sessions means changing `AVNI_SESSION_ID` and restarting Claude Code.
 
-Prefer `AVNI_SESSION_ID` over `AVNI_BUNDLE_CWD` where you have one: `bundle_read_srs`, `bundle_generate_baseline`, and `bundle_export_to_path` read `../meta.json` and will return an actionable error against a bare directory.
+### Don't have a session id yet?
+
+Create one **without the server, the REPL, or an API key** — `createSession` is a plain function. This is the step that makes the stdio path self-sufficient:
+
+```bash
+AVNI_SKILLS_PATH=/abs/path/to/avni-skills node -e '
+import("./src/sessions.js").then(s => {
+  const fs = require("node:fs");
+  const r = s.createSession({
+    formsBuffer:     fs.readFileSync("/abs/path/to/Forms.xlsx"),
+    modellingBuffer: fs.readFileSync("/abs/path/to/Modelling.xlsx"),
+    org: "MyOrg",
+    mode: "agent",          // see below — "agent" is what you want here
+  });
+  console.log("export AVNI_SESSION_ID=" + r.sessionId);
+});'
+```
+
+Then export the printed id and (re)start Claude Code.
+
+**Create it in `mode: "agent"`, not the default `"baseline"`.** This is a *session layout* flag, not "let the SDK agent drive it" — Claude Code is the driver either way:
+
+| | `baseline` (default) | `agent` |
+|---|---|---|
+| turn 0 | generator runs, full bundle committed | empty bundle (`.gitignore` only) |
+| SRS afterwards | consumed; **not readable** | kept in `<session>/input/`, readable |
+| `bundle_read_srs` | **hard-refuses** (`bundle-mcp-server.js:1024`) | works |
+| `bundle_generate_baseline` | **hard-refuses** (`:1275`) | works |
+
+So a baseline session cannot show you the tabs the generator skips (App Dashboard, Cancellation Forms, Visit Scheduling, Reports, Permissions …) — which is usually the whole reason for working it by hand. In agent mode you get the same deterministic output by calling `bundle_generate_baseline` yourself: when the session meta says `hasGeneratorInputs: true`, that runs the **real** SRS→bundle generator, not the minimal skeleton fallback.
+
+`bundle_export_to_path` also reads `../meta.json`, but has no mode constraint — it only needs a session-backed layout, and returns an actionable error against a bare `AVNI_BUNDLE_CWD` directory.
+
+### Prompting the REPL vs prompting here
+
+Not relevant to the stdio path, but the trap next door: `npm run cli`'s REPL is **line-oriented readline**. Every `\n` in a pasted prompt is an Enter, so a multi-paragraph paste dispatches as *one agent turn per line* — each fragment a meaningless half-sentence. Keep REPL prompts to a single line. (`:quit` exits; `/exit` is Claude Code syntax and gets sent to the agent as a prompt.)
 
 ### Tool index
 
