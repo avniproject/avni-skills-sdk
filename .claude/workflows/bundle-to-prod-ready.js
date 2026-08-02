@@ -18,6 +18,18 @@ export const meta = {
 // Only pure orchestration + pure predicates live here. Working directory for
 // every runner is the avni-skills-sdk repo root.
 
+// ── Args, normalised ──────────────────────────────────────────────────────
+// `args` does NOT always arrive as an object. Measured on 2026-08-02 with a
+// zero-agent probe: passing {org, uatZip, ...} on the Workflow call delivered
+// typeof args === "string" holding the JSON. Every property access then yields
+// undefined, and this script's failure modes for that are all SILENT — measure
+// drops parity to null, the org assertion self-disables, and the generate
+// runner improvises inputs. Parse defensively and read A, never args.
+const A = (() => {
+  if (typeof args === 'string') { try { return JSON.parse(args); } catch { return {}; } }
+  return args && typeof args === 'object' ? args : {};
+})();
+
 // ── Constants ─────────────────────────────────────────────────────────────
 const RESERVE = 40000; // stop looping if fewer output tokens than this remain
 const OPUS_FIX_KINDS = new Set([
@@ -148,7 +160,7 @@ function regressed(before, after) {
 // ── Prompt builders ───────────────────────────────────────────────────────
 const measureCmd = (bDir) =>
   `node scripts/measure-bundle.mjs ${JSON.stringify(bDir)}` +
-  (args.uatZip ? ` ${JSON.stringify(args.uatZip)}` : '');
+  (A.uatZip ? ` ${JSON.stringify(A.uatZip)}` : '');
 
 // AGENT mode, not baseline. Both modes produce the SAME deterministic bundle —
 // generateBaselineOnDir runs the real brain-generator whenever the session has
@@ -163,7 +175,10 @@ const generatePrompt = () => `You are a mechanical runner in the avni-skills-sdk
 Create a fresh bundle session from these two workbooks, run the deterministic generator into it,
 and report where it landed.
 
-Run exactly this (adapt only if it errors, by reading src/sessions.js):
+Run EXACTLY this. If it fails, return the error text — do NOT repair it by choosing different
+inputs. Specifically: never go looking through tests/resources/ or anywhere else for workbooks,
+and never substitute another organisation's files. A run on 2026-08-02 did exactly that when
+handed undefined paths, and spent an afternoon reviewing an unrelated org's bundle.
 
   node --input-type=module -e '
   import fs from "node:fs";
@@ -180,7 +195,7 @@ Run exactly this (adapt only if it errors, by reading src/sessions.js):
   const out = JSON.parse(generateBaselineOnDir(bDir).content[0].text);
   commitTurn(r.sessionId, "turn 1: deterministic baseline", {});
   console.log(JSON.stringify({ sessionId: r.sessionId, bundleDir: bDir, mode: r.meta.mode, org: r.meta.org, source: out.source }));
-  ' ${JSON.stringify(args.scopingXlsx)} ${JSON.stringify(args.modellingXlsx || '-')} ${JSON.stringify(args.org)}
+  ' ${JSON.stringify(A.scopingXlsx)} ${JSON.stringify(A.modellingXlsx || '-')} ${JSON.stringify(A.org)}
 
 generateBaselineOnDir runs the REAL SRS→bundle generator (not the minimal skeleton) because the
 session carries generator inputs. If its output says source is anything other than "brain-generator",
@@ -294,15 +309,34 @@ Emit the canonical spec for BOTH the candidate bundle and the UAT reference, the
 Run a node --input-type=module script that:
   - imports { emitSpec } from "./src/pipeline.js";
   - builds candidate spec: read every JSON file under ${JSON.stringify(bDir)} into an object keyed by filename
-    and call emitSpec({ existingBundleFiles, org: ${JSON.stringify(args.org)} });
-  - builds uat spec: read the zip buffer ${JSON.stringify(args.uatZip)} and call
-    emitSpec({ existingBundleZip: fs.readFileSync(uatZip), org: ${JSON.stringify(args.org)} });
+    and call emitSpec({ existingBundleFiles, org: ${JSON.stringify(A.org)} });
+  - builds uat spec: read the zip buffer ${JSON.stringify(A.uatZip)} and call
+    emitSpec({ existingBundleZip: fs.readFileSync(uatZip), org: ${JSON.stringify(A.org)} });
   - prints a structured diff (entities/fields only in candidate vs only in uat vs differing).
 Return { diff: <the structured diff>, summary: "<one line>" }.`;
 
+// ── Precondition: args must actually be here ──────────────────────────────
+// A run on 2026-08-02 spent an afternoon producing nothing because `args` never
+// reached the script. Every downstream symptom was silent: A.uatZip was
+// undefined so measure skipped parity and reported `parity: null` instead of
+// failing; A.org was undefined so the org assertion below — written as
+// `args.org && ...` — disabled itself precisely when it was needed; and the
+// generate runner, handed undefined paths, went looking through
+// tests/resources/ and substituted an unrelated org's workbooks. Nothing
+// crashed. Check the inputs exist before spending anything.
+const MISSING = ['scopingXlsx', 'org'].filter((k) => !A[k]);
+if (MISSING.length) {
+  throw new Error(
+    `workflow args missing: [${MISSING.join(', ')}] (typeof args = ${typeof args}, parsed keys = ` +
+    `${Object.keys(A).join(',') || 'none'}). Refusing to run: with absent inputs this workflow ` +
+    `silently generates SOME bundle and reviews it against nothing.`
+  );
+}
+log(`Args OK — org=${A.org} uatZip=${A.uatZip ? 'yes' : 'NONE (parity will not run)'} maxIterations=${A.maxIterations || 6}`);
+
 // ── Phase 1: Generate baseline session ────────────────────────────────────
 phase('Generate');
-log(`Generating baseline bundle for org ${args.org}`);
+log(`Generating baseline bundle for org ${A.org}`);
 const gen = await agent(generatePrompt(), {
   model: 'haiku',
   schema: generateSchema,
@@ -325,8 +359,10 @@ if (gen.mode !== 'agent') {
     `relaunch with {scriptPath: "<repo>/.claude/workflows/bundle-to-prod-ready.js"} rather than {name}.`
   );
 }
-if (args.org && gen.org !== args.org) {
-  throw new Error(`generate used org ${JSON.stringify(gen.org)}, expected ${JSON.stringify(args.org)} — args did not reach the runner.`);
+// Unconditional. The previous version read `A.org && gen.org !== A.org`, which
+// switched itself off in exactly the case it existed to catch — absent args.
+if (gen.org !== A.org) {
+  throw new Error(`generate used org ${JSON.stringify(gen.org)}, expected ${JSON.stringify(A.org)} — the runner did not use the inputs it was given.`);
 }
 if (gen.source !== 'brain-generator') {
   throw new Error(`generate fell back to ${JSON.stringify(gen.source)} instead of the real SRS→bundle generator; a skeleton bundle would invalidate the run.`);
@@ -340,7 +376,7 @@ let dry = 0;
 let reason = 'budget';
 let lastScorecard = null;
 
-while (iter < (args.maxIterations || 6) && budget.remaining() > RESERVE) {
+while (iter < (A.maxIterations || 6) && budget.remaining() > RESERVE) {
   iter++;
   log(`── Iteration ${iter} (budget remaining ${budget.remaining()}) ──`);
 
@@ -352,6 +388,16 @@ while (iter < (args.maxIterations || 6) && budget.remaining() > RESERVE) {
     phase: 'Measure',
     label: `measure:iter${iter}`,
   });
+  // measure-bundle returns parity:null when it was given no UAT zip, or one it
+  // could not read. If a reference WAS supplied, a null here means the whole
+  // point of the run — comparing against it — is silently not happening.
+  if (A.uatZip && (scorecard.parity === null || scorecard.parity === undefined)) {
+    throw new Error(
+      `measure returned parity:null although uatZip was supplied (${A.uatZip}). ` +
+      `The reference comparison is not running, so a green floor would be meaningless. ` +
+      `Check the path exists and that measure-bundle received it as its 2nd argument.`
+    );
+  }
   lastScorecard = scorecard;
   log(`Scorecard floorGreen=${scorecard.floorGreen}`);
 
@@ -461,8 +507,8 @@ while (iter < (args.maxIterations || 6) && budget.remaining() > RESERVE) {
   }
 }
 
-if (iter >= (args.maxIterations || 6) && reason === 'budget') {
-  log(`Reached maxIterations (${args.maxIterations || 6}).`);
+if (iter >= (A.maxIterations || 6) && reason === 'budget') {
+  log(`Reached maxIterations (${A.maxIterations || 6}).`);
 }
 
 // ── Final: UAT-vs-candidate gap report, straight off the bundle config files ──
