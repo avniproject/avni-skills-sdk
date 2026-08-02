@@ -206,6 +206,27 @@ session: if the command fails, return the error rather than a plausible-looking 
 
 The last stdout line is JSON { sessionId, bundleDir, mode, org, source }. Return exactly that object.`;
 
+// Resume path: report an EXISTING session's identity without touching it. Same
+// schema as generate so the same three assertions apply — a resumed session that
+// turns out to be baseline-mode, or a different org, must fail exactly as loudly
+// as a freshly generated one would.
+const continuePrompt = () => `You are a mechanical runner in the avni-skills-sdk repo (cwd = repo root).
+Report the identity of an EXISTING bundle session. Do NOT create one, do NOT regenerate,
+and do NOT modify any file — the bundle already carries work from earlier runs.
+
+Run EXACTLY this. If it fails, return the error text; never substitute a different session.
+
+  node --input-type=module -e '
+  import fs from "node:fs";
+  import { bundleDir } from "./src/sessions.js";
+  const id = process.argv[1];
+  const bDir = bundleDir(id);
+  const meta = JSON.parse(fs.readFileSync(bDir + "/../meta.json", "utf8"));
+  console.log(JSON.stringify({ sessionId: id, bundleDir: bDir, mode: meta.mode, org: meta.org, source: "brain-generator" }));
+  ' ${JSON.stringify(A.sessionId || '')}
+
+The last stdout line is JSON { sessionId, bundleDir, mode, org, source }. Return exactly that object.`;
+
 // Every reviewer gets this. The workbooks live in <session>/input/, a sibling of
 // the bundle dir; readSrsOnDir is a plain exported function over that layout, so
 // it works here without the MCP transport.
@@ -334,15 +355,36 @@ if (MISSING.length) {
 }
 log(`Args OK — org=${A.org} uatZip=${A.uatZip ? 'yes' : 'NONE (parity will not run)'} maxIterations=${A.maxIterations || 6}`);
 
-// ── Phase 1: Generate baseline session ────────────────────────────────────
+// ── Phase 1: Generate, or CONTINUE an existing session ────────────────────
+// Reaching the gate on a real org is not one bounded run's work — 37 report
+// cards and 9 visit schedules do not get authored in two iterations. Without
+// this branch every relaunch generated a FRESH baseline and discarded the
+// previous run's committed fixes, so progress could never accumulate and
+// "iterate until green" was structurally impossible. Pass args.sessionId to
+// resume: the loop then measures the bundle as it stands, including everything
+// earlier runs already fixed, and keeps going from there.
 phase('Generate');
-log(`Generating baseline bundle for org ${A.org}`);
-const gen = await agent(generatePrompt(), {
-  model: 'haiku',
-  schema: generateSchema,
-  phase: 'Generate',
-  label: 'generate:baseline',
-});
+let gen;
+if (A.sessionId) {
+  log(`Continuing existing session ${A.sessionId} (no fresh baseline)`);
+  gen = await agent(continuePrompt(), {
+    model: 'haiku',
+    schema: generateSchema,
+    phase: 'Generate',
+    label: 'continue:session',
+  });
+  if (gen.sessionId !== A.sessionId) {
+    throw new Error(`continue resolved ${JSON.stringify(gen.sessionId)}, expected ${JSON.stringify(A.sessionId)}.`);
+  }
+} else {
+  log(`Generating baseline bundle for org ${A.org}`);
+  gen = await agent(generatePrompt(), {
+    model: 'haiku',
+    schema: generateSchema,
+    phase: 'Generate',
+    label: 'generate:baseline',
+  });
+}
 const bundleDir = gen.bundleDir;
 
 // FAIL FAST. A five-hour run on 2026-08-02 completed 62 agents and changed
