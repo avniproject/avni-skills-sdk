@@ -18,6 +18,18 @@ export const meta = {
 // Only pure orchestration + pure predicates live here. Working directory for
 // every runner is the avni-skills-sdk repo root.
 
+// ── Args, normalised ──────────────────────────────────────────────────────
+// `args` does NOT always arrive as an object. Measured on 2026-08-02 with a
+// zero-agent probe: passing {org, uatZip, ...} on the Workflow call delivered
+// typeof args === "string" holding the JSON. Every property access then yields
+// undefined, and this script's failure modes for that are all SILENT — measure
+// drops parity to null, the org assertion self-disables, and the generate
+// runner improvises inputs. Parse defensively and read A, never args.
+const A = (() => {
+  if (typeof args === 'string') { try { return JSON.parse(args); } catch { return {}; } }
+  return args && typeof args === 'object' ? args : {};
+})();
+
 // ── Constants ─────────────────────────────────────────────────────────────
 const RESERVE = 40000; // stop looping if fewer output tokens than this remain
 const OPUS_FIX_KINDS = new Set([
@@ -31,10 +43,13 @@ const OPUS_FIX_KINDS = new Set([
 const generateSchema = {
   type: 'object',
   additionalProperties: true,
-  required: ['sessionId', 'bundleDir'],
+  required: ['sessionId', 'bundleDir', 'mode', 'org', 'source'],
   properties: {
     sessionId: { type: 'string' },
     bundleDir: { type: 'string' },
+    mode: { type: 'string' },
+    org: { type: 'string' },
+    source: { type: 'string' },
   },
 };
 
@@ -143,31 +158,103 @@ function regressed(before, after) {
 }
 
 // ── Prompt builders ───────────────────────────────────────────────────────
+// The workbooks are passed so measure can split the parity diff into gaps the
+// SRS asks for and gaps only the (older) reference export has. Without them
+// every missing name counts, and the loop burns its budget authoring config the
+// current scope dropped — on Door Step School that was 38 of 70 gated items,
+// all of which would have moved the bundle AWAY from the requirement.
 const measureCmd = (bDir) =>
   `node scripts/measure-bundle.mjs ${JSON.stringify(bDir)}` +
-  (args.uatZip ? ` ${JSON.stringify(args.uatZip)}` : '');
+  (A.uatZip ? ` ${JSON.stringify(A.uatZip)}` : '') +
+  (A.uatZip && A.scopingXlsx ? ` ${JSON.stringify(A.scopingXlsx)}` : '') +
+  (A.uatZip && A.scopingXlsx && A.modellingXlsx ? ` ${JSON.stringify(A.modellingXlsx)}` : '');
 
+// AGENT mode, not baseline. Both modes produce the SAME deterministic bundle —
+// generateBaselineOnDir runs the real brain-generator whenever the session has
+// hasGeneratorInputs. The difference is what survives: baseline CONSUMES the
+// workbooks (bundle_read_srs hard-refuses, and buildCrlScopingCtx early-returns
+// {} on meta.mode !== "agent"), so every downstream reviewer is blind to the
+// org's ask. The "completeness" lens below is asked to find what the scoping
+// intent implies but the bundle omits — that question is unanswerable without
+// the workbooks, and the refuter's default-to-refuted then kills whatever the
+// lens guessed. Agent mode keeps input/ readable so both can actually ground.
 const generatePrompt = () => `You are a mechanical runner in the avni-skills-sdk repo (cwd = repo root).
-Create a fresh BASELINE bundle session from these two workbooks and report where it landed.
+Create a fresh bundle session from these two workbooks, run the deterministic generator into it,
+and report where it landed.
 
-Run exactly this (adapt only if it errors, by reading src/sessions.js):
+Run EXACTLY this. If it fails, return the error text — do NOT repair it by choosing different
+inputs. Specifically: never go looking through tests/resources/ or anywhere else for workbooks,
+and never substitute another organisation's files. A run on 2026-08-02 did exactly that when
+handed undefined paths, and spent an afternoon reviewing an unrelated org's bundle.
 
   node --input-type=module -e '
   import fs from "node:fs";
-  import { createSession, bundleDir } from "./src/sessions.js";
+  import { createSession, bundleDir, commitTurn } from "./src/sessions.js";
+  import { generateBaselineOnDir } from "./src/agents/bundle-mcp-server.js";
   const [scoping, modelling, org] = process.argv.slice(1);
   const r = createSession({
     formsBuffer: fs.readFileSync(scoping),
-    formsFilename: "scoping.xlsx",
     modellingBuffer: modelling && modelling !== "-" ? fs.readFileSync(modelling) : undefined,
-    modellingFilename: modelling && modelling !== "-" ? "modelling.xlsx" : undefined,
     org,
-    mode: "baseline",
+    mode: "agent",
   });
-  console.log(JSON.stringify({ sessionId: r.sessionId, bundleDir: bundleDir(r.sessionId) }));
-  ' ${JSON.stringify(args.scopingXlsx)} ${JSON.stringify(args.modellingXlsx || '-')} ${JSON.stringify(args.org)}
+  const bDir = bundleDir(r.sessionId);
+  const out = JSON.parse(generateBaselineOnDir(bDir).content[0].text);
+  commitTurn(r.sessionId, "turn 1: deterministic baseline", {});
+  console.log(JSON.stringify({ sessionId: r.sessionId, bundleDir: bDir, mode: r.meta.mode, org: r.meta.org, source: out.source }));
+  ' ${JSON.stringify(A.scopingXlsx)} ${JSON.stringify(A.modellingXlsx || '-')} ${JSON.stringify(A.org)}
 
-The last stdout line is JSON { sessionId, bundleDir }. Return exactly that object.`;
+generateBaselineOnDir runs the REAL SRS→bundle generator (not the minimal skeleton) because the
+session carries generator inputs. If its output says source is anything other than "brain-generator",
+stop and report that — a skeleton bundle would invalidate the whole run.
+
+Report the values you actually observed. Do NOT substitute the expected ones, and do NOT invent a
+session: if the command fails, return the error rather than a plausible-looking object.
+
+The last stdout line is JSON { sessionId, bundleDir, mode, org, source }. Return exactly that object.`;
+
+// Resume path: report an EXISTING session's identity without touching it. Same
+// schema as generate so the same three assertions apply — a resumed session that
+// turns out to be baseline-mode, or a different org, must fail exactly as loudly
+// as a freshly generated one would.
+const continuePrompt = () => `You are a mechanical runner in the avni-skills-sdk repo (cwd = repo root).
+Report the identity of an EXISTING bundle session. Do NOT create one, do NOT regenerate,
+and do NOT modify any file — the bundle already carries work from earlier runs.
+
+Run EXACTLY this. If it fails, return the error text; never substitute a different session.
+
+  node --input-type=module -e '
+  import fs from "node:fs";
+  import { bundleDir } from "./src/sessions.js";
+  const id = process.argv[1];
+  const bDir = bundleDir(id);
+  const meta = JSON.parse(fs.readFileSync(bDir + "/../meta.json", "utf8"));
+  console.log(JSON.stringify({ sessionId: id, bundleDir: bDir, mode: meta.mode, org: meta.org, source: "brain-generator" }));
+  ' ${JSON.stringify(A.sessionId || '')}
+
+The last stdout line is JSON { sessionId, bundleDir, mode, org, source }. Return exactly that object.`;
+
+// Every reviewer gets this. The workbooks live in <session>/input/, a sibling of
+// the bundle dir; readSrsOnDir is a plain exported function over that layout, so
+// it works here without the MCP transport.
+const srsAccessBlock = (bDir) => `
+READING THE ORG'S ACTUAL ASK (the scoping + modelling workbooks):
+This session keeps its source workbooks on disk. Read them — do not guess at the requirements.
+
+  # list the sheets in a workbook ("forms" = the scoping doc, "modelling" = the modelling doc)
+  AVNI_SKILLS_PATH=\${AVNI_SKILLS_PATH:-/Users/himeshr/IdeaProjects/avni-skills} node --input-type=module -e '
+  import { readSrsOnDir } from "./src/agents/bundle-mcp-server.js";
+  console.log(readSrsOnDir(${JSON.stringify(bDir)}, { file: "forms" }).content[0].text);'
+
+  # read one sheet (add offset/limit to paginate; default limit is 200 rows)
+  AVNI_SKILLS_PATH=\${AVNI_SKILLS_PATH:-/Users/himeshr/IdeaProjects/avni-skills} node --input-type=module -e '
+  import { readSrsOnDir } from "./src/agents/bundle-mcp-server.js";
+  console.log(readSrsOnDir(${JSON.stringify(bDir)}, { file: "forms", sheet: "SHEET NAME", format: "csv" }).content[0].text);'
+
+The generator deliberately SKIPS several scoping tabs — dashboards, cancellation forms, visit
+scheduling, reports, permissions are common ones. Configuration those tabs ask for will be absent
+from the bundle by construction, and that absence is exactly what this panel exists to catch.
+`;
 
 const measurePrompt = (bDir) => `You are a mechanical runner in the avni-skills-sdk repo (cwd = repo root).
 Run the deterministic bundle scorecard and return its JSON verbatim:
@@ -186,6 +273,10 @@ Read the bundle files under that directory. Lens focus:
 - correctness: entities/observations/rules that are internally inconsistent, dangling references, mis-typed concepts, wrong form associations.
 - completeness: entities/rules/answers that the scoping+modelling intent implies but the bundle omits.
 - semantic-intent: entities present but whose naming/wording/structure drifts from the requirement's meaning.
+${srsAccessBlock(bDir)}
+Ground every finding in a CITATION: name the bundle file (and entity) and, where the claim is about
+what the org asked for, the workbook sheet + row that asks for it. A completeness or semantic-intent
+finding with no sheet citation will be refuted downstream, so do not raise one you have not read.
 
 Report ONLY defects that fall under YOUR lens and are NOT already on the scorecard. For each, give:
   entity (e.g. "form:Household Registration" or "subjectType:Member"),
@@ -200,7 +291,13 @@ Claimed finding: ${JSON.stringify(finding)}
 
 Read the relevant bundle files. If the finding is wrong, already satisfied, out of scope, or you cannot
 positively confirm it, it is REFUTED. Only when you can positively confirm the defect is real is it NOT refuted.
-Default to refuted when uncertain. Return { refuted: true|false, reason }.`;
+Default to refuted when uncertain. Return { refuted: true|false, reason }.
+${srsAccessBlock(bDir)}
+Refuting a "the bundle omits what the org asked for" claim requires you to CHECK THE WORKBOOK, not to
+note that you lack the requirement. "I cannot see the requirement" is not grounds for refutation when
+the workbooks are readable above — go read the sheet the finding cites. Refute it if the sheet does not
+ask for the thing, or if the bundle already has it under another name; confirm it if the sheet asks and
+the bundle lacks it.`;
 
 const consolidatePrompt = (scorecard, confirmed) => `You are a mechanical runner in the avni-skills-sdk repo (cwd = repo root).
 Merge the scorecard with the confirmed review findings via the deterministic consolidator.
@@ -216,17 +313,33 @@ ${JSON.stringify(confirmed)}
 It prints { findings, generatorDefects, counts } to stdout (bundle-fixable findings + logged generator defects).
 Return exactly that parsed object.`;
 
-const fixPrompt = (finding, bDir) => `You are a fix agent working ONLY inside the session bundle (never the generator).
+// BATCHED. The fix stage is necessarily sequential — every fix commits to the
+// same bundle git, so concurrent fix agents would race on the index — which made
+// one-agent-per-finding the dominant cost of the whole loop: ~30 findings x one
+// Opus spin-up each ran 1.5-4 HOURS per iteration. Most of that was structural,
+// not work: 16 of the 32 gated Door Step School items are report cards, and all
+// 16 live in the SAME file. Findings are therefore grouped by the file they
+// touch and handed to one agent per group, which reads that file once and makes
+// every edit in a single turn. Same edits, same commit granularity per group,
+// roughly an order of magnitude less wall clock.
+const fixPrompt = (findings, bDir, groupLabel) => `You are a fix agent working ONLY inside the session bundle (never the generator).
 Bundle directory (cwd for git): ${bDir}
-Finding to fix: ${JSON.stringify(finding)}
+You have ${findings.length} finding(s) to resolve, all in the same area (${groupLabel}):
+${JSON.stringify(findings, null, 2)}
 
-Edit the bundle files under that directory to resolve THIS finding only (case-insensitive upsert: update in
-place if the entity exists, else append copying field shapes from existing neighbours verbatim). Do not touch
-unrelated entities. Then commit the change as one turn:
+Resolve EVERY finding listed above, then commit once. For each: case-insensitive upsert — update in place if
+the entity exists, else append, copying field shapes from existing neighbours in the same file VERBATIM
+(uuid format, key order, every field the neighbours carry). Read the file once, make all the edits, write once.
+
+Do not touch entities that are not listed. Do not "improve" anything you were not asked to change.
+
+Then commit the whole group as one turn:
   git -C ${JSON.stringify(bDir)} add -A
-  git -C ${JSON.stringify(bDir)} commit -m "fix: <short summary of this finding>"
-If, after reading the files, the finding is not actually fixable as a bundle edit, make no change, do not commit,
-and return fixed:false. Return { fixed: true|false, summary }.`;
+  git -C ${JSON.stringify(bDir)} commit -m "fix: <short summary of this group>"
+
+If some findings turn out not to be fixable as a bundle edit, fix the ones that are, commit those, and say
+which you skipped and why. If NONE are fixable, make no change, do not commit, and return fixed:false.
+Return { fixed: true|false, summary } where summary names how many of the ${findings.length} you resolved.`;
 
 const revertPrompt = (bDir) => `You are a mechanical runner. The last fix regressed the bundle floor. Revert exactly the last commit:
   git -C ${JSON.stringify(bDir)} reset --hard HEAD~1
@@ -240,23 +353,86 @@ Emit the canonical spec for BOTH the candidate bundle and the UAT reference, the
 Run a node --input-type=module script that:
   - imports { emitSpec } from "./src/pipeline.js";
   - builds candidate spec: read every JSON file under ${JSON.stringify(bDir)} into an object keyed by filename
-    and call emitSpec({ existingBundleFiles, org: ${JSON.stringify(args.org)} });
-  - builds uat spec: read the zip buffer ${JSON.stringify(args.uatZip)} and call
-    emitSpec({ existingBundleZip: fs.readFileSync(uatZip), org: ${JSON.stringify(args.org)} });
+    and call emitSpec({ existingBundleFiles, org: ${JSON.stringify(A.org)} });
+  - builds uat spec: read the zip buffer ${JSON.stringify(A.uatZip)} and call
+    emitSpec({ existingBundleZip: fs.readFileSync(uatZip), org: ${JSON.stringify(A.org)} });
   - prints a structured diff (entities/fields only in candidate vs only in uat vs differing).
 Return { diff: <the structured diff>, summary: "<one line>" }.`;
 
-// ── Phase 1: Generate baseline session ────────────────────────────────────
+// ── Precondition: args must actually be here ──────────────────────────────
+// A run on 2026-08-02 spent an afternoon producing nothing because `args` never
+// reached the script. Every downstream symptom was silent: A.uatZip was
+// undefined so measure skipped parity and reported `parity: null` instead of
+// failing; A.org was undefined so the org assertion below — written as
+// `args.org && ...` — disabled itself precisely when it was needed; and the
+// generate runner, handed undefined paths, went looking through
+// tests/resources/ and substituted an unrelated org's workbooks. Nothing
+// crashed. Check the inputs exist before spending anything.
+const MISSING = ['scopingXlsx', 'org'].filter((k) => !A[k]);
+if (MISSING.length) {
+  throw new Error(
+    `workflow args missing: [${MISSING.join(', ')}] (typeof args = ${typeof args}, parsed keys = ` +
+    `${Object.keys(A).join(',') || 'none'}). Refusing to run: with absent inputs this workflow ` +
+    `silently generates SOME bundle and reviews it against nothing.`
+  );
+}
+log(`Args OK — org=${A.org} uatZip=${A.uatZip ? 'yes' : 'NONE (parity will not run)'} maxIterations=${A.maxIterations || 6}`);
+
+// ── Phase 1: Generate, or CONTINUE an existing session ────────────────────
+// Reaching the gate on a real org is not one bounded run's work — 37 report
+// cards and 9 visit schedules do not get authored in two iterations. Without
+// this branch every relaunch generated a FRESH baseline and discarded the
+// previous run's committed fixes, so progress could never accumulate and
+// "iterate until green" was structurally impossible. Pass args.sessionId to
+// resume: the loop then measures the bundle as it stands, including everything
+// earlier runs already fixed, and keeps going from there.
 phase('Generate');
-log(`Generating baseline bundle for org ${args.org}`);
-const gen = await agent(generatePrompt(), {
-  model: 'haiku',
-  schema: generateSchema,
-  phase: 'Generate',
-  label: 'generate:baseline',
-});
+let gen;
+if (A.sessionId) {
+  log(`Continuing existing session ${A.sessionId} (no fresh baseline)`);
+  gen = await agent(continuePrompt(), {
+    model: 'haiku',
+    schema: generateSchema,
+    phase: 'Generate',
+    label: 'continue:session',
+  });
+  if (gen.sessionId !== A.sessionId) {
+    throw new Error(`continue resolved ${JSON.stringify(gen.sessionId)}, expected ${JSON.stringify(A.sessionId)}.`);
+  }
+} else {
+  log(`Generating baseline bundle for org ${A.org}`);
+  gen = await agent(generatePrompt(), {
+    model: 'haiku',
+    schema: generateSchema,
+    phase: 'Generate',
+    label: 'generate:baseline',
+  });
+}
 const bundleDir = gen.bundleDir;
-log(`Baseline session ${gen.sessionId} at ${bundleDir}`);
+
+// FAIL FAST. A five-hour run on 2026-08-02 completed 62 agents and changed
+// nothing because a stale copy of this script was executed instead of this one:
+// baseline mode (so every reviewer was blind to the SRS), and an org nobody
+// asked for. Both were visible in the first ten seconds and neither was checked.
+// These assertions cost nothing and turn that class of failure into an
+// immediate crash rather than an afternoon of expensive no-ops.
+if (gen.mode !== 'agent') {
+  throw new Error(
+    `generate produced a "${gen.mode}" session, expected "agent". A baseline session CONSUMES the ` +
+    `workbooks — bundle_read_srs refuses and buildCrlScopingCtx returns {} — so the completeness ` +
+    `lens would run blind. This usually means a stale copy of the workflow script is running: ` +
+    `relaunch with {scriptPath: "<repo>/.claude/workflows/bundle-to-prod-ready.js"} rather than {name}.`
+  );
+}
+// Unconditional. The previous version read `A.org && gen.org !== A.org`, which
+// switched itself off in exactly the case it existed to catch — absent args.
+if (gen.org !== A.org) {
+  throw new Error(`generate used org ${JSON.stringify(gen.org)}, expected ${JSON.stringify(A.org)} — the runner did not use the inputs it was given.`);
+}
+if (gen.source !== 'brain-generator') {
+  throw new Error(`generate fell back to ${JSON.stringify(gen.source)} instead of the real SRS→bundle generator; a skeleton bundle would invalidate the run.`);
+}
+log(`Baseline session ${gen.sessionId} (mode=${gen.mode}, org=${gen.org}, source=${gen.source}) at ${bundleDir}`);
 
 // ── The loop ──────────────────────────────────────────────────────────────
 const allDefects = [];
@@ -265,7 +441,7 @@ let dry = 0;
 let reason = 'budget';
 let lastScorecard = null;
 
-while (iter < (args.maxIterations || 6) && budget.remaining() > RESERVE) {
+while (iter < (A.maxIterations || 6) && budget.remaining() > RESERVE) {
   iter++;
   log(`── Iteration ${iter} (budget remaining ${budget.remaining()}) ──`);
 
@@ -277,6 +453,16 @@ while (iter < (args.maxIterations || 6) && budget.remaining() > RESERVE) {
     phase: 'Measure',
     label: `measure:iter${iter}`,
   });
+  // measure-bundle returns parity:null when it was given no UAT zip, or one it
+  // could not read. If a reference WAS supplied, a null here means the whole
+  // point of the run — comparing against it — is silently not happening.
+  if (A.uatZip && (scorecard.parity === null || scorecard.parity === undefined)) {
+    throw new Error(
+      `measure returned parity:null although uatZip was supplied (${A.uatZip}). ` +
+      `The reference comparison is not running, so a green floor would be meaningless. ` +
+      `Check the path exists and that measure-bundle received it as its 2nd argument.`
+    );
+  }
   lastScorecard = scorecard;
   log(`Scorecard floorGreen=${scorecard.floorGreen}`);
 
@@ -353,15 +539,44 @@ while (iter < (args.maxIterations || 6) && budget.remaining() > RESERVE) {
 
   // ── Fix: sequential (agents edit the same dir; avoid conflicts) ──
   phase('Fix');
-  for (const finding of fixable) {
-    const fixModel = OPUS_FIX_KINDS.has(finding.kind) ? 'opus' : 'haiku';
-    const res = await agent(fixPrompt(finding, bundleDir), {
+  // Group by the bundle file a finding lands in, so one agent owns one file.
+  // Derived from the finding's own entity prefix ("form:X", "reportCard:Y", …)
+  // with a fallback to category, so an unrecognised shape still groups sanely
+  // rather than silently collapsing everything into one bucket.
+  const fileOf = (f) => {
+    const e = String(f.entity || '').toLowerCase();
+    const c = String(f.category || '').toLowerCase();
+    const hay = `${e} ${c}`;
+    if (/reportcard|report card/.test(hay)) return 'reportCard.json';
+    if (/dashboard/.test(hay)) return 'reportDashboard.json';
+    if (/^concept:|concept/.test(hay)) return 'concepts.json';
+    if (/subjecttype/.test(hay)) return 'subjectTypes.json';
+    if (/program(?!encounter)/.test(hay) && !/encounter/.test(hay)) return 'programs.json';
+    if (/encountertype/.test(hay)) return 'encounterTypes.json';
+    if (/formmapping/.test(hay)) return 'formMappings.json';
+    if (/group|privilege/.test(hay)) return 'groups.json';
+    // Per-form work (visit schedules, decision rules, elements) touches ONE form
+    // file each, so key on the form name to keep those groups small and precise.
+    const m = e.match(/^form:(.+)$/);
+    if (m) return `forms/${m[1].trim()}`;
+    return e || c || 'other';
+  };
+  const groups = new Map();
+  for (const f of fixable) {
+    const k = fileOf(f);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(f);
+  }
+  log(`Fix: ${fixable.length} finding(s) in ${groups.size} group(s) — ${[...groups].map(([k, v]) => `${k}×${v.length}`).join(', ')}`);
+  for (const [groupKey, groupFindings] of groups) {
+    const fixModel = groupFindings.some((f) => OPUS_FIX_KINDS.has(f.kind)) ? 'opus' : 'haiku';
+    const res = await agent(fixPrompt(groupFindings, bundleDir, groupKey), {
       model: fixModel,
       schema: fixSchema,
       phase: 'Fix',
-      label: `fix:${finding.entity || finding.category}:iter${iter}`,
+      label: `fix:${groupKey}:iter${iter}`,
     });
-    log(`Fix (${fixModel}) ${finding.entity || finding.category}: fixed=${res.fixed} — ${res.summary}`);
+    log(`Fix (${fixModel}) ${groupKey} [${groupFindings.length}]: fixed=${res.fixed} — ${res.summary}`);
   }
 
   // ── Regression-guard: re-measure; revert the last fix if the floor regressed ──
@@ -386,20 +601,22 @@ while (iter < (args.maxIterations || 6) && budget.remaining() > RESERVE) {
   }
 }
 
-if (iter >= (args.maxIterations || 6) && reason === 'budget') {
-  log(`Reached maxIterations (${args.maxIterations || 6}).`);
+if (iter >= (A.maxIterations || 6) && reason === 'budget') {
+  log(`Reached maxIterations (${A.maxIterations || 6}).`);
 }
 
-// ── Final: UAT-vs-candidate spec diff (only when a UAT reference is given) ──
-let specDiff = null;
-if (args.uatZip) {
-  const sd = await agent(specDiffPrompt(bundleDir), {
-    model: 'haiku',
-    schema: specDiffSchema,
-    phase: 'Regression-guard',
-    label: 'spec-diff',
-  });
-  specDiff = sd;
+// ── Final: UAT-vs-candidate gap report, straight off the bundle config files ──
+// This used to emit a canonical SPEC for both sides and diff those. Two reasons
+// it no longer does: the comparison is specified against the bundle's own config
+// files, not an intermediate spec view; and measure-bundle already computes
+// exactly this diff every iteration via the widened parity comparator (roster
+// classes PLUS visit schedules, decision rules, report cards, dashboards). An
+// extra model call to restate a number we already hold deterministically buys
+// nothing, so the last scorecard's parity block IS the final gap report.
+const parityGap = lastScorecard ? lastScorecard.parity : null;
+if (parityGap) {
+  log(`Final parity: coveragePass=${parityGap.coveragePass}` +
+      (parityGap.gateFailures?.length ? ` failing [${parityGap.gateFailures.join(', ')}]` : ''));
 }
 
 return {
@@ -408,5 +625,5 @@ return {
   reason,
   generatorDefects: allDefects,
   floorGreen: lastScorecard ? !!lastScorecard.floorGreen : false,
-  specDiff,
+  parityGap,
 };

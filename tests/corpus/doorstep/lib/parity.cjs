@@ -2,8 +2,32 @@
 // Compare two bundles' active-name sets. `pass` gates only on the entity
 // classes the approved success bar names; other classes are reported for
 // insight but never fail the run.
+const { BEHAVIOUR_CLASSES } = require("./entity-names.cjs");
+
 const GATE_CLASSES = ["subjectTypes", "programs", "encounterTypes", "forms"];
-const ALL_CLASSES = ["addressLevelTypes", "subjectTypes", "programs", "encounterTypes", "forms", "formMappings"];
+const ENTITY_CLASSES = ["addressLevelTypes", "subjectTypes", "programs", "encounterTypes", "forms", "formMappings"];
+const ALL_CLASSES = [...ENTITY_CLASSES, ...BEHAVIOUR_CLASSES];
+
+// The behavioural gate (design gap#4). GATE_CLASSES asks only "is the roster the
+// same" — a bundle can satisfy it completely while doing nothing: no visit
+// schedules, no decision rules, a one-card dashboard stub. FULL_GATE_CLASSES
+// adds the behavioural classes a real finished bundle carries, so a loop gating
+// on it cannot declare success on a config that merely has the right names.
+//
+// `groups` and `formsWithValidationRule` are REPORTED but deliberately NOT
+// gated. Groups because a server export accumulates operational artifacts that
+// it would be wrong to reproduce — the Door Step School UAT carries an "SQLite
+// Migration" group — so a name-equality gate there would demand the generator
+// invent migration scaffolding. Validation rules because the generator already
+// emits them broadly, making the class near-parity by default and therefore
+// uninformative as a gate.
+const FULL_GATE_CLASSES = [
+  ...GATE_CLASSES,
+  "formsWithVisitScheduleRule",
+  "formsWithDecisionRule",
+  "reportCards",
+  "reportDashboards",
+];
 
 function diffOne(gen, tgt) {
   const present = [], missing = [];
@@ -32,4 +56,7 @@ function formatParityReport(diff) {
   return lines.join("\n");
 }
 
-module.exports = { diffNames, formatParityReport, GATE_CLASSES, ALL_CLASSES };
+module.exports = {
+  diffNames, formatParityReport,
+  GATE_CLASSES, ALL_CLASSES, ENTITY_CLASSES, BEHAVIOUR_CLASSES, FULL_GATE_CLASSES,
+};

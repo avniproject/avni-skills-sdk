@@ -88,6 +88,100 @@ test("buildBundleProjection: emits real concept + form content (names, uuids, da
   cleanup(dir);
 });
 
+// ─── no-key: widened projection (design gap#4 — the SRS-conformance categories) ───
+// The projection used to stop at concepts/forms/subjectTypes/programs/
+// encounterTypes/formMappings, so user groups, privileges, dashboards, report
+// cards, address levels and the per-form rule bodies were invisible to the
+// judge. A conformance rule cannot flag "the org asked for it and it isn't
+// there" for a category the artifact never carries.
+function conformanceBundleFiles() {
+  return {
+    ...seededBundleFiles(),
+    "groups.json": [{ name: "Everyone", uuid: "g-1" }, { name: "Template Default", uuid: "g-2" }],
+    "groupPrivilege.json": [
+      { uuid: "p-1", groupUUID: "g-1", privilegeType: "ViewSubject", allow: true, voided: false },
+      { uuid: "p-2", groupUUID: "g-1", privilegeType: "EditSubject", allow: true, voided: false },
+      { uuid: "p-3", groupUUID: "g-2", privilegeType: "ViewSubject", allow: false, voided: false },
+      { uuid: "p-4", groupUUID: "g-2", privilegeType: "ViewSubject", allow: true, voided: true },
+    ],
+    "addressLevelTypes.json": [{ name: "Village", level: 1, isRegistrationLocation: true }],
+    "reportCard.json": [{ name: "Total", standardReportCardType: "src-1" }],
+    "reportDashboard.json": [{ name: "Main", sections: [{ name: "Overview", cards: [{ uuid: "c-1" }, { uuid: "c-2" }] }] }],
+    "groupDashboards.json": [{ groupName: "Everyone", dashboardName: "Main" }],
+    "forms/Visit_f2.json": {
+      name: "Visit", uuid: "f2", formType: "ProgramEncounter",
+      visitScheduleRule: "({params}) => { return []; }",
+      formElementGroups: [{ formElements: [{ name: "el", concept: { name: "Age", uuid: C_USED, dataType: "Numeric" } }] }],
+    },
+  };
+}
+
+test("buildBundleProjection: carries the SRS-conformance categories — groups, privileges, address levels, report cards, dashboards", async () => {
+  const { buildBundleProjection } = await loadAij();
+  const dir = tmpBundle(conformanceBundleFiles());
+  const proj = buildBundleProjection(dir);
+  assert.deepEqual(proj.groups.map((g) => g.name), ["Everyone", "Template Default"]);
+  assert.equal(proj.groupPrivileges.total, 3, "voided privileges are excluded");
+  assert.equal(proj.groupPrivileges.allowed, 2);
+  assert.deepEqual(proj.groupPrivileges.byGroupUUID, { "g-1": 2, "g-2": 1 });
+  assert.deepEqual(proj.addressLevelTypes, [{ name: "Village", level: 1, isRegistrationLocation: true }]);
+  assert.deepEqual(proj.reportCards, [{ name: "Total", standardReportCardType: "src-1" }]);
+  assert.deepEqual(proj.reportDashboards, [{ name: "Main", sections: [{ name: "Overview", cardCount: 2 }] }]);
+  assert.deepEqual(proj.groupDashboards, [{ groupName: "Everyone", dashboardName: "Main" }]);
+  cleanup(dir);
+});
+
+test("buildBundleProjection: carries per-form visitScheduleRule/decisionRule/validationRule — null when the form has none, so 'no automation configured' is a readable fact", async () => {
+  const { buildBundleProjection } = await loadAij();
+  const dir = tmpBundle(conformanceBundleFiles());
+  const proj = buildBundleProjection(dir);
+  const visit = proj.forms.find((f) => f.uuid === "f2");
+  const reg = proj.forms.find((f) => f.uuid === "f1");
+  assert.match(visit.visitScheduleRule, /scheduleBuilder|=>/);
+  assert.equal(visit.decisionRule, null);
+  assert.equal(reg.visitScheduleRule, null, "a form with no schedule rule reads as null, not absent");
+  assert.equal(reg.decisionRule, null);
+  assert.equal(reg.validationRule, null);
+  cleanup(dir);
+});
+
+test("buildBundleProjection: an absent file projects as null, an empty one as [] — 'could not look' and 'looked, found nothing' must be distinguishable", async () => {
+  const { buildBundleProjection } = await loadAij();
+  const dir = tmpBundle({ ...seededBundleFiles(), "reportCard.json": [] });
+  const proj = buildBundleProjection(dir);
+  assert.equal(proj.groups, null, "no groups.json at all → null");
+  assert.equal(proj.groupPrivileges, null);
+  assert.equal(proj.reportDashboards, null);
+  assert.deepEqual(proj.reportCards, [], "present but empty → []");
+  cleanup(dir);
+});
+
+test("buildBundleProjection: counts report total vs projected so a truncated tail is never read as missing configuration", async () => {
+  const { buildBundleProjection } = await loadAij();
+  const many = Array.from({ length: 200 }, (_, i) => ({ name: `C${i}`, uuid: `u-${i}`, dataType: "Text" }));
+  const dir = tmpBundle({ ...seededBundleFiles(), "concepts.json": many });
+  const proj = buildBundleProjection(dir);
+  assert.equal(proj.counts.concepts.total, 200);
+  assert.ok(proj.counts.concepts.projected < 200);
+  assert.equal(proj.counts.concepts.truncated, true);
+  assert.equal(proj.counts.forms.truncated, false, "1 form is under the cap");
+  cleanup(dir);
+});
+
+test("buildBundleProjection: a long rule body is clipped with an explicit truncation marker, never presented as the whole rule", async () => {
+  const { buildBundleProjection } = await loadAij();
+  const long = `// ${"x".repeat(5000)}`;
+  const dir = tmpBundle({
+    ...seededBundleFiles(),
+    "forms/Big_f9.json": { name: "Big", uuid: "f9", formType: "ProgramEncounter", decisionRule: long, formElementGroups: [] },
+  });
+  const proj = buildBundleProjection(dir);
+  const big = proj.forms.find((f) => f.uuid === "f9");
+  assert.ok(big.decisionRule.length < long.length);
+  assert.match(big.decisionRule, /truncated, 5\d{3} chars total/);
+  cleanup(dir);
+});
+
 // ─── LIVE (opt-in): real Haiku call reads content, flags the orphan, reports cost (CRIT-2 + MAJ-7) ───
 test("aiJudge: live Haiku call reads real bundle content, flags the seeded orphan, and reports a non-zero costUsd", async (t) => {
   if (!process.env.ANTHROPIC_API_KEY) { t.skip("ANTHROPIC_API_KEY not set — live test, opt-in"); return; }

@@ -48,10 +48,20 @@ const skipReason = process.env.RUN_DOORSTEP_REAL !== "1"
 test("real Doorstep inputs: entity-graph parity vs UAT", { skip: runReal ? false : skipReason }, () => {
   const { runDoorstepParity } = require("./lib/run-parity.cjs");
   const { diff, nonF2Errors, target } = runDoorstepParity({ formsXlsx: FORMS_XLSX, modelXlsx: MODEL_XLSX, uatZip: UAT_ZIP });
-  assert.equal(target.subjectTypes.size, 5, "UAT should have 5 active subject types");
+  // Oracle shape, refreshed 2026-08-02 against the current UAT export (the
+  // previous pin said 5 subject types; the export now carries 4).
+  assert.equal(target.subjectTypes.size, 4, "UAT should have 4 active subject types");
   assert.equal(target.programs.size, 4, "UAT should have 4 active programs");
   assert.equal(target.encounterTypes.size, 6, "UAT should have 6 active encounter types");
   assert.equal(target.forms.size, 25, "UAT should have 25 active forms");
+  // Behavioural oracle (design gap#4). These are the classes the name-only
+  // comparator was blind to, and the reason a generated bundle could report
+  // full parity while doing nothing. Pinned so a silently-thinner UAT export
+  // cannot quietly lower the bar the generator is measured against.
+  assert.equal(target.formsWithVisitScheduleRule.size, 9, "UAT carries visit schedules on 9 forms");
+  assert.equal(target.formsWithDecisionRule.size, 3, "UAT carries decision rules on 3 forms");
+  assert.equal(target.reportCards.size, 37, "UAT carries 37 report cards");
+  assert.equal(target.reportDashboards.size, 6, "UAT carries 6 dashboards");
   // Ship-gate is NON-F2 errors (F2 = cross-form concept reuse, a tolerated
   // semantic class per bundle-harness.cjs; the UAT export itself isn't clean).
   assert.equal(nonF2Errors.length, 0, `non-F2 validator errors: ${JSON.stringify(nonF2Errors, null, 2)}`);

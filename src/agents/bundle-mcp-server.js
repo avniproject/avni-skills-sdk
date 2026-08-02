@@ -1367,31 +1367,219 @@ function buildGenerateBaselineTool(bundleCwd) {
 
 const CRL_SCOPING_TEXT_CAP = 4000; // chars — keep the review payload small; bundle_read_srs remains the full-fidelity path
 
+// ─── xlsx scoping digest ────────────────────────────────────────────
+//
+// The overwhelmingly common agent-mode session is created from Excel workbooks:
+// meta.srs = { kind:"xlsx", files:{ forms, modelling }, ... } — NEITHER .text nor
+// .json. Reading only the prose files meant the CRL's ai-judge received an empty
+// SCOPING_INTENT and reviewed the bundle with no idea what the org asked for.
+// These constants budget a rendered text digest of those workbooks. Kept SEPARATE
+// from CRL_SCOPING_TEXT_CAP: a spreadsheet SRS is far denser per useful byte than
+// prose, and the prose cap is asserted by existing tests.
+const CRL_SCOPING_XLSX_CAP = 16000;      // chars — whole workbook digest, label included
+const CRL_SCOPING_CELL_CAP = 60;         // chars per cell — Description/Example/Notes columns are the bulk of a scoping doc
+const CRL_SCOPING_ROW_CAP = 220;         // chars per rendered row — a 20-column header row must not out-spend 4 content rows
+const CRL_SCOPING_ROWS_PER_SHEET = 80;   // rows — hard per-sheet ceiling before the char budget is even considered
+const CRL_SCOPING_LABEL_RESERVE = 800;   // chars held back for the fidelity label so it can never be sliced off
+
+/**
+ * Render one worksheet to compact `cell | cell | cell` lines. Empty cells are
+ * dropped (a scoping sheet is mostly sparse) and each cell is clipped to
+ * CRL_SCOPING_CELL_CAP. Deliberately positional and generic — it keys on NO
+ * column header, sheet name, or org-specific token (rule §4).
+ */
+function renderScopingSheet(wb, name) {
+  const aoa = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: "", blankrows: false });
+  const lines = [];
+  let cellsClipped = 0;
+  let rowsClipped = 0;
+  for (const row of aoa.slice(0, CRL_SCOPING_ROWS_PER_SHEET)) {
+    const cells = [];
+    for (const c of Array.isArray(row) ? row : []) {
+      let s = String(c === null || c === undefined ? "" : c).replace(/\s+/g, " ").trim();
+      if (!s) continue;
+      if (s.length > CRL_SCOPING_CELL_CAP) { s = s.slice(0, CRL_SCOPING_CELL_CAP - 1) + "…"; cellsClipped += 1; }
+      cells.push(s);
+    }
+    if (!cells.length) continue;
+    let line = cells.join(" | ");
+    // A wide sheet's column-header row can run to 700+ chars and, under a
+    // fair round-robin, would out-spend several rows of actual content on
+    // every other sheet. Clip the row too, not just the cell — but count it
+    // SEPARATELY: a clipped row drops whole trailing COLUMNS, which is a
+    // different (and larger) loss than shortening a cell, and the fidelity
+    // label has to say which one happened.
+    if (line.length > CRL_SCOPING_ROW_CAP) { line = line.slice(0, CRL_SCOPING_ROW_CAP - 1) + "…"; rowsClipped += 1; }
+    lines.push(line);
+  }
+  return {
+    name,
+    totalRows: aoa.length,
+    lines,
+    rowsDropped: Math.max(0, aoa.length - CRL_SCOPING_ROWS_PER_SHEET),
+    cellsClipped,
+    rowsClipped,
+  };
+}
+
+/**
+ * Spend `budget` chars across `sheets` by round-robin over row DEPTH: row 1 of
+ * every sheet, then row 2 of every sheet, and so on until the budget runs out.
+ *
+ * Two properties matter and this gets both for free. (a) One big sheet cannot
+ * eat the budget — a first-come-first-served slice spends everything on the
+ * first few sheets and silently hides the tabs at the END of the workbook,
+ * which on a real SRS are exactly the ones the generator skips (dashboards,
+ * cancellation forms, visit scheduling, reports, permissions). (b) Nothing is
+ * wasted — rows are taken whole against the live remaining budget, so unlike a
+ * per-sheet char allocation there is no unusable slack under each sheet's share.
+ *
+ * Returns, per sheet, how many rows to show.
+ */
+function allocateScopingRows(sheets, budget) {
+  const shown = new Array(sheets.length).fill(0);
+  const closed = new Array(sheets.length).fill(false);
+  const maxDepth = sheets.reduce((a, s) => Math.max(a, s.lines.length), 0);
+  let used = 0;
+  for (let depth = 0; depth < maxDepth; depth += 1) {
+    let progressed = false;
+    for (let i = 0; i < sheets.length; i += 1) {
+      if (closed[i]) continue;
+      const line = sheets[i].lines[depth];
+      if (line === undefined) { closed[i] = true; continue; }
+      const cost = line.length + 1;
+      if (used + cost > budget) { closed[i] = true; continue; }
+      used += cost;
+      shown[i] += 1;
+      progressed = true;
+    }
+    if (!progressed) break;
+  }
+  return { shown, used };
+}
+
+/**
+ * Compose the digest for a list of parsed workbooks into `budget` chars,
+ * fidelity label included. The label is deliberately loud: the ai-judge reads
+ * this block as "what the org asked for", so silent truncation turns into
+ * absent-because-truncated findings reported as real gaps.
+ */
+function composeScopingDigest(books, budget) {
+  const flat = [];
+  for (const b of books) for (const s of b.sheets) flat.push({ book: b.label, sheet: s });
+  if (!flat.length) return "";
+
+  const index =
+    "WORKBOOK INDEX (complete — every sheet the attached SRS contains is named here):\n" +
+    books.map((b) => `${b.label}: ${b.sheetNames.length} sheet(s) — ${b.sheetNames.join(" | ")}`).join("\n");
+  const headers = flat.map((e) => `### ${e.book} > ${e.sheet.name} (${e.sheet.totalRows} row(s))`);
+  const headerCost = headers.reduce((a, h) => a + h.length + 4, 0); // header + its newline + the "\n\n" section join
+  const markerReserve = flat.length * 52; // "\n  … N more row(s) of this sheet not shown"
+  const bodyBudget = Math.max(0, budget - CRL_SCOPING_LABEL_RESERVE - index.length - 4 - headerCost - markerReserve);
+  const { shown } = allocateScopingRows(flat.map((e) => e.sheet), bodyBudget);
+
+  let rowsHidden = 0;
+  let cellsClipped = 0;
+  let rowsClipped = 0;
+  let partialSheets = 0;
+  const sections = flat.map((e, i) => {
+    const hiddenHere = (e.sheet.lines.length - shown[i]) + e.sheet.rowsDropped;
+    rowsHidden += hiddenHere;
+    cellsClipped += e.sheet.cellsClipped;
+    rowsClipped += e.sheet.rowsClipped;
+    let body = e.sheet.lines.slice(0, shown[i]).join("\n");
+    if (hiddenHere > 0) {
+      partialSheets += 1;
+      body += (body ? "\n" : "") + `  … ${hiddenHere} more row(s) of this sheet not shown`;
+    }
+    return headers[i] + "\n" + body;
+  });
+
+  let digest = index + "\n\n" + sections.join("\n\n");
+  let truncated = rowsHidden > 0 || cellsClipped > 0 || rowsClipped > 0 || partialSheets > 0;
+  const room = Math.max(0, budget - CRL_SCOPING_LABEL_RESERVE);
+  if (digest.length > room) { digest = digest.slice(0, room); truncated = true; }
+
+  // Each kind of loss is named separately — they are not interchangeable. A
+  // shortened cell loses the tail of one value; a clipped row loses whole
+  // trailing COLUMNS; an omitted row loses the value entirely.
+  const losses = [];
+  if (partialSheets) losses.push(`${partialSheets} of ${flat.length} sheet(s) shown in part`);
+  if (rowsHidden) losses.push(`${rowsHidden} row(s) omitted`);
+  if (rowsClipped) losses.push(`${rowsClipped} wide row(s) clipped at ${CRL_SCOPING_ROW_CAP} chars (trailing columns dropped)`);
+  if (cellsClipped) losses.push(`${cellsClipped} cell(s) shortened to ${CRL_SCOPING_CELL_CAP} chars`);
+
+  const label = truncated
+    ? "SRS — digest of the attached workbook(s). FIDELITY: PARTIAL. This is a SAMPLE of the SRS, " +
+      `not the whole of it: ${losses.join(", ") || "content was truncated to fit the review payload"}. ` +
+      "Do NOT report anything as missing, unscoped or out of scope merely because it is absent here — " +
+      'read the sheet in full with bundle_read_srs { file: "forms" | "modelling", sheet: "<name>" } ' +
+      "before concluding. The workbook index below is complete even where a sheet's rows are not shown."
+    : "SRS — digest of the attached workbook(s). FIDELITY: COMPLETE — every sheet, row and cell of the " +
+      "attached workbook(s) is rendered below. bundle_read_srs reads the same source if you want raw rows.";
+
+  return (label + "\n\n" + digest).slice(0, budget);
+}
+
 /**
  * Build the "what did the org actually ask for" grounding context the
  * ai-judged pass needs (design.md "A single review = three passes"). Reads the
- * session's own attached SRS the same way bundle_read_srs does, capped to a
- * small preview. Returns `{}` for a baseline-mode session, or an agent-mode
- * session with no readable SRS text attached — the review layer still runs,
- * just without scoping grounding. Exported for direct testing.
+ * session's own attached SRS the same way bundle_read_srs does:
+ *
+ *   • prose / JSON SRS  → the raw text, capped at CRL_SCOPING_TEXT_CAP
+ *   • attached workbooks → a rendered, fidelity-labelled digest, capped at
+ *     CRL_SCOPING_XLSX_CAP (the common case — an xlsx session has neither
+ *     .text nor .json, and used to yield `{}`, i.e. a blind reviewer)
+ *   • both → prose first, then the digest (createAgentSession sets kind
+ *     "text"/"json" AND files.forms when given prose plus a workbook, so the
+ *     branch is on files.forms/files.modelling, never on srs.kind)
+ *
+ * Returns `{}` for a baseline-mode session, or an agent-mode session whose SRS
+ * is entirely unreadable — the review layer still runs, just without scoping
+ * grounding. NEVER throws: each source is read independently, so one corrupt
+ * workbook does not cost you the other one, nor the prose.
+ * Exported for direct testing.
  */
 export function buildCrlScopingCtx(bundleCwd) {
   const meta = readSessionMeta(bundleCwd);
   if (!meta || meta.mode !== "agent" || !meta.srs) return {};
+  const files = meta.srs.files || {};
   const srsDir = path.join(sessionDirOf(bundleCwd), "input");
-  try {
-    if (meta.srs.files && meta.srs.files.text) {
-      const text = fs.readFileSync(path.join(srsDir, "srs.txt"), "utf8");
-      return { srs: text.slice(0, CRL_SCOPING_TEXT_CAP) };
-    }
-    if (meta.srs.files && meta.srs.files.json) {
-      const text = fs.readFileSync(path.join(srsDir, "srs.json"), "utf8");
-      return { srs: text.slice(0, CRL_SCOPING_TEXT_CAP) };
-    }
-  } catch {
-    // SRS unreadable — review proceeds without scoping context, not an error.
+  const parts = [];
+
+  if (files.text) {
+    try {
+      parts.push(fs.readFileSync(path.join(srsDir, "srs.txt"), "utf8").slice(0, CRL_SCOPING_TEXT_CAP));
+    } catch { /* unreadable prose — not an error, fall through to the other sources */ }
+  } else if (files.json) {
+    try {
+      parts.push(fs.readFileSync(path.join(srsDir, "srs.json"), "utf8").slice(0, CRL_SCOPING_TEXT_CAP));
+    } catch { /* unreadable JSON — not an error */ }
   }
-  return {};
+
+  // Attached workbooks. Parsed one at a time: a corrupt forms.xlsx must not cost
+  // us a perfectly readable modelling.xlsx.
+  const books = [];
+  for (const which of ["forms", "modelling"]) {
+    if (!files[which]) continue;
+    try {
+      const fp = path.join(srsDir, `${which}.xlsx`);
+      if (!fs.existsSync(fp)) continue;
+      const wb = XLSX.readFile(fp);
+      const sheetNames = wb.SheetNames || [];
+      if (!sheetNames.length) continue;
+      books.push({ label: `${which}.xlsx`, sheetNames, sheets: sheetNames.map((n) => renderScopingSheet(wb, n)) });
+    } catch { /* unparseable workbook — skip it, keep whatever else we have */ }
+  }
+  if (books.length) {
+    try {
+      const digest = composeScopingDigest(books, CRL_SCOPING_XLSX_CAP);
+      if (digest) parts.push(digest);
+    } catch { /* digest failed — scoping context degrades, never throws */ }
+  }
+
+  if (!parts.length) return {};
+  return { srs: parts.join("\n\n") };
 }
 
 /**

@@ -40,6 +40,7 @@ export const SONNET_MODEL = process.env.SDK_JUDGE_ESCALATION_MODEL || "claude-ha
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.85;
 const MAX_PROJECTED_CONCEPTS = 120;
 const MAX_PROJECTED_FORMS = 20;
+const MAX_PROJECTED_RULE_CHARS = 800;
 
 const SYSTEM_PROMPT = `You are a compliance JUDGE for AVNI bundle/spec artifacts.
 
@@ -77,14 +78,47 @@ Keep the response under 700 words.`;
 // judge needs to reason about strays/orphans/naming: concept {name,uuid,dataType,
 // answers}, form {name,uuid,formType, element names+concept refs}, plus the
 // master entities and mappings that establish what is "referenced".
+//
+// SCOPE (widened for the SRS-conformance rules, design gap#4). The projection
+// used to carry six keys — concepts, forms, subjectTypes, programs,
+// encounterTypes, formMappings — and forms were reduced to name/uuid/formType/
+// elements. Everything else in the bundle was invisible to the judge: user
+// groups, group privileges, dashboards + report cards, address-level types, and
+// the per-form visitScheduleRule / decisionRule / validationRule bodies. That
+// made whole categories of "the org asked for it and we didn't build it"
+// unjudgeable — and worse, made them look like false positives waiting to
+// happen, because to a judge an absent KEY is indistinguishable from absent
+// CONFIG. (It also silently defeated `rule-contradicts-intent`, which asks about
+// rule bodies the projection dropped.) Those categories are now carried.
+//
+// TWO CONVENTIONS THE RULE PROSE DEPENDS ON — do not break them:
+//   • null vs []  — a key is `null` when its file is absent or unparseable, and
+//     an array (possibly empty) when the file was read. "I could not look" and
+//     "I looked and there is nothing" are different claims and the judge must
+//     be able to tell them apart before reporting a gap.
+//   • counts{}    — concepts and forms are still capped (MAX_PROJECTED_*). The
+//     counts block reports total vs projected so a truncated tail is never
+//     mistaken for missing configuration.
 export function buildBundleProjection(bundleDir) {
   const safe = (rel) => {
     try { return JSON.parse(fs.readFileSync(path.join(bundleDir, rel), "utf8")); } catch { return null; }
   };
   const arrOf = (val, key) => Array.isArray(val) ? val : (val && Array.isArray(val[key]) ? val[key] : []);
+  // Absent/unparseable file → null (see convention above); otherwise map it.
+  const listOf = (rel, fn) => { const v = safe(rel); return v == null ? null : (Array.isArray(v) ? v : []).map(fn); };
+  // Rule bodies can run to hundreds of lines. Carry enough to judge intent, and
+  // say so when clipped rather than presenting a fragment as the whole rule.
+  const ruleText = (v) => {
+    if (v == null || v === "") return null;
+    const s = String(v);
+    return s.length > MAX_PROJECTED_RULE_CHARS
+      ? `${s.slice(0, MAX_PROJECTED_RULE_CHARS)}… [truncated, ${s.length} chars total]`
+      : s;
+  };
 
   const conceptsRaw = safe("concepts.json");
-  const concepts = (Array.isArray(conceptsRaw) ? conceptsRaw : (conceptsRaw?.concepts || []))
+  const conceptsAll = Array.isArray(conceptsRaw) ? conceptsRaw : (conceptsRaw?.concepts || []);
+  const concepts = conceptsAll
     .slice(0, MAX_PROJECTED_CONCEPTS)
     .map((c) => ({
       name: c?.name, uuid: c?.uuid, dataType: c?.dataType,
@@ -92,20 +126,39 @@ export function buildBundleProjection(bundleDir) {
     }));
 
   const formsDir = path.join(bundleDir, "forms");
-  const forms = fs.existsSync(formsDir)
-    ? fs.readdirSync(formsDir).filter((f) => f.endsWith(".json")).slice(0, MAX_PROJECTED_FORMS)
-        .map((fn) => { try { return JSON.parse(fs.readFileSync(path.join(formsDir, fn), "utf8")); } catch { return null; } })
-        .filter(Boolean)
-        .map((f) => ({
-          name: f.name, uuid: f.uuid, formType: f.formType,
-          elements: (f.formElementGroups || []).flatMap((g) => (g.formElements || []).map((fe) => ({
-            name: fe?.name,
-            concept: fe?.concept && typeof fe.concept === "object"
-              ? { name: fe.concept.name, uuid: fe.concept.uuid, dataType: fe.concept.dataType }
-              : fe?.concept,
-          }))),
-        }))
-    : [];
+  const formFiles = fs.existsSync(formsDir) ? fs.readdirSync(formsDir).filter((f) => f.endsWith(".json")) : [];
+  const forms = formFiles.slice(0, MAX_PROJECTED_FORMS)
+    .map((fn) => { try { return JSON.parse(fs.readFileSync(path.join(formsDir, fn), "utf8")); } catch { return null; } })
+    .filter(Boolean)
+    .map((f) => ({
+      name: f.name, uuid: f.uuid, formType: f.formType,
+      // Presence of automation is the whole question for "the SRS said (auto)"
+      // and "the SRS specified a visit schedule" — null means the form carries
+      // no such rule, which is a fact about the bundle, not about the sample.
+      visitScheduleRule: ruleText(f.visitScheduleRule),
+      decisionRule: ruleText(f.decisionRule),
+      validationRule: ruleText(f.validationRule),
+      elements: (f.formElementGroups || []).flatMap((g) => (g.formElements || []).map((fe) => ({
+        name: fe?.name,
+        concept: fe?.concept && typeof fe.concept === "object"
+          ? { name: fe.concept.name, uuid: fe.concept.uuid, dataType: fe.concept.dataType }
+          : fe?.concept,
+      }))),
+    }));
+
+  // Privileges are ~150 near-identical rows on a small bundle and scale with
+  // subjectTypes × programs × privilegeType. Nobody needs the rows — the judge
+  // needs to know which groups are covered and how broadly, so summarise.
+  const privRaw = safe("groupPrivilege.json");
+  const groupPrivileges = privRaw == null ? null : (() => {
+    const rows = (Array.isArray(privRaw) ? privRaw : []).filter((p) => p && !p.voided);
+    const byGroupUUID = {};
+    for (const p of rows) {
+      const k = p.groupUUID || "(no group)";
+      byGroupUUID[k] = (byGroupUUID[k] || 0) + 1;
+    }
+    return { total: rows.length, allowed: rows.filter((p) => p.allow).length, byGroupUUID };
+  })();
 
   return {
     concepts,
@@ -114,6 +167,19 @@ export function buildBundleProjection(bundleDir) {
     programs: (safe("programs.json") || []).map((p) => ({ name: p?.name, uuid: p?.uuid })),
     encounterTypes: (safe("encounterTypes.json") || []).map((e) => ({ name: e?.name, uuid: e?.uuid })),
     formMappings: arrOf(safe("formMappings.json"), "formMappings").map((m) => ({ formUUID: m?.formUUID, subjectTypeUUID: m?.subjectTypeUUID, formType: m?.formType })),
+    groups: listOf("groups.json", (g) => ({ name: g?.name, uuid: g?.uuid, hasAllPrivileges: g?.hasAllPrivileges ?? null })),
+    groupPrivileges,
+    addressLevelTypes: listOf("addressLevelTypes.json", (a) => ({ name: a?.name, level: a?.level, isRegistrationLocation: a?.isRegistrationLocation ?? null })),
+    reportCards: listOf("reportCard.json", (c) => ({ name: c?.name, standardReportCardType: c?.standardReportCardType ?? null })),
+    reportDashboards: listOf("reportDashboard.json", (d) => ({
+      name: d?.name,
+      sections: (d?.sections || []).map((s) => ({ name: s?.name, cardCount: (s?.cards || []).length })),
+    })),
+    groupDashboards: listOf("groupDashboards.json", (g) => ({ groupName: g?.groupName, dashboardName: g?.dashboardName })),
+    counts: {
+      concepts: { total: conceptsAll.length, projected: concepts.length, truncated: conceptsAll.length > concepts.length },
+      forms: { total: formFiles.length, projected: forms.length, truncated: formFiles.length > forms.length },
+    },
   };
 }
 
