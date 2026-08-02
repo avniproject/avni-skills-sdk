@@ -39,6 +39,45 @@ function activeNameSet(arr) {
   return s;
 }
 
+// A form "carries" a rule when the field is a non-empty string. The generator
+// emits absent/empty for rules it never authored, and a real server export
+// carries the function source, so presence is the honest signal either way.
+function carriesRule(form, field) {
+  const v = form && form[field];
+  return typeof v === "string" && v.trim() !== "";
+}
+
+function formsCarrying(forms, field) {
+  const s = new Set();
+  for (const f of forms) {
+    if (!f || isVoided(f) || !carriesRule(f, field)) continue;
+    const nm = normalizeName(f.name);
+    if (nm) s.add(nm);
+  }
+  return s;
+}
+
+// BEHAVIOURAL classes (design gap#4). The six name classes above answer "is the
+// entity roster the same". They are silent about whether the config DOES
+// anything — and that silence is exactly where the generator's output diverges
+// from a real, human-finished bundle. A UAT export of Door Step School carries
+// visit schedules on 9 of 30 forms, decision rules on 3, real named user roles
+// and real dashboards; a freshly generated bundle carries none of it, and the
+// name-only comparator reports full parity regardless.
+//
+// These are compared as NAME SETS, not counts, for the same reason the entity
+// classes are: a count tells you a gap exists, a name set tells you which form
+// to fix. Reported by default; gated only via FULL_GATE_CLASSES (parity.cjs),
+// so existing callers keep their previous pass/fail semantics.
+const BEHAVIOUR_CLASSES = [
+  "formsWithVisitScheduleRule",
+  "formsWithDecisionRule",
+  "formsWithValidationRule",
+  "groups",
+  "reportCards",
+  "reportDashboards",
+];
+
 function bundleActiveNames(dir) {
   const j = (f) => readJson(path.join(dir, f));
   const formsDir = path.join(dir, "forms");
@@ -56,7 +95,14 @@ function bundleActiveNames(dir) {
     encounterTypes:    activeNameSet(asArray(j("encounterTypes.json"), "encounterTypes")),
     forms:             activeNameSet(forms),
     formMappings:      activeNameSet(asArray(j("formMappings.json"), "formMappings")),
+    // ── behavioural ──
+    formsWithVisitScheduleRule: formsCarrying(forms, "visitScheduleRule"),
+    formsWithDecisionRule:      formsCarrying(forms, "decisionRule"),
+    formsWithValidationRule:    formsCarrying(forms, "validationRule"),
+    groups:                     activeNameSet(asArray(j("groups.json"), "groups")),
+    reportCards:                activeNameSet(asArray(j("reportCard.json"), "reportCard")),
+    reportDashboards:           activeNameSet(asArray(j("reportDashboard.json"), "reportDashboard")),
   };
 }
 
-module.exports = { normalizeName, isVoided, bundleActiveNames };
+module.exports = { normalizeName, isVoided, bundleActiveNames, BEHAVIOUR_CLASSES };
