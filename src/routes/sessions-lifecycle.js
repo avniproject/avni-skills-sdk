@@ -94,7 +94,14 @@ export function register(app) {
   app.get("/v1/sessions/:id", (req, res) => {
     try {
       const meta = sessions.getSession(req.params.id);
-      res.json({ ...meta, files: sessions.listFiles(req.params.id) });
+      // `uncommitted` exposes work stranded by a turn that never finished (killed
+      // mid-stream, so the server never committed). Without it a resume shows
+      // meta's turn/validation over a working tree that may hold a half-applied
+      // edit — including one that left the bundle worse than it started.
+      // Never fatal: a git failure must not 500 an otherwise-readable session.
+      let uncommitted = [];
+      try { uncommitted = sessions.uncommittedChanges(req.params.id); } catch { /* report clean-ish rather than fail */ }
+      res.json({ ...meta, files: sessions.listFiles(req.params.id), uncommitted });
     } catch (e) {
       res.status(404).json({ error: e.message });
     }

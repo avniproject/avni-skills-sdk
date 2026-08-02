@@ -37,6 +37,10 @@ export function makeSessionHelpers({ BASE }) {
       sessionId: sid,
       meta,
       validation: meta.validationAtCurrent,
+      // Work left behind by a turn that never committed (process killed
+      // mid-stream). Surfaced by the banner — meta alone would show the PREVIOUS
+      // turn's state over a tree that may hold a half-applied edit.
+      uncommitted: meta.uncommitted || [],
       resumed: true,
     };
   }

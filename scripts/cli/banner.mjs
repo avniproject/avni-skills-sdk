@@ -122,17 +122,37 @@ export async function renderBundleStats({ BASE, sess, getJson }) {
 // Reads the validator state + recent transcript (for resumed sessions) and
 // surfaces the most useful next command. Beats a static "type your prompt
 // below" line because the user actually sees what to do next.
-export function renderSuggestions(sessMeta, validation, isResumed) {
+export function renderSuggestions(sessMeta, validation, isResumed, uncommitted = []) {
   const groups = validation?.groups || {};
   const errs = validation?.errors || 0;
   const lines = [];
+
+  // Work stranded by a turn that never committed. This OUTRANKS every other
+  // suggestion: the numbers above it describe the last COMMITTED turn, so while
+  // this is unresolved the whole banner is describing a bundle that isn't the one
+  // on disk. A killed mid-edit turn can leave the tree worse than it started
+  // (entity deleted, references not yet repointed), so say so before anything else.
+  if (uncommitted.length) {
+    const shown = uncommitted.slice(0, 8);
+    lines.push(red(`⚠ ${uncommitted.length} uncommitted file${uncommitted.length === 1 ? "" : "s"} from a turn that never finished`));
+    lines.push(dim("  ") + shown.join(dim(", ")) + (uncommitted.length > shown.length ? dim(` … +${uncommitted.length - shown.length} more`) : ""));
+    lines.push(dim("  The counts above are from the last COMMITTED turn — they do not describe these files."));
+    lines.push(dim("  Inspect with ") + cyan(":changes") + dim(", then either finish the edit and let the next turn commit it,"));
+    lines.push(dim("  or discard it: ") + cyan(":revert " + (sessMeta?.currentTurn ?? 0)));
+    lines.push("");
+  }
 
   if (isResumed) {
     lines.push(dim("welcome back. ") + cyan(":transcript") + dim(" to see prior conversation · ") +
                cyan(":cost") + dim(" to see spend so far"));
   }
 
-  if (validation?.emptyWorkspace) {
+  if (validation?.emptyWorkspace && uncommitted.length) {
+    // emptyWorkspace describes the last COMMITTED turn. With stranded files on
+    // disk the workspace plainly isn't empty, so saying so would contradict the
+    // warning directly above. The recovery hint there is the actionable one.
+    lines.push(dim("The last committed turn was an empty workspace — the files above came after it."));
+  } else if (validation?.emptyWorkspace) {
     // Agent mode, turn 0. Zero validator errors here means "nothing to validate",
     // NOT "clean" — suggesting a clean-bundle next step would be a false signal.
     lines.push(dim("agent mode: the bundle is ") + yellow("empty") +

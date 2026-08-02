@@ -710,6 +710,32 @@ export function ensureSessionSkillsStaged(id) {
 // so commitWorkspaceChanges can call it TWICE (once to seed the CRL delta, once
 // more after the gate runs to pick up a scrub's own edits) without duplicating
 // the NUL-safe parsing. Exported for direct unit testing.
+/**
+ * Files sitting UNCOMMITTED in a session's bundle working tree.
+ *
+ * A turn is all-or-nothing: the agent edits files, and the server commits them
+ * only after the SSE stream ends. Kill the process mid-turn (terminal closed,
+ * Ctrl-C, the CLI exiting and taking its spawned server child with it) and the
+ * edits are on disk but uncommitted, while meta.json still describes the
+ * PREVIOUS turn. Without this, a resume shows meta's view — "turn 0, empty
+ * workspace" — over a tree holding a half-finished edit, which can be strictly
+ * worse than where the session started (e.g. an entity deleted but the
+ * references to it not yet repointed).
+ *
+ * Reporting only — deliberately does NOT auto-commit. Committing someone's
+ * half-finished surgery on their behalf is the wrong call; name the files and
+ * let the operator choose to keep, finish, or discard.
+ *
+ * @param {string} id Session id.
+ * @returns {string[]} repo-relative paths, [] when the tree is clean.
+ * @throws if the session does not exist.
+ */
+export function uncommittedChanges(id) {
+  const dir = path.join(sessionPath(id), "bundle");
+  if (!fs.existsSync(dir)) throw new Error(`session not found: ${id}`);
+  return listWorkingTreeChanges(dir);
+}
+
 export function listWorkingTreeChanges(dir) {
   const status = git(dir, "status", "-z", "--porcelain");
   if (!status) return [];

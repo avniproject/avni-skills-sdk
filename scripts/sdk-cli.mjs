@@ -247,7 +247,7 @@ state.sid = sess.sessionId;
 const validation = await renderBundleStats({ BASE, sess, getJson });
 state.priorValidationGroups = { ...(validation?.groups || {}) };
 console.log("");
-renderSuggestions(sess.meta, validation, !!sess.resumed);
+renderSuggestions(sess.meta, validation, !!sess.resumed, sess.uncommitted || sess.meta?.uncommitted || []);
 console.log("");
 
 // ── Readline loop ───────────────────────────────────────────────────
