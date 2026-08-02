@@ -6,17 +6,44 @@
 import { bold, box, cyan, dim, green, magenta, red, yellow, blue } from "./ui.mjs";
 import { describeToolUse } from "./render.mjs";
 
+// How long without a single SSE frame before we tell the operator the stream
+// looks stalled. Generous: a big Read or a slow model turn can legitimately go
+// quiet for a while. The point is to break the "frozen prompt, no idea what's
+// happening" state that drives people to Ctrl+C.
+const STALL_NOTICE_MS = 90_000;
+
 export function makeSseSender({ BASE, state }) {
   async function sendMessage(sid, prompt, { onFirstFrame } = {}) {
-    const r = await fetch(`${BASE}/v1/sessions/${sid}/messages`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.ANTHROPIC_API_KEY}`,
-      },
-      body: JSON.stringify({ prompt, model: state.MODEL }),
-    });
+    // The in-flight turn is abortable, and aborting is the SAFE exit: the server
+    // treats a client disconnect as an abort (res.on("close") → ac.abort()) and
+    // STILL runs commitWorkspaceChanges, so partial work lands as a turn.
+    // Killing the CLI instead takes the server child down with it before that
+    // commit runs, which strands the agent's edits uncommitted. Expose the
+    // controller on `state` so the SIGINT handler can choose the safe exit.
+    const ac = new AbortController();
+    state.inFlight = ac;
+    let r;
+    try {
+      r = await fetch(`${BASE}/v1/sessions/${sid}/messages`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${process.env.ANTHROPIC_API_KEY}`,
+        },
+        body: JSON.stringify({ prompt, model: state.MODEL }),
+        signal: ac.signal,
+      });
+    } catch (e) {
+      state.inFlight = null;
+      if (onFirstFrame) onFirstFrame();
+      if (e?.name === "AbortError") {
+        console.log(yellow("  turn cancelled") + dim(" — the server was told to stop and commits whatever landed. ") + cyan(":turns") + dim(" to check."));
+        return;
+      }
+      throw e;
+    }
     if (!r.ok) {
+      state.inFlight = null;
       if (onFirstFrame) onFirstFrame();   // stop spinner on error too
       console.log(red(`agent call failed: ${r.status} — ${await r.text()}`)); return;
     }
@@ -25,9 +52,30 @@ export function makeSseSender({ BASE, state }) {
     let buf = "";
     let inputTokens = 0, outputTokens = 0, costUsd = 0;
     let firedFirstFrame = false;
+
+    // Stall notice. The REPL awaits this whole function, so a stream that goes
+    // quiet forever means the prompt never comes back and there is no on-screen
+    // explanation — the exact state that leads to a process-killing Ctrl+C.
+    // Say what is happening and name the safe way out. Timer only; it never
+    // aborts on its own, since a long turn is not necessarily a broken one.
+    let stallTimer = null;
+    const armStall = () => {
+      if (stallTimer) clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        console.log("");
+        console.log(yellow("  ⚠ no output for " + Math.round(STALL_NOTICE_MS / 1000) + "s — the turn may be stalled."));
+        console.log(dim("    Press ") + cyan("Ctrl+C once") + dim(" to cancel this turn safely (the server still commits what landed)."));
+        console.log(dim("    Press it twice to quit — that kills the server mid-turn and STRANDS uncommitted work."));
+        armStall();
+      }, STALL_NOTICE_MS);
+    };
+    armStall();
+
+    try {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
+      armStall();
       buf += decoder.decode(value, { stream: true });
       let i;
       while ((i = buf.indexOf("\n\n")) >= 0) {
@@ -42,6 +90,17 @@ export function makeSseSender({ BASE, state }) {
         handleEvent(ev, data);
       }
     }
+    } catch (e) {
+      // A mid-stream abort surfaces here rather than on the fetch itself.
+      if (e?.name !== "AbortError") throw e;
+      if (onFirstFrame && !firedFirstFrame) onFirstFrame();
+      console.log("");
+      console.log(yellow("  turn cancelled") + dim(" — the server was told to stop and commits whatever landed. ") + cyan(":turns") + dim(" to check."));
+    } finally {
+      if (stallTimer) clearTimeout(stallTimer);
+      state.inFlight = null;
+    }
+
     function handleEvent(ev, data) {
       if (ev === "start") {
         // Slim header — one dim line, no spam

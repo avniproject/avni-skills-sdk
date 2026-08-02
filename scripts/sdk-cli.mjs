@@ -41,7 +41,7 @@ import os from "node:os";
 import readline from "node:readline";
 import { createRequire } from "node:module";
 
-import { cyan, dim, green, red, TTY, withSpinner } from "./cli/ui.mjs";
+import { cyan, dim, green, red, yellow, TTY, withSpinner } from "./cli/ui.mjs";
 import { makeServerHelpers } from "./cli/server-mgmt.mjs";
 import { makeSessionHelpers } from "./cli/session.mjs";
 import { makeSseSender }     from "./cli/sse.mjs";
@@ -84,6 +84,10 @@ const state = {
   MODEL: arg("model", "claude-haiku-4-5-20251001"),
   priorValidationGroups: null,
   sid: null,
+  // AbortController for the turn currently streaming, or null when idle. Set by
+  // sendMessage, read by the SIGINT handler so Ctrl+C can cancel the turn
+  // (server still commits) instead of killing the process (work stranded).
+  inFlight: null,
 };
 
 // ─── Resolve AVNI_SKILLS_PATH automatically if possible ───────────
@@ -263,6 +267,53 @@ const rl = readline.createInterface({
 let rlClosed = false;
 rl.on("close", () => { rlClosed = true; });
 function safePrompt() { if (!rlClosed) rl.prompt(); }
+
+// ── Ctrl+C: cancel the turn, don't kill the process ─────────────────
+//
+// The REPL awaits an in-flight turn, so a stalled stream leaves no way to type —
+// and Ctrl+C used to be the only escape. That was the WORST exit available: it
+// terminates the CLI, which takes the spawned server child with it, and the
+// server dies before `commitWorkspaceChanges` runs. The agent's edits are left
+// uncommitted in the working tree while meta.json still describes the previous
+// turn. A real session was lost this way mid-edit, leaving the bundle with 8
+// dangling refs — worse than where it started.
+//
+// Aborting the REQUEST is the safe exit instead: the server treats a client
+// disconnect as an abort (res.on("close") → ac.abort()) and STILL commits
+// whatever landed. So: first Ctrl+C during a turn cancels that turn and keeps
+// the REPL alive; a second (or one at an idle prompt) exits for real.
+//
+// Registered on BOTH `rl` and `process`: with `terminal: true` readline
+// intercepts Ctrl+C and emits 'SIGINT' on the Interface instead of letting the
+// process signal through, so a process-only handler would never fire in the
+// interactive case that actually matters. Piped/non-TTY runs still go through
+// `process`. Same handler either way; whichever fires first clears the state the
+// other would act on.
+let sigintArmed = false;
+const handleInterrupt = () => {
+  if (state.inFlight) {
+    state.inFlight.abort();
+    state.inFlight = null;
+    console.log("");
+    console.log(yellow("^C") + dim(" cancelling this turn — the server still commits what landed. Press Ctrl+C again to quit."));
+    safePrompt();
+    return;
+  }
+  if (!sigintArmed) {
+    sigintArmed = true;
+    console.log("");
+    console.log(dim("(nothing running — press Ctrl+C again, or type ") + cyan(":quit") + dim(", to exit)"));
+    safePrompt();
+    setTimeout(() => { sigintArmed = false; }, 3000);
+    return;
+  }
+  console.log("");
+  console.log(dim(`session preserved at ${state.sid}`));
+  if (startedServer && serverProc) serverProc.kill();
+  process.exit(130);
+};
+rl.on("SIGINT", handleInterrupt);
+process.on("SIGINT", handleInterrupt);
 
 safePrompt();
 for await (const line of rl) {
