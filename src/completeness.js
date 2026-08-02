@@ -109,5 +109,54 @@ export function completenessFloor(dir) {
     }
   }
 
+  // 4) PROGRAM_NO_ENROLMENT — a program you cannot enrol anyone into is inert.
+  //    Universal: every program needs an entry point, whatever the SRS says.
+  //    NOT checked here: "every program has an EXIT form". That looked like a
+  //    sibling invariant and is not one — a program can legitimately run for
+  //    life. Verified against a real bundle: 2 programs, 1 ProgramExit mapping,
+  //    because that SRS leaves the Exit Form column blank on purpose. Whether an
+  //    exit form is required is a question only the SRS answers, so it belongs
+  //    with the SRS-driven checks, never as an assumed universal here.
+  const mappedFormTypesByProgram = new Map();
+  for (const m of formMappings) {
+    if (!m.programUUID) continue;
+    if (!mappedFormTypesByProgram.has(m.programUUID)) mappedFormTypesByProgram.set(m.programUUID, new Set());
+    mappedFormTypesByProgram.get(m.programUUID).add(m.formType);
+  }
+  for (const p of programs) {
+    const types = mappedFormTypesByProgram.get(p.uuid);
+    if (!types || !types.has("ProgramEnrolment")) {
+      push("PROGRAM_NO_ENROLMENT", `program:${p.name}`,
+        `program "${p.name}" has no ProgramEnrolment form mapping — nobody can be enrolled into it.`);
+    }
+  }
+
+  // 5) ENCOUNTER_TYPE_NO_FORM — an encounter type with no form can never be
+  //    recorded against. Universal regardless of SRS.
+  const encounterUuidsWithForms = new Set(
+    formMappings.filter((m) => m.encounterTypeUUID).map((m) => m.encounterTypeUUID),
+  );
+  for (const et of encounterTypes) {
+    if (!encounterUuidsWithForms.has(et.uuid)) {
+      push("ENCOUNTER_TYPE_NO_FORM", `encounterType:${et.name}`,
+        `encounter type "${et.name}" has no form mapped to it — it can never be recorded.`);
+    }
+  }
+
+  // 6) CODED_CONCEPT_TOO_FEW_ANSWERS — a coded question with fewer than two
+  //    answers is not a choice. One answer is a constant; zero is unanswerable.
+  //    Concepts are read here rather than above because this is the only check
+  //    that needs them, and an unreadable concepts.json must not fail the rest.
+  let concepts = [];
+  try { concepts = activeItems(readJson(path.join(dir, "concepts.json"))); } catch { /* skip check */ }
+  for (const c of concepts) {
+    if (String(c.dataType) !== "Coded") continue;
+    const answers = (c.answers || []).filter((a) => a && !isVoided(a));
+    if (answers.length < 2) {
+      push("CODED_CONCEPT_TOO_FEW_ANSWERS", `concept:${c.name}`,
+        `coded concept "${c.name}" has ${answers.length} answer(s) — a coded question needs at least two options to be a choice.`);
+    }
+  }
+
   return { green: findings.length === 0, evaluated: true, findings };
 }
