@@ -31,10 +31,13 @@ const OPUS_FIX_KINDS = new Set([
 const generateSchema = {
   type: 'object',
   additionalProperties: true,
-  required: ['sessionId', 'bundleDir'],
+  required: ['sessionId', 'bundleDir', 'mode', 'org', 'source'],
   properties: {
     sessionId: { type: 'string' },
     bundleDir: { type: 'string' },
+    mode: { type: 'string' },
+    org: { type: 'string' },
+    source: { type: 'string' },
   },
 };
 
@@ -174,16 +177,19 @@ Run exactly this (adapt only if it errors, by reading src/sessions.js):
     mode: "agent",
   });
   const bDir = bundleDir(r.sessionId);
-  generateBaselineOnDir(bDir);
+  const out = JSON.parse(generateBaselineOnDir(bDir).content[0].text);
   commitTurn(r.sessionId, "turn 1: deterministic baseline", {});
-  console.log(JSON.stringify({ sessionId: r.sessionId, bundleDir: bDir }));
+  console.log(JSON.stringify({ sessionId: r.sessionId, bundleDir: bDir, mode: r.meta.mode, org: r.meta.org, source: out.source }));
   ' ${JSON.stringify(args.scopingXlsx)} ${JSON.stringify(args.modellingXlsx || '-')} ${JSON.stringify(args.org)}
 
 generateBaselineOnDir runs the REAL SRS→bundle generator (not the minimal skeleton) because the
 session carries generator inputs. If its output says source is anything other than "brain-generator",
 stop and report that — a skeleton bundle would invalidate the whole run.
 
-The last stdout line is JSON { sessionId, bundleDir }. Return exactly that object.`;
+Report the values you actually observed. Do NOT substitute the expected ones, and do NOT invent a
+session: if the command fails, return the error rather than a plausible-looking object.
+
+The last stdout line is JSON { sessionId, bundleDir, mode, org, source }. Return exactly that object.`;
 
 // Every reviewer gets this. The workbooks live in <session>/input/, a sibling of
 // the bundle dir; readSrsOnDir is a plain exported function over that layout, so
@@ -304,7 +310,28 @@ const gen = await agent(generatePrompt(), {
   label: 'generate:baseline',
 });
 const bundleDir = gen.bundleDir;
-log(`Baseline session ${gen.sessionId} at ${bundleDir}`);
+
+// FAIL FAST. A five-hour run on 2026-08-02 completed 62 agents and changed
+// nothing because a stale copy of this script was executed instead of this one:
+// baseline mode (so every reviewer was blind to the SRS), and an org nobody
+// asked for. Both were visible in the first ten seconds and neither was checked.
+// These assertions cost nothing and turn that class of failure into an
+// immediate crash rather than an afternoon of expensive no-ops.
+if (gen.mode !== 'agent') {
+  throw new Error(
+    `generate produced a "${gen.mode}" session, expected "agent". A baseline session CONSUMES the ` +
+    `workbooks — bundle_read_srs refuses and buildCrlScopingCtx returns {} — so the completeness ` +
+    `lens would run blind. This usually means a stale copy of the workflow script is running: ` +
+    `relaunch with {scriptPath: "<repo>/.claude/workflows/bundle-to-prod-ready.js"} rather than {name}.`
+  );
+}
+if (args.org && gen.org !== args.org) {
+  throw new Error(`generate used org ${JSON.stringify(gen.org)}, expected ${JSON.stringify(args.org)} — args did not reach the runner.`);
+}
+if (gen.source !== 'brain-generator') {
+  throw new Error(`generate fell back to ${JSON.stringify(gen.source)} instead of the real SRS→bundle generator; a skeleton bundle would invalidate the run.`);
+}
+log(`Baseline session ${gen.sessionId} (mode=${gen.mode}, org=${gen.org}, source=${gen.source}) at ${bundleDir}`);
 
 // ── The loop ──────────────────────────────────────────────────────────────
 const allDefects = [];
